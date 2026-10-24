@@ -122,11 +122,23 @@ jobs:
           grep -qxF "FILE seek=$expected" initramfs-boot.log
           grep -qxF "FILE missing=-2" initramfs-boot.log
           grep -qxF "BENCH DONE" initramfs-boot.log
-          # Every sample still prints: 30 syscall, mmap, futex and threads, plus
-          # five weights and five weights-tail.
-          test "$(grep -c '^RESULT ' initramfs-boot.log)" -eq 130
-          for workload in syscall mmap weights weights-tail futex threads; do
-            grep -q "^RESULT $workload " initramfs-boot.log
+          # The file mapping covers the file rounded down to whole pages, and
+          # the first byte of the file is the ELF magic.
+          grep -qxF "FILE mmap=$(( expected / 4096 * 4096 ))" initramfs-boot.log
+          grep -qxF "FILE mmap-byte=127" initramfs-boot.log
+          grep -q "large pages mapped" initramfs-boot.log
+          # Every sample still prints, with the count each workload owes.
+          declare -A samples=(
+            [syscall]=30 [mmap]=30 [futex]=30 [threads]=30
+            [weights]=5 [weights-tail]=5 [weights-huge]=10 [weights-huge-tail]=10
+          )
+          total=0
+          for workload in "${!samples[@]}"; do
+            count="$(grep -c "^RESULT $workload " initramfs-boot.log || true)"
+            echo "$workload: $count samples"
+            test "$count" -eq "${samples[$workload]}"
+            total=$((total + count))
           done
+          test "$total" -eq "$(grep -c '^RESULT ' initramfs-boot.log)"
           grep -qxF "USER OK exit=0" initramfs-boot.log
           grep -qxF "MadRust: boot OK" initramfs-boot.log
