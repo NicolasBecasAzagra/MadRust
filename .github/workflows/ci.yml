@@ -96,7 +96,7 @@ jobs:
       - name: Boot kernel with the initramfs
         run: |
           make bench
-          bench/mkinitramfs.sh
+          sh bench/mkinitramfs.sh
           expected="$(wc -c < madrust-bench/madrust-bench.elf | tr -d ' ')"
           set +e
           # The benchmark workload touches 256 MiB five times, so this boot is
