@@ -518,7 +518,8 @@ fn measure_weights(scale: TickScale, huge: bool) -> Result<(u128, u128), i64> {
         // it works on every kernel, so a refusal of MADV_HUGEPAGE alone means
         // the kernel does not implement large pages for this mapping.
         let normal = unsafe { syscall3(SYS_MADVISE, base, WEIGHTS_BYTES as u64, MADV_NORMAL) };
-        let huge_advice = unsafe { syscall3(SYS_MADVISE, base, WEIGHTS_BYTES as u64, MADV_HUGEPAGE) };
+        let huge_advice =
+            unsafe { syscall3(SYS_MADVISE, base, WEIGHTS_BYTES as u64, MADV_HUGEPAGE) };
         // A plain line, not a result: this is a probe of the kernel, not a
         // measurement, and the rig counts the result lines.
         println!(
