@@ -23,7 +23,11 @@
 //!   wall clock time of the whole spawn, run and join sequence.
 //! * `weights`: map a large fixed region and touch every page, reported as ns
 //!   per MiB and as the slowest single page in ns. It stands in for faulting
-//!   model weights in, because MadRust has no file system yet.
+//!   model weights in, which is still an anonymous mapping rather than a file
+//!   backed one.
+//! * `file`: open `/bench` from the initramfs, stat it, read it and seek it,
+//!   then open a path that does not exist. It runs first and prints exact lines,
+//!   so the serial log proves the read only file system end to end.
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::hint::black_box;
@@ -75,11 +79,31 @@ const CALIBRATION_MICROS: u64 = 5_000;
 /// Page size the workloads assume; both kernels use 4 KiB pages.
 const PAGE_SIZE: usize = 4096;
 
+/// Size of `struct stat` on x86-64.
+const STAT_SIZE: usize = 144;
+
+/// Path the file check opens; the initramfs stores the workload there.
+const BENCH_PATH: &[u8] = b"/bench\0";
+/// Path that must not exist.
+const MISSING_PATH: &[u8] = b"/missing\0";
+/// `AT_FDCWD`: resolve the path against the working directory.
+const AT_FDCWD: u64 = -100i64 as u64;
+/// `O_RDONLY`.
+const O_RDONLY: u64 = 0;
+/// `SEEK_END`.
+const SEEK_END: u64 = 2;
+
+const SYS_READ: u64 = 0;
+const SYS_CLOSE: u64 = 3;
+const SYS_FSTAT: u64 = 5;
+const SYS_LSEEK: u64 = 8;
 const SYS_MMAP: u64 = 9;
 const SYS_MUNMAP: u64 = 11;
 const SYS_GETPID: u64 = 39;
 const SYS_EXIT: u64 = 60;
 const SYS_FUTEX: u64 = 202;
+const SYS_OPENAT: u64 = 257;
+const SYS_NEWFSTATAT: u64 = 262;
 
 const PROT_READ: u64 = 1;
 const PROT_WRITE: u64 = 2;
@@ -188,6 +212,29 @@ unsafe fn syscall1(number: u64, argument1: u64) -> i64 {
             "syscall",
             inlateout("rax") number as i64 => result,
             in("rdi") argument1,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    result
+}
+
+/// Raw `syscall` with three arguments.
+///
+/// # Safety
+///
+/// See [`syscall1`].
+unsafe fn syscall3(number: u64, argument1: u64, argument2: u64, argument3: u64) -> i64 {
+    let result: i64;
+    // SAFETY: the caller upholds the contract above.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") number as i64 => result,
+            in("rdi") argument1,
+            in("rsi") argument2,
+            in("rdx") argument3,
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack),
@@ -435,10 +482,10 @@ impl TickScale {
 
 /// `weights`: map a large region, touch every page, drop it.
 ///
-/// The page fault path is the dominant kernel cost of loading a model. With no
-/// file system, the anonymous mapping is the honest proxy: map the region and
-/// touch one byte in every 4 KiB page. Returns the cost per MiB and the slowest
-/// single page, both in nanoseconds.
+/// The page fault path is the dominant kernel cost of loading a model. The
+/// weights are still an anonymous mapping, so the honest proxy is to map the
+/// region and touch one byte in every 4 KiB page. Returns the cost per MiB and
+/// the slowest single page, both in nanoseconds.
 fn measure_weights(scale: TickScale) -> Result<(u128, u128), i64> {
     let start = Instant::now();
     let base = map_at(WEIGHTS_BASE, WEIGHTS_BYTES)?;
@@ -594,7 +641,133 @@ fn report(name: &str, unit: &str, result: Result<u128, i64>) {
     }
 }
 
+/// Open a path from the initramfs, or return the negated error number.
+fn open(path: &[u8], flags: u64) -> Result<u64, i64> {
+    // SAFETY: openat takes four arguments and `path` is a live NUL terminated
+    // string; both kernels implement the call.
+    let result = unsafe { syscall4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as u64, flags, 0) };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result as u64)
+    }
+}
+
+/// Read `st_size` from an x86-64 `struct stat`.
+fn stat_size(block: &[u8; STAT_SIZE]) -> u64 {
+    let bytes: [u8; 8] = block[48..56].try_into().unwrap_or_default();
+    u64::from_le_bytes(bytes)
+}
+
+/// Read `st_mode` from an x86-64 `struct stat`.
+fn stat_mode(block: &[u8; STAT_SIZE]) -> u32 {
+    let bytes: [u8; 4] = block[24..28].try_into().unwrap_or_default();
+    u32::from_le_bytes(bytes)
+}
+
+/// Report the size through `newfstatat`, the path based call.
+fn report_path_size() {
+    let mut block = [0u8; STAT_SIZE];
+    // SAFETY: `block` is a live 144-byte buffer and the path string lives for
+    // the call; both kernels implement newfstatat.
+    let result = unsafe {
+        syscall4(
+            SYS_NEWFSTATAT,
+            AT_FDCWD,
+            BENCH_PATH.as_ptr() as u64,
+            block.as_mut_ptr() as u64,
+            0,
+        )
+    };
+    if result < 0 {
+        println!("FILE path-size ERR {result}");
+    } else {
+        println!("FILE path-size={}", stat_size(&block));
+    }
+}
+
+/// Read the whole file and report how many bytes the kernel returned.
+fn read_file(descriptor: u64, size: u64) {
+    let mut buffer = [0u8; PAGE_SIZE];
+    let mut total = 0u64;
+    loop {
+        // SAFETY: the buffer is live for the call and its length is the count
+        // passed to the kernel.
+        let count = unsafe {
+            syscall3(
+                SYS_READ,
+                descriptor,
+                buffer.as_mut_ptr() as u64,
+                buffer.len() as u64,
+            )
+        };
+        if count < 0 {
+            println!("FILE read ERR {count}");
+            return;
+        }
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > size {
+            break;
+        }
+    }
+    println!("FILE read={total}");
+
+    // SAFETY: lseek takes three arguments and the descriptor is open.
+    let end = unsafe { syscall3(SYS_LSEEK, descriptor, 0, SEEK_END) };
+    if end < 0 {
+        println!("FILE seek ERR {end}");
+    } else {
+        println!("FILE seek={end}");
+    }
+}
+
+/// Prove the read only file system end to end.
+///
+/// The exact lines are part of the serial contract: the workload name, the size
+/// from `fstat`, the size from `newfstatat`, the bytes actually read, the end
+/// offset from `lseek`, the archive mode with its execute bit, and the `ENOENT`
+/// a missing path must return. A path that does not exist must fail, and a
+/// successful open would print `FILE missing=UNEXPECTED` instead.
+fn check_file() {
+    match open(BENCH_PATH, O_RDONLY) {
+        Err(error) => println!("FILE size ERR {error}"),
+        Ok(descriptor) => {
+            let mut block = [0u8; STAT_SIZE];
+            // SAFETY: `block` is live for the call; fstat writes at most 144
+            // bytes, the size of the buffer.
+            let result =
+                unsafe { syscall4(SYS_FSTAT, descriptor, block.as_mut_ptr() as u64, 0, 0) };
+            if result < 0 {
+                println!("FILE size ERR {result}");
+            } else {
+                let size = stat_size(&block);
+                println!("FILE size={size}");
+                println!("FILE mode={}", stat_mode(&block));
+                report_path_size();
+                read_file(descriptor, size);
+            }
+            // SAFETY: the descriptor came from open and close takes one
+            // argument.
+            let _ = unsafe { syscall1(SYS_CLOSE, descriptor) };
+        }
+    }
+
+    match open(MISSING_PATH, O_RDONLY) {
+        Ok(descriptor) => {
+            println!("FILE missing=UNEXPECTED");
+            // SAFETY: the descriptor came from open and close takes one
+            // argument.
+            let _ = unsafe { syscall1(SYS_CLOSE, descriptor) };
+        }
+        Err(error) => println!("FILE missing={error}"),
+    }
+}
+
 fn main() {
+    check_file();
     for _ in 0..ITERATIONS {
         report("syscall", "ns/op", measure_syscall());
     }

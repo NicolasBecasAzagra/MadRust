@@ -31,7 +31,7 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
+          sudo apt-get install -y qemu-system-x86 cpio
 
       - name: Check formatting
         run: make fmt-check
@@ -70,6 +70,7 @@ jobs:
             -device isa-debug-exit,iobase=0xf4,iosize=0x04
           status=$?
           echo "QEMU exit status: $status"
+          set -e
           cat serial.log
           test "$status" -eq 33
           grep -q "MadRust: boot OK" serial.log
@@ -91,3 +92,41 @@ jobs:
           grep -q "^T3 " serial.log
           grep -q "DIV0" serial.log
           grep -q "TICKS 100" serial.log
+
+      - name: Boot kernel with the initramfs
+        run: |
+          make bench
+          bench/mkinitramfs.sh
+          expected="$(wc -c < madrust-bench/madrust-bench.elf | tr -d ' ')"
+          set +e
+          # The benchmark workload touches 256 MiB five times, so this boot is
+          # slower than the bare one under emulation.
+          timeout 300 qemu-system-x86_64 -M q35 -m 512M \
+            -kernel "$(make -s print-kernel-path)" \
+            -initrd bench/initramfs.cpio \
+            -display none -monitor none -no-reboot \
+            -serial file:initramfs.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          status=$?
+          echo "QEMU exit status: $status"
+          set -e
+          cat initramfs.log
+          test "$status" -eq 33
+          # Normalise the CRLF of the kernel lines; the workload uses LF.
+          tr -d '\r' < initramfs.log > initramfs-boot.log
+          grep -qxF "[user] initramfs: 1 module, 2 files, 6 entries" initramfs-boot.log
+          grep -qxF "FILE size=$expected" initramfs-boot.log
+          grep -qxF "FILE mode=33261" initramfs-boot.log
+          grep -qxF "FILE path-size=$expected" initramfs-boot.log
+          grep -qxF "FILE read=$expected" initramfs-boot.log
+          grep -qxF "FILE seek=$expected" initramfs-boot.log
+          grep -qxF "FILE missing=-2" initramfs-boot.log
+          grep -qxF "BENCH DONE" initramfs-boot.log
+          # Every sample still prints: 30 syscall, mmap, futex and threads, plus
+          # five weights and five weights-tail.
+          test "$(grep -c '^RESULT ' initramfs-boot.log)" -eq 130
+          for workload in syscall mmap weights weights-tail futex threads; do
+            grep -q "^RESULT $workload " initramfs-boot.log
+          done
+          grep -qxF "USER OK exit=0" initramfs-boot.log
+          grep -qxF "MadRust: boot OK" initramfs-boot.log

@@ -9,10 +9,31 @@
 //! The module bytes live in RAM that the frame allocator keeps reserved for the
 //! whole boot (see `memory::init`), so the slices handed out here stay valid
 //! until the program image has been copied into the user half.
+//!
+//! ## The archive as the root file system
+//!
+//! [`install`] publishes the parsed archive once the boot path has found it.
+//! The descriptor table resolves paths through [`resolve`], and every file
+//! descriptor borrows the entry data from the module bytes: the kernel never
+//! copies a file into the heap. The archive is mapped by the direct map, while
+//! the user program runs in the low half of the same page tables, so a read
+//! copies straight from the reserved module memory into the user buffer.
+
+use core::cell::UnsafeCell;
 
 use madrust_bootinfo::HvmModule;
-use madrust_initramfs::Archive;
+use madrust_initramfs::{Archive, Entry, PathError};
 use madrust_mm::phys_to_virt;
+
+/// The archive, once the boot path has installed it.
+struct ArchiveCell(UnsafeCell<Option<Archive<'static>>>);
+
+// SAFETY: the cell is written exactly once during single-threaded boot, before
+// interrupts or user mode are enabled. After that it is only read, and
+// `Archive` is `Copy` and immutable.
+unsafe impl Sync for ArchiveCell {}
+
+static ARCHIVE: ArchiveCell = ArchiveCell(UnsafeCell::new(None));
 
 /// One program found in the archive.
 pub struct ProgramFile {
@@ -39,6 +60,11 @@ impl Initramfs {
         self.archive.file_count()
     }
 
+    /// Number of entries, directories and device nodes included.
+    pub fn entry_count(&self) -> usize {
+        self.archive.entry_count()
+    }
+
     /// The program to run: `/bench` when present, otherwise the first
     /// executable file.
     pub fn program(&self) -> Option<ProgramFile> {
@@ -47,6 +73,35 @@ impl Initramfs {
             name: entry.normalized_name().unwrap_or("program"),
             data: entry.data(),
         })
+    }
+}
+
+/// Publish the archive as the root file system.
+///
+/// Called once from the boot path before the user program runs. A second call
+/// would replace the view while descriptors still borrow the first one, so the
+/// boot path installs exactly one archive.
+pub fn install(initramfs: &Initramfs) {
+    // SAFETY: the boot path calls this exactly once, before user mode and
+    // before interrupts can run another thread. The stored archive borrows
+    // module memory that the frame allocator keeps reserved for the whole boot.
+    unsafe {
+        *ARCHIVE.0.get() = Some(initramfs.archive);
+    }
+}
+
+/// Resolve an absolute path against the installed archive.
+///
+/// Returns `Ok(None)` when no archive is installed, which is the boot without
+/// an initramfs, and when the archive has no such entry. A path that climbs
+/// above the root is reported as [`PathError::EscapesRoot`].
+pub fn resolve(path: &[u8]) -> Result<Option<Entry<'static>>, PathError> {
+    // SAFETY: the cell was written once before user mode and is never mutated
+    // afterwards. `Archive` is `Copy`, so the read yields an independent view.
+    let archive = unsafe { *ARCHIVE.0.get() };
+    match archive {
+        Some(archive) => archive.resolve(path),
+        None => Ok(None),
     }
 }
 

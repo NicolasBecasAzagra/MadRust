@@ -227,13 +227,17 @@ unsafe extern "C" fn _start(
         Some(initramfs) => {
             let modules = initramfs.module_count();
             let files = initramfs.file_count();
+            let entries = initramfs.entry_count();
             kprintln!(
-                "[user] initramfs: {} {}, {} {}",
+                "[user] initramfs: {} {}, {} {}, {} {}",
                 modules,
                 if modules == 1 { "module" } else { "modules" },
                 files,
-                if files == 1 { "file" } else { "files" }
+                if files == 1 { "file" } else { "files" },
+                entries,
+                if entries == 1 { "entry" } else { "entries" }
             );
+            user::initramfs::install(&initramfs);
             let Some(file) = initramfs.program() else {
                 kprintln!("MadRust: boot FAILED: initramfs has no executable");
                 uart.flush();

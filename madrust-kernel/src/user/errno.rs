@@ -32,15 +32,11 @@ pub const EEXIST: i64 = -17;
 /// Not a directory.
 pub const ENOTDIR: i64 = -20;
 /// Is a directory.
-///
-/// Part of the Linux number table; nothing in this kernel opens a directory.
-#[allow(dead_code)]
 pub const EISDIR: i64 = -21;
 /// Illegal seek.
-///
-/// Part of the Linux number table; this kernel implements no seek.
-#[allow(dead_code)]
 pub const ESPIPE: i64 = -29;
+/// Read-only file system.
+pub const EROFS: i64 = -30;
 /// Numerical result out of range.
 pub const ERANGE: i64 = -34;
 /// Inappropriate ioctl for device.

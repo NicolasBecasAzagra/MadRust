@@ -25,12 +25,14 @@
 //!   reports `EINVAL`.
 //! * Threads and signals: `arch_prctl` (thread local storage), the signal
 //!   calls, `futex` (with the wait queue in [`super::futex`]) and `rseq`.
-//! * Input and output: the descriptor calls, `write`, `read`, `uname`, the
-//!   clocks, `getrandom`, `nanosleep` and `getrusage`.
+//! * Input and output: the descriptor calls, `write`, `read`, `lseek`,
+//!   `uname`, the clocks, `getrandom`, `nanosleep` and `getrusage`.
 //!
-//! There is no filesystem, so `openat`, `newfstatat`, `statx`, `getdents64`
-//! and `readlink` report `ENOENT` or `ENOTDIR`: the calls are implemented,
-//! their answer is just "nothing is mounted".
+//! `openat` and `newfstatat` reach the initramfs archive through
+//! [`super::initramfs`]: the archive is the root file system, read only, and a
+//! user program can open and read any entry. `statx`, `getdents64` and
+//! `readlink` are still unimplemented because nothing in the acceptance boot
+//! needs directory enumeration or links.
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -89,6 +91,8 @@ const SYS_CLOSE: u64 = 3;
 const SYS_FSTAT: u64 = 5;
 /// `poll` system call number.
 const SYS_POLL: u64 = 7;
+/// `lseek` system call number.
+const SYS_LSEEK: u64 = 8;
 /// `mmap` system call number.
 const SYS_MMAP: u64 = 9;
 /// `mprotect` system call number.
@@ -194,6 +198,18 @@ const SYS_RSEQ: u64 = 334;
 const RLIMIT_STACK: u64 = 3;
 /// `RLIMIT_NOFILE` resource number.
 const RLIMIT_NOFILE: u64 = 7;
+
+/// `AT_FDCWD`: resolve a path against the process working directory.
+///
+/// The kernel has no working directory, so this value names the archive root.
+const AT_FDCWD: u64 = -100i64 as u64;
+/// `AT_SYMLINK_NOFOLLOW`: `newfstatat` must not follow a symbolic link.
+const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+/// `AT_EMPTY_PATH`: `newfstatat` may describe the descriptor itself.
+const AT_EMPTY_PATH: u64 = 0x1000;
+
+/// Longest path a system call accepts, including the terminating NUL.
+const PATH_MAX: usize = 4096;
 
 /// Stack limit reported to the program, 8 MiB.
 const STACK_LIMIT: u64 = 8 * 1024 * 1024;
@@ -405,10 +421,12 @@ pub extern "C" fn madrust_syscall_dispatch(
     match number {
         SYS_READ => sys_read(argument1, argument2, argument3),
         SYS_WRITE => sys_write(argument1, argument2, argument3),
-        SYS_OPENAT => ENOENT,
+        SYS_OPENAT => sys_openat(argument1, argument2, argument3),
         SYS_CLOSE => fd::close(argument1),
         SYS_FSTAT => sys_fstat(argument1, argument2),
-        SYS_NEWFSTATAT | SYS_STATX => ENOENT,
+        SYS_LSEEK => fd::seek(argument1, argument2 as i64, argument3),
+        SYS_NEWFSTATAT => sys_newfstatat(argument1, argument2, argument3, argument4),
+        SYS_STATX => ENOENT,
         SYS_GETDENTS64 => ENOTDIR,
         SYS_POLL => sys_poll(argument1, argument2),
         SYS_IOCTL => sys_ioctl(argument1),
@@ -484,26 +502,62 @@ fn sys_write(descriptor: u64, buffer: u64, length: u64) -> i64 {
     fd::write(descriptor, bytes)
 }
 
+/// `openat`: open one entry of the initramfs archive.
+///
+/// Only `AT_FDCWD` is meaningful, because the working directory is the archive
+/// root. The mode argument is ignored: nothing can be created.
+fn sys_openat(dirfd: u64, path: u64, flags: u64) -> i64 {
+    if dirfd != AT_FDCWD {
+        return EINVAL;
+    }
+    let Some(path) = user_c_string(path) else {
+        return EFAULT;
+    };
+    fd::open(path, flags)
+}
+
+/// `newfstatat`: describe one entry of the initramfs archive.
+fn sys_newfstatat(dirfd: u64, path: u64, address: u64, flags: u64) -> i64 {
+    if dirfd != AT_FDCWD {
+        return EINVAL;
+    }
+    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
+        return EINVAL;
+    }
+    let Some(path) = user_c_string(path) else {
+        return EFAULT;
+    };
+    match fd::stat_path(path) {
+        Ok(block) => {
+            if write_user_bytes(address, &block) {
+                0
+            } else {
+                EFAULT
+            }
+        }
+        Err(error) => error,
+    }
+}
+
 /// `read`: take bytes from a descriptor into the user buffer.
-fn sys_read(descriptor: u64, buffer: u64, length: u64) -> i64 {
-    let Some(length) = user_range(buffer, length) else {
+///
+/// The destination is the user buffer itself, not a kernel bounce buffer. The
+/// kernel and the program share one address space, and a file entry already
+/// borrows the archive module memory, so the copy goes straight from the
+/// reserved archive to the program.
+fn sys_read(descriptor: u64, address: u64, length: u64) -> i64 {
+    let Some(length) = user_range(address, length) else {
         return EFAULT;
     };
     if length == 0 {
         return 0;
     }
-    let mut kernel_buffer = [0u8; 256];
-    let count = fd::read(descriptor, &mut kernel_buffer[..length.min(256)]);
-    if count <= 0 {
-        return count;
-    }
-    let Ok(count) = usize::try_from(count) else {
-        return EFAULT;
-    };
-    if !write_user_bytes(buffer, &kernel_buffer[..count]) {
-        return EFAULT;
-    }
-    i64::try_from(count).unwrap_or(i64::MAX)
+    // SAFETY: `user_range` checked that every page of the range is mapped in
+    // the user half. The program owns the buffer for the duration of the call
+    // and the kernel holds no other reference to it, so the mutable slice is
+    // unique while `fd::read` fills it.
+    let buffer = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) };
+    fd::read(descriptor, buffer)
 }
 
 /// `poll`: report which descriptors are ready.
@@ -1074,6 +1128,37 @@ fn user_bytes(address: u64, length: u64) -> Option<&'static [u8]> {
     // runs at CPL 0 without SMAP, so it may read user pages. A concurrent user
     // write could change the bytes while a call reads them; nothing else in
     // the kernel reads that memory.
+    Some(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
+}
+
+/// Borrow a NUL terminated path from user memory.
+///
+/// Every byte is validated against the mapped user range, so a bad pointer or a
+/// string that runs off the mapped pages reports `None` instead of faulting in
+/// the kernel. The length bound keeps a missing terminator from walking the
+/// whole address space.
+fn user_c_string(address: u64) -> Option<&'static [u8]> {
+    let mut length = 0u64;
+    loop {
+        if length >= PATH_MAX as u64 {
+            return None;
+        }
+        let position = address.checked_add(length)?;
+        user_range(position, 1)?;
+        // SAFETY: the single byte at `position` was checked as mapped user
+        // memory above, and the program only changes it concurrently if it
+        // races its own path buffer.
+        if unsafe { (position as *const u8).read() } == 0 {
+            break;
+        }
+        length += 1;
+    }
+    let length = usize::try_from(length).ok()?;
+    if length == 0 {
+        return Some(&[]);
+    }
+    // SAFETY: the bytes from `address` to the NUL were checked one by one as
+    // mapped user memory, and the slice excludes the terminator.
     Some(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
 }
 

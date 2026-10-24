@@ -43,8 +43,48 @@ const ALIGN: usize = 4;
 const S_IFMT: u32 = 0o170000;
 /// Regular file.
 const S_IFREG: u32 = 0o100000;
+/// Directory.
+const S_IFDIR: u32 = 0o040000;
+/// Character device.
+const S_IFCHR: u32 = 0o020000;
 /// Any execute bit.
 const EXECUTE_BITS: u32 = 0o111;
+
+/// Deepest path the resolver accepts, in components.
+///
+/// A `newc` archive has no nesting limit, but the resolver keeps its state on
+/// the stack so it can run in a system call. Thirty two levels are far more
+/// than an initramfs needs.
+pub const MAX_PATH_COMPONENTS: usize = 32;
+
+/// Reason why a path cannot name an entry under the archive root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathError {
+    /// The path is empty or does not start with `/`.
+    NotAbsolute,
+    /// A `..` component would climb above the root.
+    EscapesRoot,
+    /// The path has more components than [`MAX_PATH_COMPONENTS`].
+    TooDeep,
+}
+
+/// Path split into normalised components.
+///
+/// Empty components and `.` are dropped, and `..` removes the previous
+/// component. A struct with an inline array keeps the resolver allocation free
+/// and usable in the kernel.
+#[derive(Clone, Copy)]
+pub struct Components<'a> {
+    parts: [&'a [u8]; MAX_PATH_COMPONENTS],
+    length: usize,
+}
+
+impl<'a> Components<'a> {
+    /// Normalised components, in path order.
+    pub fn parts(&self) -> &[&'a [u8]] {
+        &self.parts[..self.length]
+    }
+}
 
 /// Reason why an archive is not usable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +128,16 @@ impl<'a> Entry<'a> {
     /// `true` when this entry is a regular file.
     pub const fn is_regular_file(&self) -> bool {
         self.mode & S_IFMT == S_IFREG
+    }
+
+    /// `true` when this entry is a directory.
+    pub const fn is_directory(&self) -> bool {
+        self.mode & S_IFMT == S_IFDIR
+    }
+
+    /// `true` when this entry is a character device.
+    pub const fn is_character_device(&self) -> bool {
+        self.mode & S_IFMT == S_IFCHR
     }
 
     /// `true` when this entry is a regular file with an execute bit set.
@@ -157,6 +207,28 @@ impl<'a> Archive<'a> {
     /// Number of regular files.
     pub fn file_count(&self) -> usize {
         self.files().count()
+    }
+
+    /// Number of entries, directories and device nodes included.
+    pub fn entry_count(&self) -> usize {
+        self.entries().count()
+    }
+
+    /// Resolve an absolute path to an entry.
+    ///
+    /// The path and every archive name are reduced to the same components, so
+    /// `/bench`, `//bench/` and `./bench` all name the same entry. A trailing
+    /// slash changes nothing. `..` may cancel an earlier component, but a path
+    /// that would climb above the archive root is rejected with
+    /// [`PathError::EscapesRoot`] instead of being clamped to `/`.
+    pub fn resolve(&self, path: &[u8]) -> Result<Option<Entry<'a>>, PathError> {
+        let requested = path_components(path)?;
+        for entry in self.entries() {
+            if entry_components(&entry).is_some_and(|name| name.parts() == requested.parts()) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
     }
 
     /// Find the program a benchmark run should start.
@@ -260,6 +332,58 @@ impl<'a> Iterator for Entries<'a> {
             }
         }
     }
+}
+
+/// Split an absolute path into normalised components.
+fn path_components(path: &[u8]) -> Result<Components<'_>, PathError> {
+    if !path.starts_with(b"/") {
+        return Err(PathError::NotAbsolute);
+    }
+    let mut components = Components {
+        parts: [&[]; MAX_PATH_COMPONENTS],
+        length: 0,
+    };
+    for part in path.split(|byte| *byte == b'/') {
+        if part.is_empty() || part == b"." {
+            continue;
+        }
+        if part == b".." {
+            if components.length == 0 {
+                return Err(PathError::EscapesRoot);
+            }
+            components.length -= 1;
+            continue;
+        }
+        if components.length == MAX_PATH_COMPONENTS {
+            return Err(PathError::TooDeep);
+        }
+        components.parts[components.length] = part;
+        components.length += 1;
+    }
+    Ok(components)
+}
+
+/// Split an archive name into the same normalised components.
+///
+/// Names are relative, so a leading `./` or `/` is just an empty or `.`
+/// component and disappears with the rest. A name with `..` never matches a
+/// resolved path.
+fn entry_components<'a>(entry: &Entry<'a>) -> Option<Components<'a>> {
+    let mut components = Components {
+        parts: [&[]; MAX_PATH_COMPONENTS],
+        length: 0,
+    };
+    for part in entry.name.split(|byte| *byte == b'/') {
+        if part.is_empty() || part == b"." {
+            continue;
+        }
+        if part == b".." || components.length == MAX_PATH_COMPONENTS {
+            return None;
+        }
+        components.parts[components.length] = part;
+        components.length += 1;
+    }
+    Some(components)
 }
 
 /// Read one eight digit hexadecimal number from `header`.
@@ -440,5 +564,107 @@ mod tests {
         bytes[0..6].copy_from_slice(MAGIC_CRC);
         let archive = Archive::parse(&bytes).expect("crc layout is identical");
         assert_eq!(archive.file_count(), 1);
+    }
+
+    /// Archive with the shape the benchmark initramfs has: a root, one
+    /// directory, two device nodes and two regular files.
+    fn benchmark_archive() -> Vec<u8> {
+        archive(&[
+            (".", 0o040755, &[]),
+            ("./bench", 0o100755, b"program bytes"),
+            ("./init", 0o100755, b"program bytes"),
+            ("./dev", 0o040755, &[]),
+            ("./dev/console", 0o020600, &[]),
+            ("./dev/null", 0o020666, &[]),
+            ("./data", 0o100644, b"file data"),
+        ])
+    }
+
+    #[test]
+    fn resolves_an_absolute_path() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        let entry = archive
+            .resolve(b"/data")
+            .expect("valid path")
+            .expect("entry");
+        assert_eq!(entry.data(), b"file data");
+        assert_eq!(entry.mode(), 0o100644);
+        assert!(!entry.is_executable());
+    }
+
+    #[test]
+    fn reports_a_path_that_does_not_exist() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        assert_eq!(archive.resolve(b"/missing"), Ok(None));
+    }
+
+    #[test]
+    fn ignores_a_trailing_slash_and_dot_components() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        let expected = archive.resolve(b"/bench").expect("valid path");
+        assert_eq!(archive.resolve(b"/bench/"), Ok(expected));
+        assert_eq!(archive.resolve(b"//bench/./"), Ok(expected));
+        assert_eq!(archive.resolve(b"/dev/../bench"), Ok(expected));
+    }
+
+    #[test]
+    fn rejects_a_path_that_climbs_above_the_root() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        assert_eq!(
+            archive.resolve(b"/../etc/passwd"),
+            Err(PathError::EscapesRoot)
+        );
+        assert_eq!(
+            archive.resolve(b"/dev/../../etc"),
+            Err(PathError::EscapesRoot)
+        );
+    }
+
+    #[test]
+    fn rejects_a_relative_path() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        assert_eq!(archive.resolve(b"data"), Err(PathError::NotAbsolute));
+        assert_eq!(archive.resolve(b""), Err(PathError::NotAbsolute));
+    }
+
+    #[test]
+    fn resolves_the_two_device_nodes() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        let console = archive
+            .resolve(b"/dev/console")
+            .expect("valid path")
+            .expect("console");
+        assert!(console.is_character_device());
+        assert_eq!(console.mode(), 0o020600);
+        let null = archive
+            .resolve(b"/dev/null")
+            .expect("valid path")
+            .expect("null");
+        assert!(null.is_character_device());
+        assert_eq!(null.mode(), 0o020666);
+    }
+
+    #[test]
+    fn resolves_the_root_directory() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        let root = archive.resolve(b"/").expect("valid path").expect("root");
+        assert!(root.is_directory());
+        let dev = archive.resolve(b"/dev/").expect("valid path").expect("dev");
+        assert!(dev.is_directory());
+    }
+
+    #[test]
+    fn reports_every_entry() {
+        let bytes = benchmark_archive();
+        let archive = Archive::parse(&bytes).expect("valid archive");
+        assert_eq!(archive.entry_count(), 7);
+        assert_eq!(archive.file_count(), 3);
     }
 }
