@@ -103,6 +103,33 @@ M0 links the kernel identity-mapped at physical `0x100000`, so virtual and
 physical addresses coincide and the note descriptor is directly the link
 address. Relocation to the higher half happens in M2.
 
+## Runtime sequence
+
+The boot path is deterministic and asserted by CI:
+
+```text
+MadRust: x86_64 kernel, M1
+[boot] hvm_start_info at 0x...: version=1 flags=0x0 modules=0
+[mem] 9 memory map entries
+[mem] RAM 0x000000000000 - 0x0000000009fc00 (639 KiB)
+[mem] RAM 0x00000000100000 - 0x00001ffdf000 (523132 KiB)
+[mem] total usable RAM: 536341504 bytes (511 MiB)
+[cpu] vendor: AuthenticAMD
+[arch] GDT and TSS loaded
+[arch] IDT loaded
+[irq] PIC remapped, IRQ0 unmasked
+[irq] PIT programmed at 100 Hz
+EXCEPTION 0 DIV0 RIP=0x...
+MadRust: exception survived
+TICKS 100
+MadRust: boot OK
+```
+
+The `DIV0` line comes from a deliberate fault injection that proves the
+exception path saves the full register context, reports the faulting RIP and
+returns to the interrupted code. QEMU then exits with status 33 through the
+`isa-debug-exit` device.
+
 ## Debugging
 
 ```sh

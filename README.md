@@ -1,5 +1,7 @@
 # MadRust
 
+[![CI](https://github.com/NicolasBecasAzagra/MadRust/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasBecasAzagra/MadRust/actions/workflows/ci.yml)
+
 A Linux-ABI-compatible operating system kernel written entirely in Rust.
 
 MadRust is a from-scratch x86_64 kernel that speaks the Linux userspace ABI: the
@@ -15,7 +17,7 @@ SPDX headers below.
 
 | Milestone | Goal | State |
 |---|---|---|
-| M0 | Boot under QEMU, print to serial | in progress |
+| M0 | Boot under QEMU, print to serial | done |
 | M1 | GDT/TSS/IDT, PIC, PIT, panic handler | planned |
 | M2 | Physical memory, paging, direct map, heap | planned |
 | M3 | Kernel threads, preemptive scheduler | planned |

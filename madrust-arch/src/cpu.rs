@@ -62,6 +62,17 @@ mod imp {
         cpuid_subleaf(leaf, 0)
     }
 
+    /// Read CR2, the faulting linear address of the last page fault.
+    pub fn read_cr2() -> u64 {
+        let value: u64;
+        // SAFETY: `mov` from CR2 only reads a control register into a general
+        // purpose register and has no memory side effects.
+        unsafe {
+            asm!("mov {}, cr2", out(reg) value, options(nomem, nostack, preserves_flags));
+        }
+        value
+    }
+
     /// Halt the CPU until the next interrupt.
     pub fn hlt() {
         // SAFETY: `hlt` only stops instruction retirement; it has no memory
@@ -133,6 +144,11 @@ mod imp {
         cpuid_subleaf(0, 0)
     }
 
+    /// Host stub: reports zero bytes read.
+    pub fn read_cr2() -> u64 {
+        0
+    }
+
     /// Host stub: does nothing.
     pub fn hlt() {}
 
@@ -150,4 +166,6 @@ mod imp {
     }
 }
 
-pub use imp::{cpuid, cpuid_subleaf, disable_interrupts, enable_interrupts, halt_loop, hlt, Cpuid};
+pub use imp::{
+    cpuid, cpuid_subleaf, disable_interrupts, enable_interrupts, halt_loop, hlt, read_cr2, Cpuid,
+};

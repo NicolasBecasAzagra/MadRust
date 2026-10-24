@@ -72,3 +72,5 @@ jobs:
           test "$status" -eq 33
           grep -q "MadRust: boot OK" serial.log
           grep -q "\[mem\] RAM" serial.log
+          grep -q "DIV0" serial.log
+          grep -q "TICKS 100" serial.log

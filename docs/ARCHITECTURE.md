@@ -8,6 +8,20 @@ userland. It is not a general-purpose distribution, it does not replace Linux,
 and it is not production ready. Its purpose is to produce a kernel that other
 people can read, learn from, and measure.
 
+## Current state
+
+Milestones M0 and M1 are implemented, verified locally and asserted in CI:
+
+- M0: the kernel boots under QEMU through the Xen PVH handover, reports the
+  physical memory map and the CPU vendor over the serial line, and exits with
+  a deterministic status.
+- M1: exceptions are delivered with the full register context and are
+  recoverable, the 8259 PIC is remapped, the PIT drives a 100 Hz tick, the
+  double fault has its own stack, and the boot ends after 100 ticks.
+
+The next milestone is M2: physical memory management, a higher-half kernel
+with a direct map, and a kernel heap.
+
 ## Repository layout
 
 A cargo workspace with one crate per concern:
@@ -49,6 +63,20 @@ crate with one function does not exist yet.
   kernel use and its interrupt-safety guarantees are weaker.
 - **Panic:** print the faulting RIP, the saved registers and the fault address,
   then halt. Do not attempt to kill a single thread.
+- **Exceptions are fatal by default.** The only recoverable exception is the
+  divide-by-zero injected by the fault injection test, and only when the
+  faulting RIP matches the registered trigger instruction. Every other
+  exception prints the vector, a readable name and the RIP, and then stops
+  the kernel: returning to the faulting instruction would repeat the same
+  fault forever. A page fault additionally reports CR2.
+- **Interrupts:** the 8259 PIC is remapped to vectors 0x20-0x2F so that
+  hardware interrupts never collide with CPU exceptions, and only the timer
+  line is unmasked. The PIT channel 0 generates a 100 Hz tick. The double
+  fault runs on its own stack through IST1, so a broken kernel stack does not
+  turn a fault into an undiagnosed triple fault.
+- **Interrupt stubs are generated.** `scripts/gen-isrs.sh` regenerates
+  `madrust-kernel/src/isrs.s` from the table of vectors that push an error
+  code. The file is never edited by hand.
 - **Testability:** hardware sits behind traits (`Serial`, `Clock`, `Interrupt`);
   pure logic lives in crates that run on the host under `cargo test`. The
   on-target test suite runs inside QEMU and asserts over the serial log.

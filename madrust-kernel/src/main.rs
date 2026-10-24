@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MadRust x86_64 kernel entry point (milestone M0).
+//! MadRust x86_64 kernel entry point (milestone M1).
 //!
 //! Boots through the Xen PVH protocol: QEMU jumps to `_start32`, the 32-bit
-//! trampoline enables long mode and calls [`_start`].
+//! trampoline enables long mode and calls [`_start`]. The kernel then installs
+//! a GDT with a TSS, an IDT with recoverable exception stubs, remaps the 8259
+//! PIC and programs the PIT to run at 100 Hz before enabling interrupts.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod console;
+mod fault;
 mod gdt;
 mod idt;
+mod pic;
+mod pit;
 
 use core::fmt::Write as _;
 
@@ -34,10 +39,8 @@ core::arch::global_asm!(include_str!("isrs.s"), options(att_syntax));
 unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
     let uart = console();
     uart.init();
-    gdt::init();
-    idt::init();
 
-    kprintln!("MadRust: x86_64 kernel, M0");
+    kprintln!("MadRust: x86_64 kernel, M1");
 
     if start_info.is_null() {
         kprintln!("MadRust: boot FAILED: null hvm_start_info");
@@ -45,7 +48,7 @@ unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
     }
 
     // SAFETY: the PVH loader guarantees a valid `hvm_start_info` at the address
-    // it passed in EBX, and M0 runs with identity-mapped memory, so the
+    // it passed in EBX, and the kernel runs with identity-mapped memory, so the
     // physical address is also a valid virtual address.
     let start = unsafe { &*start_info };
 
@@ -109,6 +112,24 @@ unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
         core::str::from_utf8(&vendor_text).unwrap_or("unknown")
     );
 
+    gdt::init();
+    kprintln!("[arch] GDT and TSS loaded");
+    idt::init();
+    kprintln!("[arch] IDT loaded");
+    pic::init();
+    kprintln!("[irq] PIC remapped, IRQ0 unmasked");
+    pit::init();
+    kprintln!("[irq] PIT programmed at {} Hz", pit::TICK_HZ);
+
+    fault::trigger_divide_by_zero();
+    kprintln!("MadRust: exception survived");
+
+    cpu::enable_interrupts();
+    while pit::ticks() < pit::TICK_HZ {
+        cpu::hlt();
+    }
+
+    kprintln!("TICKS 100");
     kprintln!("MadRust: boot OK");
 
     uart.flush();
