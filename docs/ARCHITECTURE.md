@@ -87,6 +87,50 @@ the kernel can run a distribution init instead of a single program. Before the
 benchmark phase, the frame metadata has to become dynamic so the kernel can
 use more than 1 GiB of RAM (see the limits below).
 
+## The endgame: serving a real model
+
+The project exists to make one measurement that matters for the workloads of
+the next decade: what does the kernel cost an inference server.
+
+The final artefact is a real language model, served by a real inference
+runtime written in Rust, measured against the same runtime and the same model
+on mainline Linux, in the same virtual machine, with the same flags. The
+numbers are tokens per second and the time to the first token.
+
+The plan, in the order it has to happen:
+
+1. **Dynamic frame metadata.** A model is hundreds of megabytes; a guest that
+   cannot describe more than 1 GiB of memory cannot hold one.
+2. **A read only file system over the initramfs.** The archive is already
+   parsed, so exposing its files through `openat`, `read` and `lseek` is what
+   turns the initramfs into something a model file can be loaded from.
+3. **Large pages.** Weights are faulted in page by page today. Mapping them
+   with 2 MiB pages cuts the number of faults by a factor of 512, and it is
+   the single change that matters most for loading a model.
+4. **A scheduler with a better tail.** The threads workload is the one
+   measurement where MadRust loses. Inference servers batch requests, and
+   batching lives or dies on the latency of the tail, not on the average.
+5. **The runtime.** A forward pass in Rust: the tokenizer, the weights in
+   half precision, the layers, the sampler. The prompt is encoded ahead of
+   time, so the runtime only has to decode.
+6. **The measurement.** Tokens per second, time to the first token, and the
+   cost of the page faults that stream the weights, for both kernels.
+
+Two things this plan deliberately does not do:
+
+- It does not replace Linux for AI training. Nobody is going to run a
+  training cluster on this kernel, and pretending otherwise would be a lie
+  with a benchmark attached.
+- It does not claim a general performance advantage. The claim is narrow and
+  measurable: for a single tenant inference server, a kernel that does less
+  work per operation and faults weights in with large pages costs less per
+  token, and the numbers are published with the losses.
+
+The model for the first run is a small one, so that the whole pipeline fits
+in a guest that the kernel can describe: a character or byte level story
+model of a few tens of megabytes, with weights in half precision. Once the
+pipeline is proven, a larger model is a change of size, not of architecture.
+
 ## Repository layout
 
 A cargo workspace with one crate per concern:

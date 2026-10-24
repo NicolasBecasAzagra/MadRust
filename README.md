@@ -18,14 +18,15 @@ SPDX headers below.
 | Milestone | Goal | State |
 |---|---|---|
 | M0 | Boot under QEMU, print to serial | done |
-| M1 | GDT/TSS/IDT, PIC, PIT, panic handler | planned |
+| M1 | GDT/TSS/IDT, PIC, PIT, panic handler | done |
 | M2 | Physical memory, paging, direct map, heap | done |
+| M2c | Dynamic frame metadata, guests larger than 1 GiB | in progress |
 | M3 | Kernel threads, preemptive scheduler | done |
 | M4 | Syscalls, ELF loader, static userland | done |
 | M5 | VFS, initramfs, pipes, fork/exec/wait | planned |
 | M6 | Dynamic linking (musl), read-only ext2 | planned |
 | M7 | Signals, full tty, shell test suite | planned |
-| M8 | Benchmark harness and public report | planned |
+| M8 | Benchmark harness and public report | done (first results published) |
 | M9 | SMP (LAPIC/IOAPIC) | planned |
 
 Exit criteria for each milestone are objective and machine-checkable. See
