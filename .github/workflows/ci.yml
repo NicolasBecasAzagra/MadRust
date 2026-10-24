@@ -51,7 +51,7 @@ jobs:
           SYSROOT="$(rustc --print sysroot)"
           HOST="$(rustc -vV | sed -n 's/^host: //p')"
           READOBJ="$SYSROOT/lib/rustlib/$HOST/bin/llvm-readobj"
-          "$READOBJ" --notes target/x86_64-madrust/release/madrust-kernel | tee note.txt
+          "$READOBJ" --notes "$(make -s print-kernel-path)" | tee note.txt
           # The note owner and type are what QEMU looks for; the wording of the
           # tool output changes between LLVM releases, so match on the values.
           grep -q 'Xen' note.txt
@@ -62,7 +62,7 @@ jobs:
           set +e
           # A broken kernel would hang here forever, so the boot is bounded.
           timeout 60 qemu-system-x86_64 -M q35 -m 512M \
-            -kernel target/x86_64-madrust/release/madrust-kernel \
+            -kernel "$(make -s print-kernel-path)" \
             -display none -monitor none -no-reboot \
             -serial file:serial.log \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04

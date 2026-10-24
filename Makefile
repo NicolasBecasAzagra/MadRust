@@ -45,7 +45,11 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland
+.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland print-kernel-path
+
+# The path of the built kernel, so the CI does not have to repeat it.
+print-kernel-path:
+	@echo $(KERNEL)
 
 all: build
 
