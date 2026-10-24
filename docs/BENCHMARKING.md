@@ -82,15 +82,16 @@ The QEMU configuration is identical for both kernels:
 -display none -monitor none -no-reboot -serial file:<log>
 ```
 
-One processor and 512 MiB, because the kernel is uniprocessor today and the
-frame metadata describes 1 GiB at most. The CPU model is fixed on purpose:
-`-cpu host` changes between machines and invalidates the comparison. Mainline
-needs `console=ttyS0` so that its output reaches the same serial line; MadRust
-ignores the command line. The initramfs is an uncompressed `cpio` archive,
-which both kernels accept, so the bytes handed to the two kernels are
-identical. It carries the program and the `/dev/console` and `/dev/null`
-nodes, because a mainline kernel does not mount a device file system on an
-initramfs.
+One processor and 512 MiB, because the kernel is uniprocessor today. The
+kernel can describe up to 32 GiB of guest memory, so a larger guest is
+possible, but the number of processors is a property of the kernel and not of
+the rig. The CPU model is fixed on purpose: `-cpu host` changes between
+machines and invalidates the comparison. Mainline needs `console=ttyS0` so
+that its output reaches the same serial line; MadRust ignores the command
+line. The initramfs is an uncompressed `cpio` archive, which both kernels
+accept, so the bytes handed to the two kernels are identical. It carries the
+program and the `/dev/console` and `/dev/null` nodes, because a mainline
+kernel does not mount a device file system on an initramfs.
 
 ### Workloads
 
@@ -103,15 +104,24 @@ measurement. It runs on both kernels without modification.
 | `mmap` | Cost of mapping and touching a region, per MiB |
 | `futex` | Cost of a futex round trip between two threads |
 | `threads` | Wall clock time of several threads doing a fixed amount of work |
+| `weights` | Cost of faulting in a 256 MiB region, per MiB |
+| `weights-tail` | The slowest single page fault of that region, in nanoseconds |
 
 The binary prints one `RESULT <workload> <value> <unit>` line per
 measurement, and `BENCH DONE` at the end. A measurement that the kernel
 refuses is printed with the error value, so an incomplete kernel produces
 data instead of silence.
 
+`weights` and `weights-tail` are the proxy for the dominant kernel cost of
+loading a model: there is no file system yet, so the anonymous mapping is
+the honest equivalent, mapping a fixed 256 MiB region and touching one byte
+in every page. The region is fixed at an address and the sample count is
+five, because every sample faults 65536 pages.
+
 ### Protocol
 
-- At least 30 iterations per workload per kernel.
+- At least 30 iterations per workload per kernel, and five for the two
+  workloads that fault 65536 pages each.
 - Every iteration is recorded, including the ones that failed. Nothing is
   discarded, nothing is retried until it looks good.
 - The raw data is one CSV per kernel, with one row per iteration: workload,

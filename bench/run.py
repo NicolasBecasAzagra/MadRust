@@ -34,18 +34,27 @@ import time
 from pathlib import Path
 from typing import Any
 
+DEFAULT_ITERATIONS = 30
+
+# The weights workload touches 65 536 pages per sample, so it prints fewer
+# samples than the others and still finishes in a few seconds under emulation.
+WEIGHTS_ITERATIONS = 5
+
+# Every workload the binary prints, with its unit and the number of samples one
+# boot must produce. `weights` prints two lines per sample: the cost per MiB and
+# the slowest single page.
 WORKLOADS = {
-    "syscall": "ns/op",
-    "mmap": "ns/MiB",
-    "futex": "ns/roundtrip",
-    "threads": "ns/total",
+    "syscall": ("ns/op", DEFAULT_ITERATIONS),
+    "mmap": ("ns/MiB", DEFAULT_ITERATIONS),
+    "weights": ("ns/MiB", WEIGHTS_ITERATIONS),
+    "weights-tail": ("ns/page", WEIGHTS_ITERATIONS),
+    "futex": ("ns/roundtrip", DEFAULT_ITERATIONS),
+    "threads": ("ns/total", DEFAULT_ITERATIONS),
 }
 
 RESULT_RE = re.compile(
     r"^RESULT\s+(?P<workload>\S+)\s+(?:(?P<error>ERR)\s+)?(?P<value>-?\d+)(?:\s+(?P<unit>\S+))?\s*$"
 )
-
-DEFAULT_ITERATIONS = 30
 
 
 def repo_root() -> Path:
@@ -208,7 +217,7 @@ def run_once(
     return command, read_log(log)
 
 
-def parse_results(label: str, text: str, expected: int) -> list[dict[str, Any]]:
+def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen = {name: 0 for name in WORKLOADS}
 
@@ -221,7 +230,7 @@ def parse_results(label: str, text: str, expected: int) -> list[dict[str, Any]]:
             continue
         iteration = seen[workload]
         seen[workload] = iteration + 1
-        unit = match.group("unit") or WORKLOADS[workload]
+        unit = match.group("unit") or WORKLOADS[workload][0]
         error = match.group("error")
         if error:
             rows.append(
@@ -250,8 +259,8 @@ def parse_results(label: str, text: str, expected: int) -> list[dict[str, Any]]:
 
     # A workload that produced fewer lines than the guest was asked for did not
     # finish. Record the missing samples instead of silently shrinking the set.
-    for workload, unit in WORKLOADS.items():
-        for iteration in range(seen[workload], expected):
+    for workload, (unit, _) in WORKLOADS.items():
+        for iteration in range(seen[workload], expected[workload]):
             rows.append(
                 {
                     "kernel": label,
@@ -284,7 +293,7 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     table: list[dict[str, Any]] = []
     kernels = sorted({row["kernel"] for row in rows})
     for kernel in kernels:
-        for workload, unit in WORKLOADS.items():
+        for workload, (unit, _) in WORKLOADS.items():
             selected = [
                 row
                 for row in rows
@@ -367,8 +376,11 @@ def main() -> int:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=DEFAULT_ITERATIONS,
-        help="samples the workload is expected to print per workload",
+        default=None,
+        help=(
+            "override the samples the workload is expected to print per "
+            "workload, instead of the per-workload defaults"
+        ),
     )
     parser.add_argument("--timeout", type=float, default=180.0, help="seconds per boot")
     parser.add_argument("--qemu", default="qemu-system-x86_64")
@@ -408,6 +420,11 @@ def main() -> int:
         out_dir = root / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    expected = {
+        name: args.iterations if args.iterations is not None else samples
+        for name, (_, samples) in WORKLOADS.items()
+    }
+
     metadata: dict[str, Any] = {
         "qemu": qemu_version(args.qemu),
         "accel": args.accel,
@@ -415,7 +432,7 @@ def main() -> int:
         "initrd": {"path": str(initrd), "sha256": sha256(initrd)},
         "kernels": {},
         "commands": {},
-        "iterations_expected": args.iterations,
+        "iterations_expected": expected,
         "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -437,7 +454,7 @@ def main() -> int:
             append_extra,
         )
         metadata["commands"][label] = shlex.join(command)
-        rows = parse_results(label, text, args.iterations)
+        rows = parse_results(label, text, expected)
         write_csv(out_dir / f"{label}.csv", rows)
         all_rows.extend(rows)
         ok = sum(1 for row in rows if row["status"] == "ok")

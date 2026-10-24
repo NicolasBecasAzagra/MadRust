@@ -21,6 +21,9 @@
 //!   round trip.
 //! * `threads`: four threads do a fixed amount of arithmetic, reported as the
 //!   wall clock time of the whole spawn, run and join sequence.
+//! * `weights`: map a large fixed region and touch every page, reported as ns
+//!   per MiB and as the slowest single page in ns. It stands in for faulting
+//!   model weights in, because MadRust has no file system yet.
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::hint::black_box;
@@ -47,6 +50,28 @@ const THREAD_WORK: u64 = 200_000;
 /// Bytes mapped for one user thread stack.
 const STACK_BYTES: usize = 256 * 1024;
 
+/// Bytes the weights workload maps and touches per sample.
+///
+/// The guest has 512 MiB of RAM, so the region takes half of it: large enough
+/// that the fault in path dominates the measurement, small enough that both
+/// kernels can hold it without exhausting memory.
+const WEIGHTS_BYTES: usize = 256 * 1024 * 1024;
+
+/// Samples of the weights workload.
+///
+/// One sample touches 65 536 pages, so a sample costs far more than the other
+/// workloads. Five samples finish in a few seconds under emulation.
+const WEIGHTS_ITERATIONS: usize = 5;
+
+/// Fixed base address of the weights mapping.
+///
+/// `MAP_FIXED` puts every sample at the same address, so the two kernels and
+/// consecutive samples see the same virtual range.
+const WEIGHTS_BASE: u64 = 0x0000_0010_0000_0000;
+
+/// How long the timestamp calibration runs.
+const CALIBRATION_MICROS: u64 = 5_000;
+
 /// Page size the workloads assume; both kernels use 4 KiB pages.
 const PAGE_SIZE: usize = 4096;
 
@@ -59,6 +84,7 @@ const SYS_FUTEX: u64 = 202;
 const PROT_READ: u64 = 1;
 const PROT_WRITE: u64 = 2;
 const MAP_PRIVATE: u64 = 2;
+const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
 
 const FUTEX_WAIT: u64 = 0;
@@ -267,6 +293,28 @@ fn map(length: usize) -> Result<u64, i64> {
     }
 }
 
+/// Map `length` anonymous bytes at a fixed address.
+fn map_at(address: u64, length: usize) -> Result<u64, i64> {
+    // SAFETY: mmap takes six arguments; the descriptor is -1 because the
+    // mapping is anonymous, and MAP_FIXED places it at `address`.
+    let mapped = unsafe {
+        syscall6(
+            SYS_MMAP,
+            address,
+            length as u64,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            u64::MAX,
+            0,
+        )
+    };
+    if mapped < 0 {
+        Err(mapped)
+    } else {
+        Ok(mapped as u64)
+    }
+}
+
 /// Remove a mapping created by [`map`].
 fn unmap(address: u64, length: usize) {
     // SAFETY: the range came from `map` with the same length.
@@ -346,6 +394,77 @@ fn measure_mmap() -> Result<u128, i64> {
     unmap(base, MMAP_BYTES);
     let mib = (MMAP_BYTES / (1024 * 1024)) as u128;
     Ok(elapsed / mib)
+}
+
+/// One timestamp counter reading.
+///
+/// The counter is free in ring 3 and cheap enough to bracket every page, which
+/// a clock system call is not on a kernel without a vDSO.
+fn ticks() -> u64 {
+    // SAFETY: RDTSC is unprivileged on every x86_64 kernel here.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Nanoseconds per timestamp counter tick, measured once per run.
+#[derive(Clone, Copy)]
+struct TickScale {
+    ticks: u64,
+    nanos: u128,
+}
+
+impl TickScale {
+    /// Measure the counter frequency against the monotonic clock.
+    fn measure() -> Self {
+        let start = Instant::now();
+        let first = ticks();
+        while start.elapsed().as_micros() < u128::from(CALIBRATION_MICROS) {
+            core::hint::spin_loop();
+        }
+        let last = ticks();
+        Self {
+            ticks: last.wrapping_sub(first).max(1),
+            nanos: start.elapsed().as_nanos().max(1),
+        }
+    }
+
+    /// Convert a counter delta to nanoseconds.
+    fn to_nanos(self, delta: u64) -> u128 {
+        u128::from(delta) * self.nanos / u128::from(self.ticks)
+    }
+}
+
+/// `weights`: map a large region, touch every page, drop it.
+///
+/// The page fault path is the dominant kernel cost of loading a model. With no
+/// file system, the anonymous mapping is the honest proxy: map the region and
+/// touch one byte in every 4 KiB page. Returns the cost per MiB and the slowest
+/// single page, both in nanoseconds.
+fn measure_weights(scale: TickScale) -> Result<(u128, u128), i64> {
+    let start = Instant::now();
+    let base = map_at(WEIGHTS_BASE, WEIGHTS_BYTES)?;
+
+    let mut slowest = 0u128;
+    let mut offset = 0;
+    while offset < WEIGHTS_BYTES {
+        let before = ticks();
+        // SAFETY: the page was just mapped read-write and the offset stays
+        // inside the region.
+        unsafe {
+            let page = (base as usize + offset) as *mut u8;
+            let value = core::ptr::read_volatile(page);
+            core::ptr::write_volatile(page, value.wrapping_add(1));
+        }
+        let page_nanos = scale.to_nanos(ticks().wrapping_sub(before));
+        if page_nanos > slowest {
+            slowest = page_nanos;
+        }
+        offset += PAGE_SIZE;
+    }
+
+    let elapsed = start.elapsed().as_nanos();
+    unmap(base, WEIGHTS_BYTES);
+    let mib = (WEIGHTS_BYTES / (1024 * 1024)) as u128;
+    Ok((elapsed / mib, slowest))
 }
 
 /// Entry of the second futex thread: it answers every round of the parent.
@@ -481,6 +600,12 @@ fn main() {
     }
     for _ in 0..ITERATIONS {
         report("mmap", "ns/MiB", measure_mmap());
+    }
+    let scale = TickScale::measure();
+    for _ in 0..WEIGHTS_ITERATIONS {
+        let result = measure_weights(scale);
+        report("weights", "ns/MiB", result.map(|sample| sample.0));
+        report("weights-tail", "ns/page", result.map(|sample| sample.1));
     }
     for _ in 0..ITERATIONS {
         report("futex", "ns/roundtrip", measure_futex());
