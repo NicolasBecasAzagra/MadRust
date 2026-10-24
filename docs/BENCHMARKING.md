@@ -125,23 +125,56 @@ data instead of silence.
   the timer interrupt. The timer alone ticks at 100 Hz, which would quantise
   every measurement to 10 ms and make the results meaningless.
 
-### First baseline
+### First results
 
-The rig has produced MadRust only numbers so far, on a Mac under emulation
-with a single processor. They are the baseline to compare against, not a
-comparison:
+The rig has produced a first comparison: MadRust against Linux 7.3.0, one
+processor, 512 MiB, thirty iterations per workload, under emulation with no
+hardware acceleration.
 
 ```text
-workload   median      p99       stddev   unit
-syscall    231.00      297.00    23.90    ns/op
-mmap       2221819.00  3654837.00  672448.19  ns/MiB
-futex      3839.00     23517.00  3532.99  ns/roundtrip
-threads    1478253.50  1695191.00 53820.39  ns/total
+workload   MadRust    mainline    mainline (mitigations=off)
+syscall     231 ns      9820 ns          661 ns
+mmap      2.24 ms/MiB  8.00 ms/MiB     3.44 ms/MiB
+futex     3.93 us/rt  136.4 us/rt      31.4 us/rt
+threads   1.535 ms     1.640 ms        1.029 ms
 ```
 
-Every one of these numbers is an emulation artefact until the same workload
-runs on mainline under the same flags. The raw rows are in
-`bench/results/`.
+Median values. The 99th percentile and the standard deviation of every
+configuration are in `bench/results/summary.csv`, and every raw iteration is
+in the per kernel CSV files next to it.
+
+**What these numbers are.** The default mainline column is not a kernel
+comparison: a default mainline kernel reloads CR3 on every system call to
+isolate the page tables, and under emulation that flush invalidates the
+translator cache, which is why the number is two orders of magnitude away.
+The honest comparison is the third column, where the reference kernel runs
+with the same mitigations disabled that MadRust never implements.
+
+**What the comparison supports.** With the mitigations disabled on both
+sides, MadRust spends about a third of what mainline spends on a system
+call, half as much on mapping and touching memory, and an eighth on a futex
+round trip. Those differences come from doing less work per operation: no
+page table isolation machinery, no LSM and auditing hooks, no virtual memory
+accounting and a much simpler futex path. The structural claim holds on any
+host, because it is about the work the kernel performs.
+
+**What the comparison does not support.** MadRust is 1.5 times *slower* on
+the threads workload, and that loss is published with the same rig and the
+same raw data. The scheduler is a round robin with a ten millisecond tick,
+while mainline picks a runnable thread with a far more elaborate policy, and
+that shows up in a workload with several runnable threads. The claim this
+project can make today is about the cost of a single operation, not about
+scheduling quality.
+
+**What has to change before these numbers say anything about hardware.**
+Everything above was produced by an emulator, where every guest instruction
+is translated and the fixed cost of that translation is common to both
+kernels. The difference between the columns is the kernel side work, but the
+ratios are inflated by the overhead the emulator adds to both. A run with
+hardware acceleration is required before any statement about wall clock
+performance. The clock source differs as well: mainline reads the time stamp
+counter through the vDSO, MadRust through a system call, which costs MadRust
+one system call per measurement point.
 
 ### What the numbers mean
 

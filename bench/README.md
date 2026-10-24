@@ -29,6 +29,25 @@ When the mainline image exists, pass both kernels:
 bench/run.py --madrust target/.../madrust-kernel --mainline /path/to/bzImage
 ```
 
+The reference image has to carry the Xen PVH note, or QEMU refuses a 64-bit
+ELF kernel. `bench/prepare-mainline.sh` builds one with `CONFIG_PVH=y`.
+
+The methodology requires the mitigation configuration of the reference kernel
+to be published next to the default one, so add it as a variant:
+
+```sh
+bench/run.py --madrust target/.../madrust-kernel \
+             --mainline artifacts/vmlinux \
+             --mainline-variant "nomitig=mitigations=off"
+```
+
+A default mainline kernel reloads CR3 on every system call to isolate the
+page tables. Under emulation that flush invalidates the translator cache and
+inflates the cost of a system call by two orders of magnitude, which says
+nothing about the kernel. The variant disables the mitigations on the
+reference side, which is the fair comparison against a kernel that never
+implements them.
+
 Every run writes into `bench/results/` by default (or `--out DIR`):
 
 ```text

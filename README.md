@@ -46,6 +46,29 @@ measurable one. MadRust publishes a narrow, defensible claim instead:
 
 The methodology is specified in [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 
+### First measurement
+
+MadRust against Linux 7.3.0, one processor, 512 MiB, thirty iterations per
+workload, under emulation:
+
+| Workload | MadRust | mainline | mainline, mitigations off |
+|---|---|---|---|
+| system call | 231 ns | 9820 ns | 661 ns |
+| map and touch memory | 2.24 ms/MiB | 8.00 ms/MiB | 3.44 ms/MiB |
+| futex round trip | 3.93 us | 136.4 us | 31.4 us |
+| threads | 1.535 ms | 1.640 ms | 1.029 ms |
+
+With the mitigations disabled on both sides, MadRust spends about a third of
+what mainline spends on a system call and an eighth on a futex round trip,
+because it does much less work per operation. It is **1.5 times slower** on
+the threads workload, and that loss is published with the same raw data.
+
+Every number above was produced by an emulator, so the ratios are inflated
+by the translation overhead both kernels pay. A run with hardware acceleration
+is required before any statement about wall clock performance. The full
+reading, the caveats and the raw iterations are in
+[docs/BENCHMARKING.md](docs/BENCHMARKING.md) and in `bench/results/`.
+
 ## Build and run
 
 Requirements:
