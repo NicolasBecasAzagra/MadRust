@@ -11,6 +11,10 @@
 #   OUTPUT  archive to write, default bench/initramfs.cpio
 #   BINARY  workload to pack, default madrust-bench/madrust-bench.elf
 #
+# EXTRA_DIR, when set, adds every regular file in that directory to the archive
+# root. The inference runtime uses it for /model.safetensors, /vocab.json and
+# /config.json. The names `bench` and `init` are reserved for the workload.
+#
 # The script builds the binary with `make bench` when it is missing. `cpio` and
 # `find` are the only external tools; the archive is not compressed, so both
 # kernels read exactly the same bytes.
@@ -43,6 +47,24 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 cp "$binary" "$work/bench"
 cp "$binary" "$work/init"
 chmod 755 "$work/bench" "$work/init"
+
+if [ -n "${EXTRA_DIR:-}" ]; then
+    if [ ! -d "$EXTRA_DIR" ]; then
+        echo "mkinitramfs: EXTRA_DIR is not a directory: $EXTRA_DIR" >&2
+        exit 1
+    fi
+    for extra in "$EXTRA_DIR"/*; do
+        [ -f "$extra" ] || continue
+        name=${extra##*/}
+        case $name in
+            bench|init)
+                echo "mkinitramfs: EXTRA_DIR must not provide $name" >&2
+                exit 1
+                ;;
+        esac
+        cp "$extra" "$work/$name"
+    done
+fi
 
 # Mainline opens /dev/console before it execs /init. A distro kernel does not
 # mount devtmpfs for an initramfs, so the archive has to carry the node or the

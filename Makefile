@@ -47,6 +47,18 @@ BENCH_FLAGS := --manifest-path madrust-bench/Cargo.toml \
 	--target $(USER_TARGET) \
 	--target-dir $(TARGET_DIR)/bench
 
+# The inference runtime is a third standard library program, built exactly like
+# the workload. Its synthetic model, vocabulary and config are packed into the
+# same kind of initramfs, so the kernel runs it unmodified.
+INFER_DIR := madrust-infer
+INFER_ELF := $(INFER_DIR)/madrust-infer.elf
+INFER_TARGET_DIR := $(TARGET_DIR)/infer
+INFER_FLAGS := --manifest-path $(INFER_DIR)/Cargo.toml \
+	--target $(USER_TARGET) \
+	--target-dir $(INFER_TARGET_DIR)
+INFER_MODEL_DIR := $(TARGET_DIR)/infer-model
+INFER_INITRAMFS := $(INFER_DIR)/initramfs.cpio
+
 QEMU ?= qemu-system-x86_64
 QEMU_FLAGS := -M q35 -m 512M \
 	-kernel $(KERNEL) \
@@ -54,7 +66,7 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path
+.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path infer infer-model infer-initramfs run-infer
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -78,7 +90,38 @@ bench:
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(BENCH_FLAGS) $(if $(BENCH_FEATURES),--features $(BENCH_FEATURES),)
 	cp $(TARGET_DIR)/bench/$(USER_TARGET)/release/madrust-bench $(BENCH_ELF)
 
-build: userland
+# The inference runtime, built with the same rust-lld recipe as the workload so
+# the same bytes can run on MadRust and on mainline Linux.
+infer:
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(INFER_FLAGS)
+	cp $(INFER_TARGET_DIR)/$(USER_TARGET)/release/madrust-infer $(INFER_ELF)
+
+# The synthetic model is a development tool, built and run on the host. Its
+# output lives outside the repository with the rest of the build products.
+infer-model:
+	$(CARGO) run --release --manifest-path $(INFER_DIR)/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host \
+		--bin madrust-infer-gen -- --out $(INFER_MODEL_DIR)
+
+# One uncompressed cpio archive carrying the runtime at /bench and /init, plus
+# the model, vocabulary and config the runtime opens by path.
+infer-initramfs: infer infer-model
+	EXTRA_DIR=$(INFER_MODEL_DIR) bench/mkinitramfs.sh $(INFER_INITRAMFS) $(INFER_ELF)
+
+run-infer: infer-initramfs build
+	@$(QEMU) -M q35 -m 512M \
+		-kernel $(KERNEL) -initrd $(INFER_INITRAMFS) \
+		-append console=ttyS0 \
+		-display none -monitor none -no-reboot \
+		-serial stdio \
+		-device isa-debug-exit,iobase=0xf4,iosize=0x04; status=$$?; \
+	if [ $$status -eq 33 ]; then \
+		echo "boot OK (QEMU exit status 33)"; \
+	else \
+		echo "unexpected QEMU exit status $$status"; exit $$status; \
+	fi
+
+build: userland infer
 	$(CARGO) build --release $(KERNEL_FLAGS)
 
 run: build
@@ -91,16 +134,20 @@ run: build
 
 test:
 	$(CARGO) test --workspace --target $(HOST_TARGET) --target-dir $(TARGET_DIR) $(HOST_ONLY)
+	$(CARGO) test --manifest-path $(INFER_DIR)/Cargo.toml --lib \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host
 
 fmt:
 	$(CARGO) fmt --all
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml
 	$(CARGO) fmt --manifest-path madrust-bench/Cargo.toml
+	$(CARGO) fmt --manifest-path $(INFER_DIR)/Cargo.toml
 
 fmt-check:
 	$(CARGO) fmt --all -- --check
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path madrust-bench/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path $(INFER_DIR)/Cargo.toml -- --check
 
 # The kernel build reads the embedded user program, so both lint targets need
 # the userland binary to exist.
@@ -108,14 +155,17 @@ clippy: userland
 	$(CARGO) clippy --workspace --bins --lib $(KERNEL_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(USERLAND_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(BENCH_FLAGS) -- -D warnings
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(INFER_FLAGS) --bins --lib -- -D warnings
 
 clippy-host:
 	$(CARGO) clippy --workspace --all-targets --target $(HOST_TARGET) \
 		--target-dir $(TARGET_DIR) $(HOST_ONLY) -- -D warnings
+	$(CARGO) clippy --manifest-path $(INFER_DIR)/Cargo.toml --all-targets \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host -- -D warnings
 
 check: userland
 	$(CARGO) check --workspace --bins --lib $(KERNEL_FLAGS)
 
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
-	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF)
+	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF) $(INFER_ELF) $(INFER_INITRAMFS)

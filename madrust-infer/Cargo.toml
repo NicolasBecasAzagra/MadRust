@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-infer"
+description = "A dependency free Llama-style inference runtime for MadRust and Linux"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+publish = false
+
+# A separate workspace, exactly like the userland and benchmark programs: the
+# runtime is a normal Rust program for the Linux musl target, so it shares
+# neither the kernel target nor the kernel rustflags. The Makefile builds it
+# with rust-lld and packs the static binary into the inference initramfs.
+[workspace]
+
+[lib]
+name = "madrust_infer"
+path = "src/lib.rs"
+test = true
+bench = false
+
+[[bin]]
+name = "madrust-infer"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "madrust-infer-gen"
+path = "src/bin/gen.rs"
+test = false
+bench = false
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false

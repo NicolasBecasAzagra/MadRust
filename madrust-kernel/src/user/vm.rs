@@ -405,6 +405,10 @@ pub fn handle_page_fault(address: u64, error: u64) -> PageFaultOutcome {
     if address >= USER_SPACE_END {
         return PageFaultOutcome::KernelAddress;
     }
+    // CR2 holds the address of the access, not the page. Every page table
+    // operation below works on the page base, so an access in the middle of a
+    // page does not turn the file's physical page into an unaligned address.
+    let address = address & !(PAGE_SIZE - 1);
     // A protection violation means the entry is present: the page exists, the
     // access does not fit it. Never replace such an entry with a new frame.
     if error & PAGE_FAULT_PROTECTION != 0 {

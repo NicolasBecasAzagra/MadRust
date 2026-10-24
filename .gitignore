@@ -8,6 +8,8 @@ target/
 *.log
 madrust-userland/madrust-userland.elf
 madrust-bench/madrust-bench.elf
+madrust-infer/madrust-infer.elf
+madrust-infer/initramfs.cpio
 bench/initramfs.cpio
 artifacts/
 __pycache__/
