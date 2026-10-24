@@ -142,17 +142,19 @@ workload, under emulation with no hardware acceleration. Both kernels fault
 the measured regions lazily, so the comparison is like for like.
 
 ```text
-workload        MadRust     mainline    mainline (mitigations=off)
-syscall         245.5 ns      9581 ns            520 ns
-mmap          1.768 ms/MiB   7.792 ms/MiB     3.263 ms/MiB
-weights       907.6 us/MiB  12.700 ms/MiB     4.117 ms/MiB
-weights-tail  474.8 us/page  1293.4 us/page   572.9 us/page
-futex           3.56 us      128.5 us          24.06 us
-threads        224.7 us      1566.5 us        823.5 us
+workload           MadRust     mainline    mainline (mitigations=off)
+syscall            239.5 ns      9827 ns            516 ns
+mmap             2.723 ms/MiB   8.341 ms/MiB     3.226 ms/MiB
+weights            950087 ns/MiB 13.332 ms/MiB    4.156 ms/MiB
+weights-tail         263525 ns    4649782 ns      2554257 ns
+weights-huge        445463 ns/MiB 14.005 ms/MiB    4.332 ms/MiB
+weights-huge-tail     28234 ns    4799645 ns      1673184 ns
+futex                 3.70 us      136.7 us          27.69 us
+threads              228.0 us      1536.0 us         970.0 us
 ```
 
-Median values, thirty samples each except the two tail measurements, which
-have five. The 99th percentile and the standard deviation of every
+Median values, thirty samples each except the tail measurements, which have
+five and ten. The 99th percentile and the standard deviation of every
 configuration are in `bench/results/summary.csv`, and every raw iteration is in
 the per kernel CSV files next to it.
 
@@ -164,22 +166,36 @@ The honest comparison is the third column, where the reference kernel runs
 with the same mitigations disabled that MadRust never implements.
 
 **What the comparison supports.** With the mitigations disabled on both
-sides, MadRust is about twice as cheap per system call, about twice as cheap
-per MiB mapped and touched, four and a half times as cheap per MiB faulted in,
-seven times as cheap per futex round trip, and three and a half times as fast
-in the thread workload. Those differences come from doing less work per
-operation: no page table isolation machinery, no LSM and auditing hooks, no
-virtual memory accounting, a much simpler futex path, and demand paging that
-does not touch a page the program never reads.
+sides, MadRust is about twice as cheap per system call, a fifth as expensive
+per MiB faulted in with 4 KiB pages, a tenth as expensive per MiB faulted in
+with 2 MiB pages, seven times as cheap per futex round trip and four times as
+fast in the thread workload. The tails are further apart still: the slowest
+single fault is 264 microseconds on MadRust against 2.55 milliseconds on the
+reference, and with 2 MiB pages 14.5 microseconds per fault against 1.67
+milliseconds.
+
+Those differences come from doing less work per operation: no page table
+isolation machinery, no LSM and auditing hooks, no virtual memory accounting,
+a much simpler futex path, and demand paging that does not touch a page the
+program never reads.
+
+**The finding about large pages.** In the reference kernel, large pages are
+not an improvement under emulation: 14.0 ms per MiB with 2 MiB pages against
+13.3 ms with 4 KiB pages. The cost of the big folio, of zeroing it and of the
+compaction bookkeeping eats the benefit of the fewer faults. On MadRust the
+same change is an improvement: 950 microseconds per MiB down to 445, and a tail
+two orders of magnitude shorter. The difference is therefore not that one
+kernel has large pages and the other does not. It is what a large page costs
+when it is faulted in.
 
 **What the comparison does not support.** The two tail measurements have five
-samples each, so their 99th percentile is barely a percentile and their
-medians move by tens of percent between runs. The ratios are inflated by the
-overhead the emulator adds to both kernels, because every guest instruction
-is translated. The clock source differs as well: mainline reads the time
-stamp counter through the vDSO, MadRust through a system call, which costs
-MadRust one system call per measurement point. And one processor with 512 MiB
-is a small machine.
+and ten samples, so their 99th percentile is barely a percentile. The ratios
+are inflated by the overhead the emulator adds to both kernels, because every
+guest instruction is translated. The clock source differs as well: mainline
+reads the time stamp counter through the vDSO, MadRust through a system call,
+which costs MadRust one system call per measurement point. One processor with
+512 MiB is a small machine, and the fast metrics move by around thirty per
+cent between runs of the same binary on the same host.
 
 **An anomaly that is published.** In an earlier run, one of the thirty boots
 of the reference kernel with the mitigations disabled did not finish, and the
@@ -192,24 +208,26 @@ repository: `bench/results/anomaly/` is the run with the missing samples and
 ### Large pages
 
 Mapping the weights with 2 MiB pages instead of 4 KiB ones is the change that
-moves the cost of loading a model the most, and the rig measures both
-regimes on the same kernel:
+moves the cost of loading a model the most, and the rig measures both regimes
+on every kernel:
 
 ```text
-                          MadRust, 4 KiB    MadRust, 2 MiB
-cost per MiB                    896593 ns        435933 ns
-slowest single fault           277732 ns         15646 ns
+                          MadRust     mainline    mainline (mitigations=off)
+cost per MiB, 4 KiB          950087 ns 13.332 ms      4.156 ms
+cost per MiB, 2 MiB          445463 ns 14.005 ms      4.332 ms
+slowest fault, 4 KiB         263525 ns 4649782 ns    2554257 ns
+slowest fault, 2 MiB          28234 ns 4799645 ns    1673184 ns
 ```
 
-Twice the throughput and a tail eighteen times shorter, because 512 faults
-become one. The `weights-huge-tail` figure is the slowest fault divided by the
-512 pages it covers, so it is comparable with the 4 KiB figure.
+On MadRust the large pages halve the cost per MiB and shorten the worst
+fault by more than an order of magnitude, because 512 faults become one and
+the fault that remains is a single large allocation. In the reference kernel
+the same change makes the cost per MiB slightly worse and leaves the tail
+where it was: the price of the large folio, of zeroing it and of the
+bookkeeping around it eats the benefit of the fewer faults.
 
-These numbers are from the MadRust side only and are recorded in
-`bench/results/e2/`. The comparison against mainline has to be run again: the
-reference image was lost with the volume it was on, and the published
-comparison in `bench/results/` was measured with the kernel of the previous
-milestone.
+The `weights-huge-tail` figure is the slowest fault divided by the 512 pages
+it covers, so it is comparable with the 4 KiB figure.
 
 ### A capability difference the rig found
 
@@ -217,19 +235,22 @@ The workload asks the kernel for large pages with `madvise(MADV_HUGEPAGE)`
 and reports what the kernel answers, with `MADV_NORMAL` as the control:
 
 ```text
-mainline: ADV madvise-normal=0 madvise-hugepage=-22
-MadRust:  ADV madvise-normal=0 madvise-hugepage=0
+a reference build without transparent huge pages:
+    ADV madvise-normal=0 madvise-hugepage=-22
+a reference build with them:
+    ADV madvise-normal=0 madvise-hugepage=0
+MadRust:
+    ADV madvise-normal=0 madvise-hugepage=0
 ```
 
-The reference build refuses the advice with `EINVAL`. In the Linux source,
-`MADV_HUGEPAGE` is only a valid advice when `CONFIG_TRANSPARENT_HUGEPAGE` is
-enabled, and the mapping is private and anonymous, so the reference kernel in
-this build cannot be asked for large pages at all.
-
-That is a capability difference, not a performance one, and it is published as
-such: the large page regime cannot be compared against this reference image.
-`bench/prepare-mainline.sh` now enables `CONFIG_TRANSPARENT_HUGEPAGE` in the
-reference build, and the comparison is run again with that image.
+In the Linux source, `MADV_HUGEPAGE` is only a valid advice when
+`CONFIG_TRANSPARENT_HUGEPAGE` is enabled, so a reference build without it
+refuses the request with `EINVAL` and the large page regime cannot be
+compared at all. The first reference image this project used was built that
+way, and the difference was found by the probe rather than by reading the
+configuration. `bench/prepare-mainline.sh` now enables
+`CONFIG_TRANSPARENT_HUGEPAGE` in the reference build, so the comparison runs
+against a kernel that has the feature.
 
 ### What the numbers mean
 

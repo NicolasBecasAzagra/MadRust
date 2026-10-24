@@ -12,7 +12,7 @@
     },
     "initrd": {
       "path": "/Volumes/PortableSSD/MadRust/bench/initramfs.cpio",
-      "sha256": "1768853a0d4ec135697679d76e6bd1b0d62a83c2e7659bbde5cc4911e694108b"
+      "sha256": "5ec3cdf4e776ff113ffef600d1c776173c3c604a8ebff2e38ef92c763dc24de5"
     },
     "kernels": {
       "madrust": {
@@ -22,12 +22,12 @@
       },
       "mainline": {
         "path": "/Users/nicolasbecasazagra/madrust/artifacts/vmlinux",
-        "sha256": "87bcee98037291945ce0cbf231ef6d957f7e71ca5b33008a0842fed141c2ee64",
+        "sha256": "e64d718d84d099eeea65251168d529519dc1e6139e72f2d20e73901d24e5baa2",
         "kernel_args": "console=ttyS0"
       },
       "mainline-nomitig": {
         "path": "/Users/nicolasbecasazagra/madrust/artifacts/vmlinux",
-        "sha256": "87bcee98037291945ce0cbf231ef6d957f7e71ca5b33008a0842fed141c2ee64",
+        "sha256": "e64d718d84d099eeea65251168d529519dc1e6139e72f2d20e73901d24e5baa2",
         "kernel_args": "mitigations=off"
       }
     },
@@ -46,7 +46,7 @@
       "futex": 30,
       "threads": 30
     },
-    "started": "2026-10-24T18:13:37Z"
+    "started": "2026-10-24T21:26:45Z"
   },
   "summary": [
     {
@@ -56,9 +56,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 183.0,
-      "p99": 247.0,
-      "stddev": 11.973860418984904
+      "median": 239.5,
+      "p99": 332.0,
+      "stddev": 27.78186858766383
     },
     {
       "kernel": "madrust",
@@ -67,9 +67,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 2653042.5,
-      "p99": 5047329.0,
-      "stddev": 671049.1587242613
+      "median": 2722862.0,
+      "p99": 4922373.0,
+      "stddev": 672870.6928566431
     },
     {
       "kernel": "madrust",
@@ -78,9 +78,9 @@
       "samples": 5,
       "errors": 0,
       "missing": 0,
-      "median": 1334205.0,
-      "p99": 1337758.0,
-      "stddev": 12382.02339522907
+      "median": 950087.0,
+      "p99": 987542.0,
+      "stddev": 20492.527047682528
     },
     {
       "kernel": "madrust",
@@ -89,9 +89,9 @@
       "samples": 5,
       "errors": 0,
       "missing": 0,
-      "median": 462452.0,
-      "p99": 492696.0,
-      "stddev": 14410.26516896896
+      "median": 263525.0,
+      "p99": 2027958.0,
+      "stddev": 692489.3050311751
     },
     {
       "kernel": "madrust",
@@ -100,9 +100,9 @@
       "samples": 10,
       "errors": 0,
       "missing": 0,
-      "median": 448966.0,
-      "p99": 569507.0,
-      "stddev": 41943.20584600085
+      "median": 445462.5,
+      "p99": 582903.0,
+      "stddev": 51551.69874417331
     },
     {
       "kernel": "madrust",
@@ -111,9 +111,9 @@
       "samples": 10,
       "errors": 0,
       "missing": 0,
-      "median": 2137.5,
-      "p99": 11707.0,
-      "stddev": 3206.3962465671643
+      "median": 28234.5,
+      "p99": 531013.0,
+      "stddev": 152726.7202258989
     },
     {
       "kernel": "madrust",
@@ -122,9 +122,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 3037.0,
-      "p99": 21137.0,
-      "stddev": 3249.0494336378174
+      "median": 3701.0,
+      "p99": 24304.0,
+      "stddev": 3696.671155542811
     },
     {
       "kernel": "madrust",
@@ -133,9 +133,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 220611.0,
-      "p99": 475237.0,
-      "stddev": 46642.215988772805
+      "median": 227995.0,
+      "p99": 542845.0,
+      "stddev": 56747.214404428894
     },
     {
       "kernel": "mainline",
@@ -144,9 +144,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 9688.0,
-      "p99": 10241.0,
-      "stddev": 131.60539080481806
+      "median": 9827.5,
+      "p99": 13823.0,
+      "stddev": 727.232819208081
     },
     {
       "kernel": "mainline",
@@ -155,9 +155,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 7751304.0,
-      "p99": 8233807.0,
-      "stddev": 172903.98514232947
+      "median": 8341183.5,
+      "p99": 9928069.0,
+      "stddev": 384755.9898204474
     },
     {
       "kernel": "mainline",
@@ -166,9 +166,9 @@
       "samples": 5,
       "errors": 0,
       "missing": 0,
-      "median": 12185866.0,
-      "p99": 12537650.0,
-      "stddev": 150860.89792653362
+      "median": 13332179.0,
+      "p99": 13434981.0,
+      "stddev": 44886.01369246327
     },
     {
       "kernel": "mainline",
@@ -177,31 +177,31 @@
       "samples": 5,
       "errors": 0,
       "missing": 0,
-      "median": 329242.0,
-      "p99": 661497.0,
-      "stddev": 158774.8179245059
+      "median": 4649782.0,
+      "p99": 31305316.0,
+      "stddev": 11899358.04609579
     },
     {
       "kernel": "mainline",
       "workload": "weights-huge",
       "unit": "ns/MiB",
-      "samples": 0,
-      "errors": 10,
+      "samples": 10,
+      "errors": 0,
       "missing": 0,
-      "median": null,
-      "p99": null,
-      "stddev": null
+      "median": 14004504.0,
+      "p99": 15236142.0,
+      "stddev": 723494.2373342376
     },
     {
       "kernel": "mainline",
       "workload": "weights-huge-tail",
       "unit": "ns/page",
-      "samples": 0,
-      "errors": 10,
+      "samples": 10,
+      "errors": 0,
       "missing": 0,
-      "median": null,
-      "p99": null,
-      "stddev": null
+      "median": 4799645.0,
+      "p99": 32779809.0,
+      "stddev": 8816019.698086997
     },
     {
       "kernel": "mainline",
@@ -210,9 +210,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 118687.5,
-      "p99": 221001.0,
-      "stddev": 39489.11089273711
+      "median": 136688.5,
+      "p99": 254376.0,
+      "stddev": 24930.72572614408
     },
     {
       "kernel": "mainline",
@@ -221,9 +221,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 1441010.0,
-      "p99": 2519018.0,
-      "stddev": 232612.3690286386
+      "median": 1536011.0,
+      "p99": 2513018.0,
+      "stddev": 288722.1887552962
     },
     {
       "kernel": "mainline-nomitig",
@@ -232,9 +232,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 653.0,
-      "p99": 706.0,
-      "stddev": 17.140465441625427
+      "median": 516.0,
+      "p99": 679.0,
+      "stddev": 39.21265385334461
     },
     {
       "kernel": "mainline-nomitig",
@@ -243,9 +243,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 3287523.0,
-      "p99": 3705276.0,
-      "stddev": 100169.218466686
+      "median": 3226016.0,
+      "p99": 3937519.0,
+      "stddev": 190955.00462058827
     },
     {
       "kernel": "mainline-nomitig",
@@ -254,9 +254,9 @@
       "samples": 5,
       "errors": 0,
       "missing": 0,
-      "median": 4283561.0,
-      "p99": 4503937.0,
-      "stddev": 98947.7213716415
+      "median": 4155946.0,
+      "p99": 4289650.0,
+      "stddev": 78639.71296590546
     },
     {
       "kernel": "mainline-nomitig",
@@ -265,31 +265,31 @@
       "samples": 5,
       "errors": 0,
       "missing": 0,
-      "median": 271407.0,
-      "p99": 666457.0,
-      "stddev": 222136.87200732794
+      "median": 2554257.0,
+      "p99": 5894595.0,
+      "stddev": 1969998.2290867167
     },
     {
       "kernel": "mainline-nomitig",
       "workload": "weights-huge",
       "unit": "ns/MiB",
-      "samples": 0,
-      "errors": 10,
+      "samples": 10,
+      "errors": 0,
       "missing": 0,
-      "median": null,
-      "p99": null,
-      "stddev": null
+      "median": 4332146.5,
+      "p99": 4702203.0,
+      "stddev": 153883.9339554328
     },
     {
       "kernel": "mainline-nomitig",
       "workload": "weights-huge-tail",
       "unit": "ns/page",
-      "samples": 0,
-      "errors": 10,
+      "samples": 10,
+      "errors": 0,
       "missing": 0,
-      "median": null,
-      "p99": null,
-      "stddev": null
+      "median": 1673184.0,
+      "p99": 16927863.0,
+      "stddev": 4763090.957791578
     },
     {
       "kernel": "mainline-nomitig",
@@ -298,9 +298,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 29375.0,
-      "p99": 118375.0,
-      "stddev": 16134.063451970871
+      "median": 27687.5,
+      "p99": 307626.0,
+      "stddev": 50308.33972755743
     },
     {
       "kernel": "mainline-nomitig",
@@ -309,9 +309,9 @@
       "samples": 30,
       "errors": 0,
       "missing": 0,
-      "median": 840506.0,
-      "p99": 2359016.0,
-      "stddev": 336674.5469127253
+      "median": 970005.0,
+      "p99": 3035016.0,
+      "stddev": 564897.0453958658
     }
   ]
 }
