@@ -211,6 +211,26 @@ reference image was lost with the volume it was on, and the published
 comparison in `bench/results/` was measured with the kernel of the previous
 milestone.
 
+### A capability difference the rig found
+
+The workload asks the kernel for large pages with `madvise(MADV_HUGEPAGE)`
+and reports what the kernel answers, with `MADV_NORMAL` as the control:
+
+```text
+mainline: ADV madvise-normal=0 madvise-hugepage=-22
+MadRust:  ADV madvise-normal=0 madvise-hugepage=0
+```
+
+The reference build refuses the advice with `EINVAL`. In the Linux source,
+`MADV_HUGEPAGE` is only a valid advice when `CONFIG_TRANSPARENT_HUGEPAGE` is
+enabled, and the mapping is private and anonymous, so the reference kernel in
+this build cannot be asked for large pages at all.
+
+That is a capability difference, not a performance one, and it is published as
+such: the large page regime cannot be compared against this reference image.
+`bench/prepare-mainline.sh` now enables `CONFIG_TRANSPARENT_HUGEPAGE` in the
+reference build, and the comparison is run again with that image.
+
 ### What the numbers mean
 
 The comparison is between two kernels running the same binary under the same

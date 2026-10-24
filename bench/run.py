@@ -225,7 +225,11 @@ def run_once(
     elif not finished:
         process.wait()
 
-    return command, read_log(log)
+    text = read_log(log)
+    for line in text.splitlines():
+        if line.startswith("ADV "):
+            print(f"[rig] {label}: {line}", file=sys.stderr)
+    return command, text
 
 
 def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[str, Any]]:

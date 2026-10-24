@@ -32,6 +32,11 @@ fi
 cd "$repo/artifacts/linux"
 make defconfig
 scripts/config --enable CONFIG_PVH=y
+# The workload asks for large pages with madvise. A reference kernel without
+# transparent huge pages refuses the advice with EINVAL, and then the large
+# page regime cannot be compared at all.
+scripts/config --enable CONFIG_TRANSPARENT_HUGEPAGE
+scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_DEFAULT_ON
 make -j"$(nproc 2>/dev/null || echo 4)"
 
 cp vmlinux "$output/vmlinux"

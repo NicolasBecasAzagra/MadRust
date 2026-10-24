@@ -123,6 +123,7 @@ const MAP_PRIVATE: u64 = 2;
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
 
+const MADV_NORMAL: u64 = 0;
 const MADV_HUGEPAGE: u64 = 14;
 
 /// Bytes one 2 MiB large page covers.
@@ -511,6 +512,21 @@ impl TickScale {
 fn measure_weights(scale: TickScale, huge: bool) -> Result<(u128, u128), i64> {
     let start = Instant::now();
     let base = map_at(WEIGHTS_BASE, WEIGHTS_BYTES)?;
+    if huge {
+        // Probe what the kernel makes of the advice, so a refusal is reported
+        // instead of looking like a measurement. MADV_NORMAL is the control:
+        // it works on every kernel, so a refusal of MADV_HUGEPAGE alone means
+        // the kernel does not implement large pages for this mapping.
+        let normal = unsafe { syscall3(SYS_MADVISE, base, WEIGHTS_BYTES as u64, MADV_NORMAL) };
+        let huge_advice = unsafe { syscall3(SYS_MADVISE, base, WEIGHTS_BYTES as u64, MADV_HUGEPAGE) };
+        // A plain line, not a result: this is a probe of the kernel, not a
+        // measurement, and the rig counts the result lines.
+        println!(
+            "ADV madvise-normal={} madvise-hugepage={}",
+            normal, huge_advice
+        );
+    }
+
     if huge {
         // SAFETY: the range was just mapped and the advice only marks it; the
         // kernel validates the whole range.
