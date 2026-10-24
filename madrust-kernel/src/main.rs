@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MadRust x86_64 kernel entry point (milestone M1).
+//! MadRust x86_64 kernel entry point (milestone M2a).
 //!
 //! Boots through the Xen PVH protocol: QEMU jumps to `_start32`, the 32-bit
-//! trampoline enables long mode and calls [`_start`]. The kernel then installs
+//! trampoline enables long mode and calls [`_start`]. The kernel then builds a
+//! physical frame allocator and a kernel heap from the PVH memory map, installs
 //! a GDT with a TSS, an IDT with recoverable exception stubs, remaps the 8259
 //! PIC and programs the PIT to run at 100 Hz before enabling interrupts.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 mod console;
 mod fault;
 mod gdt;
 mod idt;
+mod memory;
 mod pic;
 mod pit;
 
@@ -40,7 +45,7 @@ unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
     let uart = console();
     uart.init();
 
-    kprintln!("MadRust: x86_64 kernel, M1");
+    kprintln!("MadRust: x86_64 kernel, M2a");
 
     if start_info.is_null() {
         kprintln!("MadRust: boot FAILED: null hvm_start_info");
@@ -100,6 +105,25 @@ unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
         boot_info.total_ram(),
         boot_info.total_ram() / (1024 * 1024)
     );
+
+    if let Err(error) = memory::init(&boot_info) {
+        kprintln!("MadRust: boot FAILED: memory manager: {:?}", error);
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_MEMORY_FAILED);
+    }
+
+    let managed_frames = memory::with(|manager| manager.managed_frames()).unwrap_or(0);
+    let free_frames = memory::with(|manager| manager.free_frames()).unwrap_or(0);
+    kprintln!("MEM managed frames: {}", managed_frames);
+    kprintln!("MEM free frames: {}", free_frames);
+
+    if let Err(error) = memory::self_test() {
+        kprintln!("MadRust: memory self test FAILED: {:?}", error);
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_MEMORY_FAILED);
+    }
+    kprintln!("MEM OK");
+    kprintln!("HEAP OK {}", memory::SELF_TEST_BLOCKS);
 
     let cpuid = cpu::cpuid(0);
     let vendor = cpuid.vendor();

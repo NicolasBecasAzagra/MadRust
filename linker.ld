@@ -55,6 +55,17 @@ SECTIONS
         *(COMMON)
     } :data
 
+    /*
+     * Kernel boundaries. In the M2a identity mapped layout the load addresses
+     * and the virtual addresses are the same, so the memory manager reserves
+     * the physical range. M2b keeps both pairs apart: the higher-half kernel
+     * runs at the virtual addresses while the load addresses stay physical.
+     */
+    __kernel_start__ = ADDR(.text);
+    __kernel_end__ = .;
+    __kernel_physical_start__ = LOADADDR(.text);
+    __kernel_physical_end__ = LOADADDR(.bss) + SIZEOF(.bss);
+
     /DISCARD/ :
     {
         *(.eh_frame .eh_frame_hdr)

@@ -15,6 +15,10 @@ pub const EXIT_SUCCESS: u32 = 0x10;
 /// Exit code used when boot information is invalid: QEMU exits with 35.
 pub const EXIT_BOOT_INFO_INVALID: u32 = 0x11;
 
+/// Exit code used when the memory manager cannot be built or its self test
+/// fails: QEMU exits with 37.
+pub const EXIT_MEMORY_FAILED: u32 = 0x12;
+
 /// Terminate QEMU with `(code << 1) | 1`.
 ///
 /// If the device is absent the write is ignored, so spin forever after it.

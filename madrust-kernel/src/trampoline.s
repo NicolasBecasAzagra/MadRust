@@ -118,6 +118,8 @@ __stack_top:
 
     .balign 4096
     .global boot_pml4
+    .global boot_pdpt
+    .global boot_pd
 boot_pml4:
     .skip 4096
 boot_pdpt:

@@ -15,7 +15,7 @@ HOST_TARGET := $(shell rustc -vV | sed -n 's/^host: //p')
 # These flags stay on the command line instead of .cargo/config.toml to keep
 # the host toolchain usable for `cargo test` and `cargo clippy`.
 KERNEL_FLAGS := --target $(KERNEL_TARGET) \
-	-Z build-std=core,compiler_builtins \
+	-Z build-std=core,alloc,compiler_builtins \
 	-Z build-std-features=compiler-builtins-mem
 
 # The kernel binary is `no_std` + `no_main`: it cannot be built as a host test

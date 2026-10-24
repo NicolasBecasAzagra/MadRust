@@ -24,4 +24,9 @@ dependencies = [
  "madrust-arch",
  "madrust-bootinfo",
  "madrust-drivers",
+ "madrust-mm",
 ]
+
+[[package]]
+name = "madrust-mm"
+version = "0.1.0"

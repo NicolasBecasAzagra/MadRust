@@ -5,6 +5,7 @@ members = [
     "madrust-bootinfo",
     "madrust-drivers",
     "madrust-kernel",
+    "madrust-mm",
 ]
 
 [workspace.package]

@@ -10,7 +10,8 @@ people can read, learn from, and measure.
 
 ## Current state
 
-Milestones M0 and M1 are implemented, verified locally and asserted in CI:
+Milestones M0, M1 and the first half of M2 are implemented, verified locally
+and asserted in CI:
 
 - M0: the kernel boots under QEMU through the Xen PVH handover, reports the
   physical memory map and the CPU vendor over the serial line, and exits with
@@ -18,9 +19,12 @@ Milestones M0 and M1 are implemented, verified locally and asserted in CI:
 - M1: exceptions are delivered with the full register context and are
   recoverable, the 8259 PIC is remapped, the PIT drives a 100 Hz tick, the
   double fault has its own stack, and the boot ends after 100 ticks.
+- M2a: a buddy allocator over 4 KiB physical frames and a size class kernel
+  heap on top of it, with the allocator logic unit tested on the host and a
+  self test on the target.
 
-The next milestone is M2: physical memory management, a higher-half kernel
-with a direct map, and a kernel heap.
+The next milestone is M2b: higher-half relocation and a direct map of physical
+memory.
 
 ## Repository layout
 
@@ -61,6 +65,28 @@ crate with one function does not exist yet.
 - **Allocator:** buddy allocator for physical frames, slab allocator with size
   classes for kernel objects. Not rtlmalloc: its semantics are a poor fit for
   kernel use and its interrupt-safety guarantees are weaker.
+- **Memory management (M2a):** two layers. A buddy allocator over 4 KiB
+  frames, with one metadata byte per frame recording whether the frame is the
+  head of a free block, the head of an allocated block, covered by a larger
+  block, or never released. The stored order of an allocated block is what
+  makes a double free and a free with the wrong order detectable instead of
+  silently corrupting the free lists. On top of it, a size class heap with
+  the classes 16, 32, 64, 128, 256, 512 and 1024 bytes, each class owning up
+  to four one-frame slabs that go back to the frame allocator when the last
+  live block is freed. Requests above 1024 bytes take `2^n` whole frames.
+- **Reserved memory:** the first MiB (real mode structures, firmware data,
+  null page), the kernel image itself, the boot page tables and the boot
+  stack are reserved before any frame is released. Frames that are not backed
+  by RAM, including the gap between the low RAM region and the region that
+  starts at 1 MiB, are never released and therefore never handed out.
+- **Allocator bookkeeping never lives in the heap it manages.** The frame
+  metadata and the heap free lists are static buffers; the heap cannot
+  allocate its own bookkeeping.
+- **The allocator logic is host tested.** The buddy algorithm is generic over
+  a metadata store trait, with a static implementation in the kernel and a
+  `Vec` backed one in the unit tests, so splitting, merging, exhaustion and
+  double free detection are covered by `cargo test` and not only by the
+  on-target self test.
 - **Panic:** print the faulting RIP, the saved registers and the fault address,
   then halt. Do not attempt to kill a single thread.
 - **Exceptions are fatal by default.** The only recoverable exception is the
