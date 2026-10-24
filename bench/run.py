@@ -115,7 +115,11 @@ def qemu_command(
     initramfs: Path,
     log: Path,
     accel: str,
+    append_extra: str = "",
 ) -> list[str]:
+    kernel_args = "console=ttyS0"
+    if append_extra:
+        kernel_args = f"{kernel_args} {append_extra}"
     command = [
         qemu,
         "-M",
@@ -131,7 +135,7 @@ def qemu_command(
         "-initrd",
         str(initramfs),
         "-append",
-        "console=ttyS0",
+        kernel_args,
         "-display",
         "none",
         "-monitor",
@@ -164,9 +168,10 @@ def run_once(
     qemu: str,
     accel: str,
     timeout: float,
+    append_extra: str = "",
 ) -> tuple[list[str], str]:
     log = out_dir / f"{label}.log"
-    command = qemu_command(qemu, image, initramfs, log, accel)
+    command = qemu_command(qemu, image, initramfs, log, accel, append_extra)
     print(f"[rig] {label}: {' '.join(shlex.quote(part) for part in command)}", file=sys.stderr)
 
     with log.open("wb"):
@@ -342,6 +347,17 @@ def main() -> int:
     parser.add_argument("--madrust", help="MadRust kernel image")
     parser.add_argument("--mainline", help="mainline Linux kernel image")
     parser.add_argument(
+        "--mainline-variant",
+        action="append",
+        metavar="NAME[=KERNEL_ARGS]",
+        help=(
+            "configuration of the mainline image, repeatable. The name labels the "
+            "run and the optional arguments are added to the kernel command line, "
+            "for example 'nomitig=mitigations=off'. The default configuration is "
+            "always measured as well."
+        ),
+    )
+    parser.add_argument(
         "--madrust-only",
         action="store_true",
         help="run only the MadRust image, before a mainline image exists",
@@ -369,14 +385,20 @@ def main() -> int:
     if not madrust_image.is_file():
         raise SystemExit(f"MadRust image not found: {madrust_image}")
 
-    kernels: list[tuple[str, Path]] = [("madrust", madrust_image)]
+    kernels: list[tuple[str, Path, str]] = [("madrust", madrust_image, "")]
     if not args.madrust_only:
         if not args.mainline:
             raise SystemExit("--mainline is required unless --madrust-only is set")
         mainline_image = Path(args.mainline).resolve()
         if not mainline_image.is_file():
             raise SystemExit(f"mainline image not found: {mainline_image}")
-        kernels.append(("mainline", mainline_image))
+        kernels.append(("mainline", mainline_image, ""))
+        for variant in args.mainline_variant or []:
+            name, _, extra = variant.partition("=")
+            name = name.strip()
+            if not name:
+                raise SystemExit(f"invalid --mainline-variant: {variant}")
+            kernels.append((f"mainline-{name}", mainline_image, extra.strip()))
 
     initrd = Path(args.initrd).resolve() if args.initrd else root / "bench" / "initramfs.cpio"
     ensure_initramfs(initrd)
@@ -398,10 +420,11 @@ def main() -> int:
     }
 
     all_rows: list[dict[str, Any]] = []
-    for label, image in kernels:
+    for label, image, append_extra in kernels:
         metadata["kernels"][label] = {
             "path": str(image),
             "sha256": sha256(image),
+            "kernel_args": append_extra or "console=ttyS0",
         }
         command, text = run_once(
             label,
@@ -411,6 +434,7 @@ def main() -> int:
             args.qemu,
             args.accel,
             args.timeout,
+            append_extra,
         )
         metadata["commands"][label] = shlex.join(command)
         rows = parse_results(label, text, args.iterations)

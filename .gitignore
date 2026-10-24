@@ -9,3 +9,4 @@ target/
 madrust-userland/madrust-userland.elf
 madrust-bench/madrust-bench.elf
 bench/initramfs.cpio
+artifacts/
