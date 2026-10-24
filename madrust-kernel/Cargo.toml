@@ -1,0 +1,18 @@
+[package]
+name = "madrust-kernel"
+description = "MadRust x86_64 kernel binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "madrust-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+madrust-arch = { path = "../madrust-arch" }
+madrust-bootinfo = { path = "../madrust-bootinfo" }
+madrust-drivers = { path = "../madrust-drivers" }

@@ -1,0 +1,7 @@
+target/
+*.iso
+*.bin
+*.img
+.DS_Store
+._*
+*.swp

@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: GPL-2.0-only
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build, lint, test and boot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-24
+          components: rust-src, llvm-tools, rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Clippy
+        run: make clippy
+
+      - name: Clippy (host)
+        run: make clippy-host
+
+      - name: Host tests
+        run: make test
+
+      - name: Build kernel
+        run: make build
+
+      - name: Verify PVH ELF note
+        run: |
+          SYSROOT="$(rustc --print sysroot)"
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          READOBJ="$SYSROOT/lib/rustlib/$HOST/bin/llvm-readobj"
+          "$READOBJ" --notes target/x86_64-madrust/release/madrust-kernel | tee note.txt
+          # The note owner and type are what QEMU looks for; the wording of the
+          # tool output changes between LLVM releases, so match on the values.
+          grep -q 'Xen' note.txt
+          grep -q '0x00000012' note.txt
+
+      - name: Boot kernel in QEMU
+        run: |
+          set +e
+          # A broken kernel would hang here forever, so the boot is bounded.
+          timeout 60 qemu-system-x86_64 -M q35 -m 512M \
+            -kernel target/x86_64-madrust/release/madrust-kernel \
+            -display none -monitor none -no-reboot \
+            -serial file:serial.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          status=$?
+          echo "QEMU exit status: $status"
+          cat serial.log
+          test "$status" -eq 33
+          grep -q "MadRust: boot OK" serial.log
+          grep -q "\[mem\] RAM" serial.log

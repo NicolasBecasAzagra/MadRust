@@ -1,0 +1,114 @@
+# Architecture
+
+## Scope
+
+MadRust targets a Linux-ABI-compatible x86_64 kernel: it loads ELF binaries,
+implements the Linux system call ABI, and runs unmodified distribution
+userland. It is not a general-purpose distribution, it does not replace Linux,
+and it is not production ready. Its purpose is to produce a kernel that other
+people can read, learn from, and measure.
+
+## Repository layout
+
+A cargo workspace with one crate per concern:
+
+| Crate | Contents |
+|---|---|
+| `madrust-arch` | x86_64 hardware access: port I/O, control registers, MSRs, the boot trampoline. The only crate allowed to be architecture-specific. |
+| `madrust-bootinfo` | Pure parsing of the boot handover structures (PVH `start_info`, memory map). Host-testable, no hardware access. |
+| `madrust-drivers` | Device drivers: 16550A UART, PIT, PIC, later PCI/IDE/VirtIO. |
+| `madrust-kernel` | The `no_std` kernel binary: entry, memory management, scheduler, VFS, syscall layer. |
+| `madrust-abi` | System call numbers, `errno` values, user-visible structure layouts. Shared by kernel and test userland. |
+| `madrust-elf` | ELF parser. Pure, host-testable. |
+| `madrust-mm` | Physical frame allocator (buddy), kernel heap (slab), virtual memory. |
+| `madrust-sched` | Kernel threads, wait queues, scheduler. |
+| `madrust-vfs` | VFS interfaces, ramfs/tmpfs, cpio initramfs. |
+| `madrust-userland` | Static test binaries used as kernel test fixtures. |
+
+Crates are added when the milestone that needs them arrives, not before. A
+crate with one function does not exist yet.
+
+## Design decisions
+
+- **`no_std`, panic = abort.** The kernel is the runtime; `std` assumes an OS
+  underneath. No unwinding, no `std` collections: `alloc` plus a small set of
+  intrusive structures written for this kernel.
+- **Uniprocessor first, SMP at M9.** Concurrency bugs are much cheaper to
+  diagnose on one CPU. SMP is the last milestone, not the first.
+- **Interrupt controller: 8259 PIC + PIT until M8**, then LAPIC/IOAPIC behind a
+  small trait, because EOI and masking semantics differ.
+- **Paging: 4 levels, kernel in the higher half** (`0xffff8000_00000000`),
+  physical memory direct-mapped with 2 MiB pages, user space below.
+- **System calls: `SYSCALL`/`SYSRET` only.** `INT 0x80` is not implemented.
+- **No async.** Kernel threads, wait queues and spinlocks with interrupts
+  disabled locally. Sleeping while holding a lock is forbidden.
+- **Lock discipline:** a lockdep-lite checker from M3 that records the owning
+  CPU and the holding stack, and halts on violation.
+- **Allocator:** buddy allocator for physical frames, slab allocator with size
+  classes for kernel objects. Not rtlmalloc: its semantics are a poor fit for
+  kernel use and its interrupt-safety guarantees are weaker.
+- **Panic:** print the faulting RIP, the saved registers and the fault address,
+  then halt. Do not attempt to kill a single thread.
+- **Testability:** hardware sits behind traits (`Serial`, `Clock`, `Interrupt`);
+  pure logic lives in crates that run on the host under `cargo test`. The
+  on-target test suite runs inside QEMU and asserts over the serial log.
+- **No KPTI, no retpoline, no SMAP enforcement.** MadRust runs in a private
+  single-tenant VM. This is a deliberate benchmark advantage and a deliberate
+  security limitation; both are documented, never quietly.
+
+## Milestone ladder
+
+Each milestone has an exit criterion that a machine can check.
+
+| M | Exit criterion | Verification |
+|---|---|---|
+| M0 | QEMU serial log contains `MadRust: boot OK`, QEMU exits 33 | headless QEMU + serial assertion |
+| M1 | Divide by zero prints `DIV0 RIP=...` and continues; 100 PIT ticks print `TICKS 100` | golden serial log |
+| M2 | 10,000 allocate/free cycles on target without leaks or double frees; usable RAM matches `-m` | host unit tests + on-target self test |
+| M3 | 10 threads make progress under preemption with fair scheduling | on-target self test |
+| M4 | A statically linked `hello` from an initramfs prints and exits 0; ~20 syscalls return the same values as Linux | golden log + diff against mainline |
+| M5 | `/init` busybox shell runs `ls | wc -l` with the same output as Linux | diff suite |
+| M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log |
+| M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI |
+| M8 | Published benchmark report: raw CSV, median, p99, sigma, N >= 30 | `bench/` scripts |
+| M9 | Boots with 4 vCPUs; parallel workload scales at least 2.5x over 1 vCPU | litmus tests + benchmark |
+
+Estimated effort for a solo developer with steady spare time: about 34 weeks
+total, roughly 12 hours per week.
+
+## Risks
+
+1. Scope creep towards "a small Linux". The cut list is frozen: no network
+   stack, no kernel modules, no namespaces, no cgroups.
+2. Dynamic loader (TLS, relocations) is the hardest single item. Mitigation:
+   static musl binaries first (M4), dynamic musl later (M6).
+3. ABI divergence in `errno` values or structure layouts. Mitigation: diff the
+   same binary's behaviour on Linux and MadRust from M4 onwards.
+4. Concurrency bugs once SMP arrives. Mitigation: lockdep-lite from M3, one CPU
+   until M8.
+5. Burnout. Mitigation: visible weekly exit criteria, stop rules below.
+6. QEMU is not hardware. Bare metal is an explicit non-goal; all results are
+   labelled as QEMU results.
+
+## Stop rules
+
+When the schedule slips, cut in this order: network stack (not started), SMP
+(M9, publish single-CPU benchmarks instead), dynamic linking (M6, static musl
+only), signals (M7, keep kill/exit/SIGCHLD only), benchmark suite (M8, keep
+only the getpid and context-switch benchmarks).
+
+M0 to M5 are not cut.
+
+## Contribution to the ecosystem
+
+Mainline Linux does not merge code from an external kernel. The realistic
+paths are:
+
+- Publish the reusable pure crates (`madrust-elf`, `madrust-bootinfo`, the
+  allocator) as standalone `no_std` libraries usable by other kernel projects.
+- Contribute Rust code and drivers to Rust-for-Linux, which is the upstream
+  path for Rust in mainline.
+- Publish the benchmark methodology and raw results, including the losses.
+
+Credibility comes from green CI, a documented syscall table versioned against
+Linux, small reviewable commits, and code that reads like a person wrote it.

@@ -1,0 +1,10 @@
+[package]
+name = "madrust-drivers"
+description = "Serial and debug-exit drivers for MadRust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+madrust-arch = { path = "../madrust-arch" }
