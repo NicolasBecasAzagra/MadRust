@@ -42,6 +42,34 @@ def load_model(name: str, revision: str | None):
     return tokenizer, model.eval(), torch
 
 
+def dimensions_of(config) -> dict:
+    """The dimensions of the model, wherever the configuration keeps them.
+
+    Some models of the Llama family keep the rotary embedding parameters in a
+    nested dictionary instead of in the flat fields, so both places are read
+    and the head dimension is derived when it is not stated.
+    """
+    hidden = int(config.get("hidden_size", 0))
+    heads = int(config.get("num_attention_heads", 0))
+    rope = config.get("rope_parameters") or {}
+    head_dim = int(config.get("head_dim", 0)) or (hidden // heads if heads else 0)
+    return {
+        "hidden_size": hidden,
+        "num_hidden_layers": int(config.get("num_hidden_layers", 0)),
+        "num_attention_heads": heads,
+        "num_key_value_heads": int(config.get("num_key_value_heads", 0)),
+        "head_dim": head_dim,
+        "intermediate_size": int(config.get("intermediate_size", 0)),
+        "rms_norm_eps": float(config.get("rms_norm_eps", 0.0)),
+        "rope_theta": float(rope.get("rope_theta", config.get("rope_theta", 0.0))),
+        "rope_interleaved": bool(
+            rope.get("rope_interleaved", config.get("rope_interleaved", False))
+        ),
+        "vocab_size": int(config.get("vocab_size", 0)),
+        "tie_word_embeddings": bool(config.get("tie_word_embeddings", False)),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="HuggingFaceTB/SmolLM2-135M")
@@ -83,6 +111,7 @@ def main() -> int:
     ]
 
     config = model.config.to_dict()
+    dimensions = dimensions_of(config)
     data = {
         "model": args.model,
         "revision": args.revision or "main",
@@ -94,17 +123,7 @@ def main() -> int:
         "dtype": "float32",
         "sampling": "greedy",
         "first_step_top5": first_step,
-        "dimensions": {
-            "hidden_size": int(config.get("hidden_size", 0)),
-            "num_hidden_layers": int(config.get("num_hidden_layers", 0)),
-            "num_attention_heads": int(config.get("num_attention_heads", 0)),
-            "num_key_value_heads": int(config.get("num_key_value_heads", 0)),
-            "intermediate_size": int(config.get("intermediate_size", 0)),
-            "rms_norm_eps": float(config.get("rms_norm_eps", 0.0)),
-            "rope_theta": float(config.get("rope_theta", 0.0)),
-            "vocab_size": int(config.get("vocab_size", 0)),
-            "tie_word_embeddings": bool(config.get("tie_word_embeddings", False)),
-        },
+        "dimensions": dimensions,
         "torch": torch.__version__,
     }
 
