@@ -135,6 +135,12 @@ The boot has three stages:
 Page table indices: the kernel image uses PML4 entry 511, PDPT entry 510 and
 PD entry 0; the direct map uses PML4 entry 273 and PDPT entry 0.
 
+The direct map reserves 32 page directories, one per gigabyte of physical
+memory, so it describes 32 GiB. The switch routine sizes the mapping from the
+memory the boot information reports instead of clamping it: a guest with more
+memory than that is refused at boot with a clear message, before any frame is
+handed out.
+
 The linker script asserts that the image still fits in the 2 MiB that is
 mapped with 4 KiB pages, and that the entry point is the first byte of the
 image.

@@ -56,6 +56,10 @@ RESULT_RE = re.compile(
     r"^RESULT\s+(?P<workload>\S+)\s+(?:(?P<error>ERR)\s+)?(?P<value>-?\d+)(?:\s+(?P<unit>\S+))?\s*$"
 )
 
+# Mainline can print a bracketed kernel log line onto the same serial line as a
+# sample. The tail is not part of the sample, so cut it before matching.
+KERNEL_LOG_RE = re.compile(r"\s*\[[^\]]*\].*$")
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -222,7 +226,7 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
     seen = {name: 0 for name in WORKLOADS}
 
     for raw_line in text.splitlines():
-        match = RESULT_RE.match(raw_line.strip())
+        match = RESULT_RE.match(KERNEL_LOG_RE.sub("", raw_line.strip()))
         if not match:
             continue
         workload = match.group("workload")
@@ -258,7 +262,11 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
             )
 
     # A workload that produced fewer lines than the guest was asked for did not
-    # finish. Record the missing samples instead of silently shrinking the set.
+    # finish. Record the missing samples instead of silently shrinking the set,
+    # and say why: the guest never reached the end, or the workload stopped
+    # early.
+    guest_finished = "BENCH DONE" in text
+    reason = "" if guest_finished else "the guest did not reach the end of the run"
     for workload, (unit, _) in WORKLOADS.items():
         for iteration in range(seen[workload], expected[workload]):
             rows.append(
@@ -269,7 +277,7 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
                     "value": "",
                     "unit": unit,
                     "status": "missing",
-                    "error": "",
+                    "error": reason or "the workload printed fewer samples than expected",
                 }
             )
     return rows

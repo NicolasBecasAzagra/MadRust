@@ -54,21 +54,26 @@ workload, under emulation:
 
 | Workload | MadRust | mainline | mainline, mitigations off |
 |---|---|---|---|
-| system call | 231 ns | 9820 ns | 661 ns |
-| map and touch memory | 2.24 ms/MiB | 8.00 ms/MiB | 3.44 ms/MiB |
-| futex round trip | 3.93 us | 136.4 us | 31.4 us |
-| threads | 1.535 ms | 1.640 ms | 1.029 ms |
+| system call | 245.5 ns | 9581 ns | 520 ns |
+| map and touch memory | 1.768 ms/MiB | 7.792 ms/MiB | 3.263 ms/MiB |
+| fault in memory | 907.6 us/MiB | 12.700 ms/MiB | 4.117 ms/MiB |
+| slowest page fault | 474.8 us | 1293.4 us | 572.9 us |
+| futex round trip | 3.56 us | 128.5 us | 24.06 us |
+| threads | 224.7 us | 1566.5 us | 823.5 us |
 
-With the mitigations disabled on both sides, MadRust spends about a third of
-what mainline spends on a system call and an eighth on a futex round trip,
-because it does much less work per operation. It is **1.5 times slower** on
-the threads workload, and that loss is published with the same raw data.
+With the mitigations disabled on both sides, MadRust is about twice as cheap
+per system call, four and a half times as cheap per MiB faulted in and seven
+times as cheap per futex round trip, because it does much less work per
+operation. An earlier run is published too, with twenty seven missing samples
+from a boot that did not finish, because the rig records what happened
+instead of hiding it.
 
 Every number above was produced by an emulator, so the ratios are inflated
-by the translation overhead both kernels pay. A run with hardware acceleration
-is required before any statement about wall clock performance. The full
-reading, the caveats and the raw iterations are in
-[docs/BENCHMARKING.md](docs/BENCHMARKING.md) and in `bench/results/`.
+by the translation overhead both kernels pay, and the two tail measurements
+have five samples each. A run with hardware acceleration is required before
+any statement about wall clock performance. The full reading, the caveats and
+the raw iterations are in [docs/BENCHMARKING.md](docs/BENCHMARKING.md) and in
+`bench/results/`.
 
 ## Build and run
 

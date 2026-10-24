@@ -94,6 +94,16 @@ serial log. The log is the instrument.
 - **Change the load base** of the user program and watch the entry point
   move with it. The boot log prints the base and the real entry separately on
   purpose.
+- **Make the page fault handler allocate a frame twice for the same address**
+  and check that the second fault finds a present entry and does not replace
+  it. The protection violation path exists for exactly that.
+- **Map a region and never touch it**: check that the free frame count does
+  not move. That is demand paging doing its job.
+- **Change the mapping table size** in `madrust-mm/src/mapping.rs` and find
+  the limit at which `mmap` starts failing.
+- **Compare the `weights` workload before and after demand paging**: the tail
+  measurement used to measure the clock, and now it measures the fault. The
+  difference between those two numbers is what the rig is for.
 
 ## Debugging
 

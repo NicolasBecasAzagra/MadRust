@@ -98,7 +98,7 @@ numbers in the finished `newc` archive, because creating a device node needs
 root on both macOS and Linux.
 
 The binary runs five measurements, prints one `RESULT <workload> <value> <unit>`
-line per sample, and ends with `BENCH DONE`:
+line per measured quantity and sample, and ends with `BENCH DONE`:
 
 | Workload | What it measures | Unit |
 |---|---|---|
@@ -115,11 +115,13 @@ is the anonymous equivalent: a 256 MiB region mapped with `MAP_FIXED` at a fixed
 address, with one byte read and written in every 4 KiB page. It is a proxy, not
 a file-backed load, and the numbers have to be read as such. The region takes
 half of the 512 MiB guest: the full 512 MiB cannot be faulted in when the kernel
-and the initramfs live in the same memory, and MadRust maps the whole region
-eagerly. That eager mapping also means the cost sits in `mmap` on MadRust and in
-the page faults on mainline; `weights-tail` records the slowest single page of
-the walk, which is the tail a server has to keep inside its latency budget.
-Every `weights` sample prints both lines.
+and the initramfs live in the same memory.
+
+Both kernels fault the region lazily, so the comparison is like for like: the
+mapping reserves address space and the frames arrive when the program touches
+them. `weights-tail` records the slowest single page of the walk, which is the
+tail a server has to keep inside its latency budget. Every `weights` sample
+prints both lines.
 
 Threads are created with a direct `clone` system call, not `std::thread`, so
 the binary runs on both kernels: MadRust implements the sharing flags the
@@ -136,13 +138,14 @@ The number is the negated Linux error number. The harness stores it in the
 `error` column with `status=error`; nothing is discarded or retried. A sample
 that never printed because the guest died is recorded as `status=missing`.
 
-The sample counts are fixed in the binary: 30 samples per workload, 20 000
-`getpid` calls per syscall sample, four MiB per mmap sample, eight futex round
-trips per sample, and 200 000 arithmetic steps per worker thread. `weights`
-prints five samples instead of 30, because one sample already touches 65 536
-pages and five of them finish in a few seconds under TCG; the harness knows that
-count per workload. They are large enough to dominate the clock and small enough
-to finish in a few seconds under TCG.
+The sample counts are fixed in the binary: 30 samples for each of `syscall`,
+`mmap`, `futex` and `threads`, 20 000 `getpid` calls per syscall sample, four MiB
+per mmap sample, eight futex round trips per sample, and 200 000 arithmetic
+steps per worker thread. `weights` prints five samples instead, because one
+sample already touches 65 536 pages and five of them finish in a few seconds
+under TCG; the harness knows the expected count per workload. They are large
+enough to dominate the clock and small enough to finish in a few seconds under
+TCG.
 
 ## Reading the CSV
 

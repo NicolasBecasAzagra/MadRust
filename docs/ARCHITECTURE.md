@@ -74,6 +74,8 @@ Milestones M0 to M3 are implemented, verified locally and asserted in CI:
   self test on the target.
 - M2b: the kernel runs from the higher half with a direct map of physical
   memory, so a frame index is no longer a virtual address.
+- M2c: the frame metadata is carved out of the memory it describes, so a
+  guest is no longer limited to 1 GiB. The direct map describes 32 GiB.
 - M3: kernel threads with a preemptive round-robin scheduler, interrupt safe
   locks and a recursion guard.
 - M4a: user mode. Ring 3 descriptors, `SYSCALL`/`SYSRET`, an ELF64 loader, and
@@ -253,13 +255,31 @@ crate with one function does not exist yet.
   index is not an address: the heap translates through the direct map, and
   the reverse translation rejects a pointer outside the direct map instead of
   turning it into a bogus frame.
-- **Current limits.** The frame metadata is a static buffer of one byte per
-  frame, so the kernel manages at most 1 GiB of physical memory
-  (`MAX_FRAMES = 262144` frames). The direct map reserves four page
-  directories, so it covers 4 GiB. A guest with more RAM than the metadata
-  can describe is refused at boot with a clear message and exit status 37,
-  never a panic or a hang. Both limits have to go before the benchmark phase,
-  where the rig uses 4 GiB guests.
+- **Demand paging (M4c):** an anonymous mapping reserves address space and
+  nothing else. The page table entries are written as not present, and the
+  frames arrive when the program touches them: the page fault handler looks
+  the address up in a table of user mappings, takes a zeroed frame from the
+  buddy allocator, maps it with the protection the record carries and
+  returns, so the faulting instruction is retried and succeeds. A table of
+  32 slots holds the mappings.
+  - A protection violation never replaces a present entry. The handler
+    distinguishes it from a missing page and reports it.
+  - An address that belongs to no mapping, a write to a mapping that is not
+    writable and an out of memory condition stop the program with a clear
+    message and exit status 41, never a hang and never a panic.
+  - `munmap` removes the record and gives back the frames that were actually
+    faulted in, by walking the page tables of the range.
+  - `mremap` is not supported and returns `EINVAL`. The program break keeps
+    its eager behaviour.
+- **Current limits.** The frame metadata is one byte per frame, and it is
+  carved out of the physical memory it describes: the kernel takes it from the
+  top of the highest RAM region that can hold it, clear of the low megabyte,
+  the kernel image and the initramfs, and reserves it before any frame is
+  released. The direct map reserves 32 page directories, so it describes
+  32 GiB, and the largest buddy order is 20, that is 4 GiB in one block. A
+  guest with more memory than the direct map can describe is refused at boot
+  with a clear message and exit status 37, never a partial mapping and never
+  a panic. The metadata needs 8 MiB for the largest supported guest.
 - **Panic:** print the faulting RIP, the saved registers and the fault address,
   then halt. Do not attempt to kill a single thread.
 - **Exceptions are fatal by default.** The only recoverable exception is the

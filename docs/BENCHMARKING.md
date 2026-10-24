@@ -137,21 +137,24 @@ five, because every sample faults 65536 pages.
 
 ### First results
 
-The rig has produced a first comparison: MadRust against Linux 7.3.0, one
-processor, 512 MiB, thirty iterations per workload, under emulation with no
-hardware acceleration.
+MadRust against Linux 7.3.0, one processor, 512 MiB, thirty iterations per
+workload, under emulation with no hardware acceleration. Both kernels fault
+the measured regions lazily, so the comparison is like for like.
 
 ```text
-workload   MadRust    mainline    mainline (mitigations=off)
-syscall     231 ns      9820 ns          661 ns
-mmap      2.24 ms/MiB  8.00 ms/MiB     3.44 ms/MiB
-futex     3.93 us/rt  136.4 us/rt      31.4 us/rt
-threads   1.535 ms     1.640 ms        1.029 ms
+workload        MadRust     mainline    mainline (mitigations=off)
+syscall         245.5 ns      9581 ns            520 ns
+mmap          1.768 ms/MiB   7.792 ms/MiB     3.263 ms/MiB
+weights       907.6 us/MiB  12.700 ms/MiB     4.117 ms/MiB
+weights-tail  474.8 us/page  1293.4 us/page   572.9 us/page
+futex           3.56 us      128.5 us          24.06 us
+threads        224.7 us      1566.5 us        823.5 us
 ```
 
-Median values. The 99th percentile and the standard deviation of every
-configuration are in `bench/results/summary.csv`, and every raw iteration is
-in the per kernel CSV files next to it.
+Median values, thirty samples each except the two tail measurements, which
+have five. The 99th percentile and the standard deviation of every
+configuration are in `bench/results/summary.csv`, and every raw iteration is in
+the per kernel CSV files next to it.
 
 **What these numbers are.** The default mainline column is not a kernel
 comparison: a default mainline kernel reloads CR3 on every system call to
@@ -161,30 +164,30 @@ The honest comparison is the third column, where the reference kernel runs
 with the same mitigations disabled that MadRust never implements.
 
 **What the comparison supports.** With the mitigations disabled on both
-sides, MadRust spends about a third of what mainline spends on a system
-call, half as much on mapping and touching memory, and an eighth on a futex
-round trip. Those differences come from doing less work per operation: no
-page table isolation machinery, no LSM and auditing hooks, no virtual memory
-accounting and a much simpler futex path. The structural claim holds on any
-host, because it is about the work the kernel performs.
+sides, MadRust is about twice as cheap per system call, about twice as cheap
+per MiB mapped and touched, four and a half times as cheap per MiB faulted in,
+seven times as cheap per futex round trip, and three and a half times as fast
+in the thread workload. Those differences come from doing less work per
+operation: no page table isolation machinery, no LSM and auditing hooks, no
+virtual memory accounting, a much simpler futex path, and demand paging that
+does not touch a page the program never reads.
 
-**What the comparison does not support.** MadRust is 1.5 times *slower* on
-the threads workload, and that loss is published with the same rig and the
-same raw data. The scheduler is a round robin with a ten millisecond tick,
-while mainline picks a runnable thread with a far more elaborate policy, and
-that shows up in a workload with several runnable threads. The claim this
-project can make today is about the cost of a single operation, not about
-scheduling quality.
+**What the comparison does not support.** The two tail measurements have five
+samples each, so their 99th percentile is barely a percentile and their
+medians move by tens of percent between runs. The ratios are inflated by the
+overhead the emulator adds to both kernels, because every guest instruction
+is translated. The clock source differs as well: mainline reads the time
+stamp counter through the vDSO, MadRust through a system call, which costs
+MadRust one system call per measurement point. And one processor with 512 MiB
+is a small machine.
 
-**What has to change before these numbers say anything about hardware.**
-Everything above was produced by an emulator, where every guest instruction
-is translated and the fixed cost of that translation is common to both
-kernels. The difference between the columns is the kernel side work, but the
-ratios are inflated by the overhead the emulator adds to both. A run with
-hardware acceleration is required before any statement about wall clock
-performance. The clock source differs as well: mainline reads the time stamp
-counter through the vDSO, MadRust through a system call, which costs MadRust
-one system call per measurement point.
+**An anomaly that is published.** In an earlier run, one of the thirty boots
+of the reference kernel with the mitigations disabled did not finish, and the
+rig recorded the twenty seven missing samples instead of hiding them. A
+repeated run of the same configuration completed all thirty iterations, so it
+was a flake and not a difference between the kernels. Both runs are in the
+repository: `bench/results/anomaly/` is the run with the missing samples and
+`bench/results/repeat/` is the repetition.
 
 ### What the numbers mean
 

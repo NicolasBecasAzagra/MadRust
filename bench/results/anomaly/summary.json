@@ -1,0 +1,249 @@
+{
+  "metadata": {
+    "qemu": "QEMU emulator version 11.1.2",
+    "accel": "tcg",
+    "host": {
+      "hostname": "BlackCat.local",
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "system": "Darwin",
+      "release": "27.0.0",
+      "python": "3.15.0"
+    },
+    "initrd": {
+      "path": "/Volumes/PortableSSD/MadRust/bench/initramfs.cpio",
+      "sha256": "d949360a5041a0462487dae9a5ae4d5b294ecc7e6f9492bfc973544b24df37f3"
+    },
+    "kernels": {
+      "madrust": {
+        "path": "/Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel",
+        "sha256": "2cef38fd0ab5a556560e138daf5b9d881ce548970cdbafacbcb5e1f1419192e9",
+        "kernel_args": "console=ttyS0"
+      },
+      "mainline": {
+        "path": "/Volumes/PortableSSD/MadRust/artifacts/vmlinux",
+        "sha256": "87bcee98037291945ce0cbf231ef6d957f7e71ca5b33008a0842fed141c2ee64",
+        "kernel_args": "console=ttyS0"
+      },
+      "mainline-nomitig": {
+        "path": "/Volumes/PortableSSD/MadRust/artifacts/vmlinux",
+        "sha256": "87bcee98037291945ce0cbf231ef6d957f7e71ca5b33008a0842fed141c2ee64",
+        "kernel_args": "mitigations=off"
+      }
+    },
+    "commands": {
+      "madrust": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 512M -kernel /Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel -initrd /Volumes/PortableSSD/MadRust/bench/initramfs.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/madrust.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
+      "mainline": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 512M -kernel /Volumes/PortableSSD/MadRust/artifacts/vmlinux -initrd /Volumes/PortableSSD/MadRust/bench/initramfs.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/mainline.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
+      "mainline-nomitig": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 512M -kernel /Volumes/PortableSSD/MadRust/artifacts/vmlinux -initrd /Volumes/PortableSSD/MadRust/bench/initramfs.cpio -append 'console=ttyS0 mitigations=off' -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/mainline-nomitig.log -device isa-debug-exit,iobase=0xf4,iosize=0x04"
+    },
+    "iterations_expected": {
+      "syscall": 30,
+      "mmap": 30,
+      "weights": 5,
+      "weights-tail": 5,
+      "futex": 30,
+      "threads": 30
+    },
+    "started": "2026-10-24T16:57:25Z"
+  },
+  "summary": [
+    {
+      "kernel": "madrust",
+      "workload": "syscall",
+      "unit": "ns/op",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 227.0,
+      "p99": 295.0,
+      "stddev": 12.594928432596282
+    },
+    {
+      "kernel": "madrust",
+      "workload": "mmap",
+      "unit": "ns/MiB",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 1761344.5,
+      "p99": 2221160.0,
+      "stddev": 125585.9354220138
+    },
+    {
+      "kernel": "madrust",
+      "workload": "weights",
+      "unit": "ns/MiB",
+      "samples": 5,
+      "errors": 0,
+      "missing": 0,
+      "median": 908241.0,
+      "p99": 1022059.0,
+      "stddev": 49330.637387327566
+    },
+    {
+      "kernel": "madrust",
+      "workload": "weights-tail",
+      "unit": "ns/page",
+      "samples": 5,
+      "errors": 0,
+      "missing": 0,
+      "median": 480127.0,
+      "p99": 810337.0,
+      "stddev": 133053.16582629667
+    },
+    {
+      "kernel": "madrust",
+      "workload": "futex",
+      "unit": "ns/roundtrip",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 3536.0,
+      "p99": 23411.0,
+      "stddev": 3914.8457027917034
+    },
+    {
+      "kernel": "madrust",
+      "workload": "threads",
+      "unit": "ns/total",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 221920.5,
+      "p99": 454572.0,
+      "stddev": 46379.23158766456
+    },
+    {
+      "kernel": "mainline",
+      "workload": "syscall",
+      "unit": "ns/op",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 9898.0,
+      "p99": 10443.0,
+      "stddev": 149.88905526718383
+    },
+    {
+      "kernel": "mainline",
+      "workload": "mmap",
+      "unit": "ns/MiB",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 8060923.0,
+      "p99": 8533301.0,
+      "stddev": 147896.8250346955
+    },
+    {
+      "kernel": "mainline",
+      "workload": "weights",
+      "unit": "ns/MiB",
+      "samples": 5,
+      "errors": 0,
+      "missing": 0,
+      "median": 13177531.0,
+      "p99": 13476881.0,
+      "stddev": 158638.69513255585
+    },
+    {
+      "kernel": "mainline",
+      "workload": "weights-tail",
+      "unit": "ns/page",
+      "samples": 5,
+      "errors": 0,
+      "missing": 0,
+      "median": 1264307.0,
+      "p99": 6663784.0,
+      "stddev": 2227390.2334308103
+    },
+    {
+      "kernel": "mainline",
+      "workload": "futex",
+      "unit": "ns/roundtrip",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 138312.5,
+      "p99": 273126.0,
+      "stddev": 34432.34725848485
+    },
+    {
+      "kernel": "mainline",
+      "workload": "threads",
+      "unit": "ns/total",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 1637010.0,
+      "p99": 2934018.0,
+      "stddev": 370057.9300120996
+    },
+    {
+      "kernel": "mainline-nomitig",
+      "workload": "syscall",
+      "unit": "ns/op",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 680.0,
+      "p99": 791.0,
+      "stddev": 28.993198436108347
+    },
+    {
+      "kernel": "mainline-nomitig",
+      "workload": "mmap",
+      "unit": "ns/MiB",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 3416392.0,
+      "p99": 3848269.0,
+      "stddev": 145287.91331603908
+    },
+    {
+      "kernel": "mainline-nomitig",
+      "workload": "weights",
+      "unit": "ns/MiB",
+      "samples": 5,
+      "errors": 0,
+      "missing": 0,
+      "median": 4372682.0,
+      "p99": 4536936.0,
+      "stddev": 77607.50803111772
+    },
+    {
+      "kernel": "mainline-nomitig",
+      "workload": "weights-tail",
+      "unit": "ns/page",
+      "samples": 5,
+      "errors": 0,
+      "missing": 0,
+      "median": 585681.0,
+      "p99": 801669.0,
+      "stddev": 151240.12282248386
+    },
+    {
+      "kernel": "mainline-nomitig",
+      "workload": "futex",
+      "unit": "ns/roundtrip",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 37250.0,
+      "p99": 267126.0,
+      "stddev": 51046.374206652086
+    },
+    {
+      "kernel": "mainline-nomitig",
+      "workload": "threads",
+      "unit": "ns/total",
+      "samples": 3,
+      "errors": 0,
+      "missing": 27,
+      "median": 1153006.0,
+      "p99": 1970010.0,
+      "stddev": 427277.5057191234
+    }
+  ]
+}
