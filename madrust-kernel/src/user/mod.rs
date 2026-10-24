@@ -31,10 +31,11 @@ mod errno;
 mod fd;
 mod futex;
 mod loader;
+mod mappings;
 mod paging;
 mod stack;
 mod syscall;
-mod vm;
+pub(crate) mod vm;
 
 pub mod initramfs;
 
@@ -153,5 +154,7 @@ pub fn run(program: &Program) -> u64 {
     let status = unsafe { syscall::enter(program.image.entry(), program.stack) };
 
     cpu::enable_interrupts();
+    let (used, capacity) = vm::mapping_usage();
+    crate::kprintln!("[user] mappings: {} of {} slots in use", used, capacity);
     status
 }

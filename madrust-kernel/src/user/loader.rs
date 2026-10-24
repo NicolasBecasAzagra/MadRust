@@ -177,7 +177,7 @@ fn load_segment(bytes: &[u8], header: &ProgramHeader, base: u64) -> Result<(), L
                 unsafe {
                     core::ptr::write_bytes(phys_to_virt(frame) as *mut u8, 0, PAGE_SIZE as usize);
                 }
-                paging::map_page(address, frame).ok_or(LoadError::OutOfMemory)?;
+                paging::map_page(address, frame, true).ok_or(LoadError::OutOfMemory)?;
                 frame
             }
         };
@@ -239,6 +239,6 @@ fn copy_program_headers(bytes: &[u8], elf: &Elf<'_>) -> Result<u64, LoadError> {
         core::ptr::write_bytes(destination, 0, PAGE_SIZE as usize);
         copy_nonoverlapping(source.as_ptr(), destination, length);
     }
-    paging::map_page(PROGRAM_HEADER_PAGE, frame).ok_or(LoadError::OutOfMemory)?;
+    paging::map_page(PROGRAM_HEADER_PAGE, frame, true).ok_or(LoadError::OutOfMemory)?;
     Ok(PROGRAM_HEADER_PAGE)
 }

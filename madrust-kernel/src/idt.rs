@@ -9,6 +9,7 @@ use madrust_arch::cpu;
 use crate::gdt::{CODE_SELECTOR, DOUBLE_FAULT_IST};
 use crate::pic;
 use crate::pit;
+use crate::user::vm::PageFaultOutcome;
 
 const IDT_ENTRIES: usize = 256;
 const IDT_ENTRY_SIZE: usize = 16;
@@ -160,6 +161,17 @@ pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
         return;
     }
 
+    // A page fault in the user half is the demand paging path: the handler
+    // installs the frame the program just touched and the instruction retries.
+    if vector == 14 {
+        let address = cpu::read_cr2();
+        let outcome = crate::user::vm::handle_page_fault(address, frame.error_code);
+        if outcome == PageFaultOutcome::Resolved {
+            return;
+        }
+        fatal_page_fault(frame, address, outcome);
+    }
+
     // A fault in ring 3 cannot be resumed by the kernel: report it with the
     // reason and the program counter, then leave QEMU instead of hanging.
     if frame.cs & 3 == 3 {
@@ -188,16 +200,6 @@ pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
                 return;
             }
         }
-        14 => {
-            crate::kprintln!(
-                "EXCEPTION {} {} RIP=0x{:016x}",
-                vector,
-                exception_name(vector),
-                frame.rip
-            );
-            let address = cpu::read_cr2();
-            crate::kprintln!("PAGEFAULT ADDR=0x{:016x}", address);
-        }
         _ => {
             crate::kprintln!(
                 "EXCEPTION {} {} RIP=0x{:016x}",
@@ -211,6 +213,34 @@ pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
     // An exception that cannot be recovered from stops the kernel. Returning
     // to the faulting instruction would repeat the same fault forever, so the
     // only way out is to halt with the report already on the serial line.
+    crate::console::console().flush();
+    cpu::halt_loop();
+}
+
+/// Report a page fault the kernel cannot resolve and stop.
+///
+/// A fault from ring 3 stops the user program with the faulting address from
+/// CR2; a fault from the kernel is a kernel bug, because the kernel half and
+/// the direct map are fully mapped. Both paths print a reason and never return.
+#[cold]
+fn fatal_page_fault(frame: &InterruptFrame, address: u64, outcome: PageFaultOutcome) -> ! {
+    if frame.cs & 3 == 3 {
+        crate::kprintln!(
+            "MadRust: user program FAILED: page fault at 0x{:016x}: {} (RIP=0x{:016x})",
+            address,
+            outcome.describe(),
+            frame.rip
+        );
+        crate::console::console().flush();
+        crate::debug_exit::exit(crate::debug_exit::EXIT_USER_FAILED);
+    }
+
+    crate::kprintln!(
+        "MadRust: KERNEL BUG: page fault at 0x{:016x}: {} (RIP=0x{:016x})",
+        address,
+        outcome.describe(),
+        frame.rip
+    );
     crate::console::console().flush();
     cpu::halt_loop();
 }

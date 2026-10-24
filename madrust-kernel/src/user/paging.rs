@@ -10,6 +10,10 @@
 //! Table pages come from the frame allocator and are written through the
 //! direct map. There is one address space for the whole milestone: no PML4 is
 //! cloned and no address space is destroyed when the program exits.
+//!
+//! [`reserve_page`] creates the tables and clears the leaf entry, which is how
+//! an anonymous mapping takes address space without a frame; [`map_page`]
+//! fills the leaf when the page fault handler takes the frame.
 
 use core::ptr::addr_of;
 
@@ -144,14 +148,45 @@ pub fn set_writable(address: u64, writable: bool) -> bool {
 ///
 /// Intermediate tables are created on demand. Returns `None` when a frame for
 /// a table page cannot be allocated.
-pub fn map_page(address: u64, physical: u64) -> Option<()> {
+pub fn map_page(address: u64, physical: u64, writable: bool) -> Option<()> {
     let indices = paging::Indices::of(address);
     // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3.
     let mut table = addr_of!(mm_pml4) as *mut u64;
     for index in [indices.pml4, indices.pdpt, indices.directory] {
         table = next_table(table, index)?;
     }
-    write_entry(table, indices.table, paging::user_page_entry(physical));
+    let entry = if writable {
+        paging::user_page_entry(physical)
+    } else {
+        paging::user_page_entry(physical) & !paging::WRITABLE
+    };
+    write_entry(table, indices.table, entry);
+    Some(())
+}
+
+/// Reserve one 4 KiB user page as not present.
+///
+/// The intermediate tables are created; the leaf entry is cleared, so the next
+/// access raises a page fault and the fault handler installs the frame. This is
+/// what `mmap` does: it reserves address space without taking physical memory.
+pub fn reserve_page(address: u64) -> Option<()> {
+    let indices = paging::Indices::of(address);
+    // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3.
+    let mut table = addr_of!(mm_pml4) as *mut u64;
+    for index in [indices.pml4, indices.pdpt, indices.directory] {
+        table = next_table(table, index)?;
+    }
+    write_entry(table, indices.table, 0);
+    Some(())
+}
+
+/// Reserve every page of `[address, address + length)` as not present.
+pub fn reserve_range(address: u64, length: u64) -> Option<()> {
+    let mut page = address;
+    while page < address.checked_add(length)? {
+        reserve_page(page)?;
+        page = page.checked_add(paging::PAGE_SIZE)?;
+    }
     Some(())
 }
 
@@ -170,7 +205,7 @@ pub fn map_range(top: u64, pages: u64) -> Option<u64> {
         unsafe {
             core::ptr::write_bytes(phys_to_virt(frame) as *mut u8, 0, FRAME_SIZE);
         }
-        map_page(address, frame)?;
+        map_page(address, frame, true)?;
     }
     Some(base)
 }

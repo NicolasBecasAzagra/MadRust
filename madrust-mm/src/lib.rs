@@ -9,12 +9,15 @@
 //! address any more: physical memory is reachable only through the direct map
 //! that [`phys_to_virt`] translates into. [`paging`] holds the page table
 //! layout and the entry arithmetic in a form that host tests can check.
+//! [`mapping`] holds the anonymous user mapping records and their lookup, also
+//! free of hardware and allocation, so the fault path is testable on the host.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod buddy;
 pub mod heap;
+pub mod mapping;
 pub mod paging;
 pub mod store;
 

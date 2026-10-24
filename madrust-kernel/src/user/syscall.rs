@@ -19,8 +19,10 @@
 //!
 //! * Process identity and lifetime: `getpid`, `gettid`, the ids, `exit`,
 //!   `exit_group`, `set_tid_address`, `set_robust_list`, `kill`, `tgkill`.
-//! * Memory: `brk`, `mmap`, `munmap`, `mprotect`, `madvise`, `mremap`, with
-//!   the implementation in [`super::vm`].
+//! * Memory: `brk`, `mmap`, `munmap`, `mprotect`, `madvise`, with the
+//!   implementation in [`super::vm`]. Anonymous mappings reserve address space
+//!   and fault in their frames on first touch; `mremap` is not supported and
+//!   reports `EINVAL`.
 //! * Threads and signals: `arch_prctl` (thread local storage), the signal
 //!   calls, `futex` (with the wait queue in [`super::futex`]) and `rseq`.
 //! * Input and output: the descriptor calls, `write`, `read`, `uname`, the
@@ -638,7 +640,9 @@ fn sys_mmap(
     }
 }
 
-/// `mremap`: resize a mapping through [`vm::mremap`].
+/// `mremap`: resize a mapping, which this kernel does not support.
+///
+/// [`vm::mremap`] reports `EINVAL`; the wrapper only adapts the return type.
 fn sys_mremap(address: u64, old_length: u64, new_length: u64, flags: u64, new_address: u64) -> i64 {
     match vm::mremap(address, old_length, new_length, flags, new_address) {
         Ok(base) => i64::try_from(base).unwrap_or(i64::MAX),
