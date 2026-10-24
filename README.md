@@ -109,7 +109,7 @@ comparison fair. Details in [docs/BOOT.md](docs/BOOT.md).
 - [docs/BOOT.md](docs/BOOT.md) - PVH boot protocol, trampoline, memory map, debugging.
 - [docs/LEARNING.md](docs/LEARNING.md) - how to read the kernel, experiments to run, sources to read next.
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - how comparisons against mainline are run and published.
-- [docs/VM-SETUP.md](docs/VM-SETUP.md) - Linux VM for mainline builds and distro rootfs.
+- [docs/VM-SETUP.md](docs/VM-SETUP.md) - the Linux build host: mainline Linux, rootfs, and the artifact handoff.
 
 ## Contributing
 

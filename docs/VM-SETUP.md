@@ -1,16 +1,12 @@
-# Linux VM setup
+# The Linux build host
 
-The Mac host is enough to build and boot MadRust: the kernel cross-compiles
-with `rustc` and `rust-lld`, and QEMU runs the x86_64 image under emulation.
+MadRust builds and boots on the Mac, but some work needs a real Linux host:
+building mainline Linux, building a distribution rootfs, and running the
+benchmark rig.
 
-A Linux virtual machine is needed later, for work that cannot be done from
-macOS:
+Two options work. Pick one.
 
-- building mainline Linux, to diff the ABI and to run the benchmark rig,
-- building musl and busybox test binaries,
-- building a Debian or Ubuntu rootfs image.
-
-## 1. Create the VM
+## Option A: a local virtual machine
 
 Install UTM (Apple Virtualization based, runs on Apple Silicon):
 
@@ -34,8 +30,6 @@ virtiofs, but check the mount point inside the guest (commonly under
 `/Volumes` or `/mnt`) instead of assuming a path. Cloning the repository over
 SSH from the host works just as well.
 
-## 2. Install the build dependencies
-
 Inside the guest:
 
 ```sh
@@ -49,18 +43,57 @@ sudo apt install -y \
 `qemu-system-x86` provides `qemu-system-x86_64`. `gdb` is the debugger to use
 when the kernel is built and run inside the VM.
 
-## 3. Install Rust
+## Option B: an external x86_64 Linux host
+
+A remote machine works as well, and it is the better choice for the benchmark
+rig because the host is real x86_64 hardware. The workflow is then a handoff:
+the kernel project stays here, and the artifacts built on the remote host are
+brought over.
+
+## What to build on the Linux host
+
+### Mainline Linux
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-. "$HOME/.cargo/env"
+git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+cd linux
+make defconfig
+scripts/config --enable CONFIG_PVH=y
+make -j"$(nproc)"
 ```
+
+The uncompressed `vmlinux` carries the PVH note and boots under QEMU with the
+same `-kernel` flag used for MadRust, which is what the benchmark rig
+requires. Keep the `vmlinux` file and the kernel version string.
+
+### A rootfs
+
+```sh
+sudo apt install -y debootstrap
+debootstrap --arch=amd64 bookworm /srv/rootfs http://deb.debian.org/debian
+cd /srv/rootfs && find . | cpio -o -H newc | gzip > /srv/initramfs.cpio.gz
+```
+
+The initramfs is passed to both kernels with `-initrd`, so both run the exact
+same userland.
+
+## The handoff
+
+These are the artifacts the benchmark work needs. Nothing else has to leave
+the Linux host:
+
+| Artifact | What it is |
+|---|---|
+| `vmlinux` | Mainline kernel, built with `CONFIG_PVH=y` |
+| `initramfs.cpio.gz` | The rootfs both kernels boot |
+| `kernel-version.txt` | `make kernelversion` output, for the report |
+| `host-info.txt` | `uname -a`, `nproc`, `free -h`, `qemu-system-x86_64 --version`, and whether `/dev/kvm` exists |
+
+## Building and running MadRust from the Linux host
 
 The repository pins the toolchain in `rust-toolchain.toml`, so `cargo` inside
 the checkout installs the right nightly automatically on first use, with the
 `rust-src` and `llvm-tools` components it lists.
-
-## 4. Build and boot
 
 ```sh
 git clone https://github.com/NicolasBecasAzagra/MadRust.git
@@ -74,31 +107,19 @@ qemu-system-x86_64 -M q35 -m 512M \
 
 Running an x86_64 guest inside an arm64 guest uses emulation in emulation and
 is slow. For interactive work prefer building on the Mac host and running
-QEMU there; use the VM for mainline Linux, rootfs images and the benchmark
-rig, where the guest is booted with hardware acceleration or on a dedicated
-x86_64 host.
+QEMU there; use the Linux host for mainline Linux, rootfs images and the
+benchmark rig.
 
-## 5. Mainline Linux (later)
+## Hardware acceleration
 
-```sh
-git clone --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
-cd linux
-make defconfig
-scripts/config --enable CONFIG_PVH=y
-make -j"$(nproc)"
-```
+The benchmark rig wants `/dev/kvm`. A host without it runs QEMU in TCG mode,
+where every guest instruction is translated by the emulator. That has two
+consequences:
 
-The uncompressed `vmlinux` carries the PVH note and boots under QEMU with the
-same `-kernel` flag used for MadRust, which is what the benchmark rig
-requires.
+- the absolute numbers describe the emulator, not the processor;
+- a system call costs a trap into the emulator, which can dominate the
+  difference between two kernels and hide the effect being measured.
 
-## 6. Rootfs images (later)
-
-```sh
-sudo apt install -y debootstrap
-debootstrap --arch=amd64 bookworm /srv/rootfs http://deb.debian.org/debian
-cd /srv/rootfs && find . | cpio -o -H newc | gzip > /srv/initramfs.cpio.gz
-```
-
-The initramfs is passed to both kernels with `-initrd`, so both run the exact
-same userland.
+Runs without KVM are still valid as a relative comparison, because both
+kernels run under identical emulation, but they cannot support a claim about
+hardware performance. The report has to state which mode produced the data.

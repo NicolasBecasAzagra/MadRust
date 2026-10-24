@@ -43,6 +43,24 @@ decide.
   RAM. Until the metadata becomes dynamic, both kernels must run with a
   guest size the kernel supports, and the same size for both.
 
+### What a host without KVM means
+
+A host without `/dev/kvm` runs QEMU in TCG mode, where the emulator
+translates every guest instruction. Two consequences matter for the results:
+
+- the absolute numbers describe the emulator, not the processor;
+- a system call traps into the emulator, and that cost can dominate the
+  difference between two kernels, hiding the effect being measured.
+
+A TCG run is still a fair relative comparison, because both kernels run under
+identical emulation with identical flags. What it cannot support is a claim
+about hardware performance, and in particular the system call cost benchmark
+has to be reported as "under emulation" rather than as a per-CPU-cycle figure.
+Every report states the acceleration mode it was produced in.
+
+A host with hardware acceleration is therefore required before any claim
+about wall clock performance is published.
+
 ## Benchmarks
 
 Kernel level:
