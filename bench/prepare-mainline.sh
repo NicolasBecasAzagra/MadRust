@@ -37,6 +37,12 @@ scripts/config --enable CONFIG_PVH=y
 # page regime cannot be compared at all.
 scripts/config --enable CONFIG_TRANSPARENT_HUGEPAGE
 scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_DEFAULT_ON
+# scripts/config only edits .config. The build then runs syncconfig, which
+# asks about every symbol that is new since the configuration was written,
+# and stops waiting for an answer that never comes. olddefconfig takes the
+# defaults for those new symbols without asking, so the build is not
+# interactive.
+make olddefconfig
 make -j"$(nproc 2>/dev/null || echo 4)"
 
 cp vmlinux "$output/vmlinux"
