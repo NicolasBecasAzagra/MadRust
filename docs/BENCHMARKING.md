@@ -252,6 +252,43 @@ configuration. `bench/prepare-mainline.sh` now enables
 `CONFIG_TRANSPARENT_HUGEPAGE` in the reference build, so the comparison runs
 against a kernel that has the feature.
 
+### The inference measurement
+
+The rig also measures the runtime: it boots the initramfs that carries the
+model, and records the time to the first token and the tokens per second for
+every kernel, with the same binary and the same flags.
+
+```text
+                        MadRust      mainline    mainline (mitigations=off)
+time to first token      21.20 s      23.34 s            9.96 s
+tokens per second           0.24         0.22                0.51
+```
+
+**MadRust loses this one, and the reason is specific.** With the mitigations
+disabled on both sides, the reference kernel is about twice as fast, and the
+difference is not the arithmetic: it is the same binary, doing the same
+134 million multiply accumulates per token.
+
+The difference is the mapping of the weights. The reference kernel backs a
+file mapping with 2 MiB pages, so streaming 269 MB of weights takes 134
+faults. MadRust maps a file with 4 KiB pages, so the same stream takes 65536
+faults. Under emulation a fault costs about 0.32 milliseconds, which is
+roughly eleven seconds of the twenty one that the first token takes.
+
+The arithmetic of the measurement matches that explanation: the compute is
+about ten seconds on both kernels, because the binary is the same, and the
+remaining eleven seconds are faults that only MadRust pays. With the default
+mitigations of the reference kernel enabled, its faults also reload CR3, and
+the two kernels end up within two per cent of each other.
+
+So the work this measurement asks for is large pages for file mappings, the
+same thing the kernel already does for anonymous mappings. Until that
+exists, this is a loss, and it is published as a loss.
+
+The numbers above are single samples of a measurement that takes a minute of
+emulated time, and under emulation the absolute values describe the
+emulator. The raw rows are in `bench/results/inference/`.
+
 ### What the numbers mean
 
 The comparison is between two kernels running the same binary under the same
