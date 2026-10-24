@@ -15,19 +15,36 @@ SPDX headers below.
 
 ## Status
 
-| Milestone | Goal | State |
+Everything below is implemented, verified locally and asserted in CI. One
+commit per milestone.
+
+| Milestone | What it delivers | State |
 |---|---|---|
-| M0 | Boot under QEMU, print to serial | done |
-| M1 | GDT/TSS/IDT, PIC, PIT, panic handler | done |
-| M2 | Physical memory, paging, direct map, heap | done |
-| M2c | Dynamic frame metadata, guests larger than 1 GiB | in progress |
-| M3 | Kernel threads, preemptive scheduler | done |
-| M4 | Syscalls, ELF loader, static userland | done |
-| M5 | VFS, initramfs, pipes, fork/exec/wait | planned |
-| M6 | Dynamic linking (musl), read-only ext2 | planned |
-| M7 | Signals, full tty, shell test suite | planned |
-| M8 | Benchmark harness and public report | done (first results published) |
-| M9 | SMP (LAPIC/IOAPIC) | planned |
+| M0 | Boot through the Xen PVH handover, serial output, physical memory map | done |
+| M1 | GDT, TSS with an IST stack, IDT, recoverable exceptions, 8259 PIC, PIT | done |
+| M2 | Buddy allocator, size class heap, higher half kernel, direct map | done |
+| M2c | Frame metadata carved out of the memory it describes, 32 GiB of guests | done |
+| M3 | Kernel threads, preemptive round robin scheduler, interrupt safe locks | done |
+| M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 54 Linux system calls | done |
+| M4b | A real userland: a standard library program running unmodified | done |
+| M4c | Demand paging for anonymous mappings | done |
+| M8 | Benchmark rig, four workloads, first comparison published | done |
+
+What comes next, in the order it has to happen, is the path to the final
+artefact: a real model served by a Rust inference runtime, measured against
+mainline in the same machine.
+
+| Next | Why it is next |
+|---|---|
+| The initramfs as a read only file system | The model has to be read from somewhere, and the archive is already parsed |
+| Large pages for the weights | 512 times fewer faults while loading a model; the single change that moves the number most |
+| A scheduler with a better tail | The one measurement where the scheduler, not the operation, decides the outcome |
+| The inference runtime in Rust | Tokenizer, half precision weights, layers, sampler |
+| The measurement | Tokens per second and time to first token, both kernels, same machine |
+
+Deferred, and named so they are not lost: processes and a real file system,
+dynamic linking, signals, a shell test suite, and SMP. The reasoning is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Exit criteria for each milestone are objective and machine-checkable. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -131,6 +148,30 @@ QEMU supports natively for 64-bit ELF kernels. Multiboot2 is not an option:
 QEMU's Multiboot loader rejects 64-bit images. The same path also boots
 mainline Linux (`vmlinux` with a PVH note), which is what makes the benchmark
 comparison fair. Details in [docs/BOOT.md](docs/BOOT.md).
+
+## How this was built
+
+MadRust was written with the assistance of an AI agent, and this is stated
+here on purpose rather than left for someone to discover.
+
+- The design decisions, the milestone criteria and the verification belong to
+  a human. Every milestone has an objective exit criterion that a machine
+  checks: a serial log assertion in CI, a unit test on the host, a row in the
+  benchmark data. Not "it compiles".
+- The code was written by an AI agent against those criteria, and every
+  change was checked against the build, the tests and the boot log before it
+  was committed. Several of the defects this repository fixed were found by
+  that checking, not by the code looking wrong.
+- The repository is the evidence: one milestone per commit, host tests for
+  everything that can be tested on the host, and a benchmark rig that
+  publishes its raw data with the failures included.
+- What an agent cannot do is explain why a line is there. The reading path in
+  [docs/LEARNING.md](docs/LEARNING.md), with its experiments, is the human
+  part of the work.
+
+The method is the reusable part. "How much of an operating system can be
+written this way, and how do you know it works" is a question worth an
+answer, and this repository is one answer to it.
 
 ## Documentation
 

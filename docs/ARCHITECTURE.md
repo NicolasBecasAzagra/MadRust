@@ -305,20 +305,34 @@ crate with one function does not exist yet.
 
 ## Milestone ladder
 
-Each milestone has an exit criterion that a machine can check.
+Each milestone has an exit criterion that a machine can check. The ones marked
+done are implemented and asserted in CI.
 
-| M | Exit criterion | Verification |
-|---|---|---|
-| M0 | QEMU serial log contains `MadRust: boot OK`, QEMU exits 33 | headless QEMU + serial assertion |
-| M1 | Divide by zero prints `DIV0 RIP=...` and continues; 100 PIT ticks print `TICKS 100` | golden serial log |
-| M2 | 10,000 allocate/free cycles on target without leaks or double frees; usable RAM matches `-m` | host unit tests + on-target self test |
-| M3 | 10 threads make progress under preemption with fair scheduling | on-target self test |
-| M4 | A statically linked `hello` from an initramfs prints and exits 0; ~20 syscalls return the same values as Linux | golden log + diff against mainline |
-| M5 | `/init` busybox shell runs `ls | wc -l` with the same output as Linux | diff suite |
-| M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log |
-| M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI |
-| M8 | Published benchmark report: raw CSV, median, p99, sigma, N >= 30 | `bench/` scripts |
-| M9 | Boots with 4 vCPUs; parallel workload scales at least 2.5x over 1 vCPU | litmus tests + benchmark |
+| M | Exit criterion | Verification | State |
+|---|---|---|---|
+| M0 | QEMU serial log contains `MadRust: boot OK`, QEMU exits 33 | headless QEMU + serial assertion | done |
+| M1 | Divide by zero prints `DIV0 RIP=...` and continues; 100 PIT ticks print `TICKS 100` | golden serial log | done |
+| M2 | 10,000 allocate/free cycles on target without leaks or double frees; usable RAM matches `-m` | host unit tests + on-target self test | done |
+| M2b | The kernel runs from the higher half and reaches physical memory only through the direct map | the same byte read before and after the switch | done |
+| M2c | A guest of 4 GiB boots, manages its memory and runs the workload | QEMU with `-m 4G` | done |
+| M3 | 10 threads make progress under preemption with fair scheduling | on-target self test | done |
+| M4 | A statically linked `hello` from an initramfs prints and exits 0; the system calls return the same values as Linux | golden log + diff against mainline | done |
+| M4b | A standard library program runs unmodified, prints and exits 0 | golden log | done |
+| M4c | An anonymous mapping faults its pages in on demand, and the per page tail measures a real fault | the `weights` workload against mainline | done |
+| M8 | Published benchmark report: raw CSV, median, p99, sigma, N >= 30 | `bench/` scripts | done |
+| E1 | The initramfs is a read only file system: a user program reads a file from it | `openat`, `read`, `lseek`, `fstat` | next |
+| E2 | The weights are mapped with 2 MiB pages | the `weights` workload, before and after | next |
+| E3 | A scheduler that keeps the tail of a runnable thread inside a budget | the `threads` workload | next |
+| E4 | A Rust inference runtime generates the same tokens as the reference implementation | token for token diff against the reference | next |
+| E5 | Tokens per second and time to first token, both kernels, same machine | the rig, with the raw data published | next |
+| M5 | `/init` busybox shell runs `ls | wc -l` with the same output as Linux | diff suite | deferred |
+| M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log | deferred |
+| M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI | deferred |
+| M9 | Boots with 4 vCPUs; parallel workload scales at least 2.5x over 1 vCPU | litmus tests + benchmark | deferred |
+
+The deferred milestones are not abandoned, they are sequenced behind the
+endgame: a model has to be read from a file system, and the file system that
+matters for the final measurement is the one the model comes from.
 
 Estimated effort for a solo developer with steady spare time: about 34 weeks
 total, roughly 12 hours per week.
