@@ -22,12 +22,13 @@
 //! * `threads`: four threads do a fixed amount of arithmetic, reported as the
 //!   wall clock time of the whole spawn, run and join sequence.
 //! * `weights`: map a large fixed region and touch every page, reported as ns
-//!   per MiB and as the slowest single page in ns. It stands in for faulting
-//!   model weights in, which is still an anonymous mapping rather than a file
-//!   backed one.
-//! * `file`: open `/bench` from the initramfs, stat it, read it and seek it,
-//!   then open a path that does not exist. It runs first and prints exact lines,
-//!   so the serial log proves the read only file system end to end.
+//!   per MiB and as the slowest fault per page in ns. `weights-huge` runs the
+//!   same loop after `madvise(MADV_HUGEPAGE)`, so the 4 KiB and the 2 MiB
+//!   fault regimes can be compared.
+//! * `file`: open `/bench` from the initramfs, stat it, mmap it read only,
+//!   read a byte from the mapping, read it and seek it, then open a path that
+//!   does not exist. It runs first and prints exact lines, so the serial log
+//!   proves the read only file system and the file backed mapping end to end.
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::hint::black_box;
@@ -67,6 +68,12 @@ const WEIGHTS_BYTES: usize = 256 * 1024 * 1024;
 /// workloads. Five samples finish in a few seconds under emulation.
 const WEIGHTS_ITERATIONS: usize = 5;
 
+/// Samples of the large page weights workload.
+///
+/// A 2 MiB fault is rare enough that one host preemption can dominate the
+/// slowest sample, so the huge run takes twice as many samples.
+const WEIGHTS_HUGE_ITERATIONS: usize = 10;
+
 /// Fixed base address of the weights mapping.
 ///
 /// `MAP_FIXED` puts every sample at the same address, so the two kernels and
@@ -99,6 +106,7 @@ const SYS_FSTAT: u64 = 5;
 const SYS_LSEEK: u64 = 8;
 const SYS_MMAP: u64 = 9;
 const SYS_MUNMAP: u64 = 11;
+const SYS_MADVISE: u64 = 28;
 const SYS_GETPID: u64 = 39;
 const SYS_EXIT: u64 = 60;
 const SYS_FUTEX: u64 = 202;
@@ -110,6 +118,11 @@ const PROT_WRITE: u64 = 2;
 const MAP_PRIVATE: u64 = 2;
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
+
+const MADV_HUGEPAGE: u64 = 14;
+
+/// Bytes one 2 MiB large page covers.
+const LARGE_PAGE_BYTES: usize = 2 * 1024 * 1024;
 
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
@@ -483,12 +496,26 @@ impl TickScale {
 /// `weights`: map a large region, touch every page, drop it.
 ///
 /// The page fault path is the dominant kernel cost of loading a model. The
-/// weights are still an anonymous mapping, so the honest proxy is to map the
-/// region and touch one byte in every 4 KiB page. Returns the cost per MiB and
-/// the slowest single page, both in nanoseconds.
-fn measure_weights(scale: TickScale) -> Result<(u128, u128), i64> {
+/// region stands in for the weights: it is mapped and every 4 KiB page is
+/// touched once. `huge` asks the kernel for 2 MiB pages with `madvise` first,
+/// so the same loop measures the two fault regimes.
+///
+/// The slowest value is the slowest fault per page it covers: a 4 KiB fault
+/// covers one page, while the first fault of a 2 MiB page covers 512. That
+/// makes the two regimes comparable on the same unit. Returns the cost per
+/// MiB and the slowest fault per page, both in nanoseconds.
+fn measure_weights(scale: TickScale, huge: bool) -> Result<(u128, u128), i64> {
     let start = Instant::now();
     let base = map_at(WEIGHTS_BASE, WEIGHTS_BYTES)?;
+    if huge {
+        // SAFETY: the range was just mapped and the advice only marks it; the
+        // kernel validates the whole range.
+        let result = unsafe { syscall3(SYS_MADVISE, base, WEIGHTS_BYTES as u64, MADV_HUGEPAGE) };
+        if result < 0 {
+            unmap(base, WEIGHTS_BYTES);
+            return Err(result);
+        }
+    }
 
     let mut slowest = 0u128;
     let mut offset = 0;
@@ -501,7 +528,11 @@ fn measure_weights(scale: TickScale) -> Result<(u128, u128), i64> {
             let value = core::ptr::read_volatile(page);
             core::ptr::write_volatile(page, value.wrapping_add(1));
         }
-        let page_nanos = scale.to_nanos(ticks().wrapping_sub(before));
+        let mut page_nanos = scale.to_nanos(ticks().wrapping_sub(before));
+        if huge && offset.is_multiple_of(LARGE_PAGE_BYTES) {
+            // A 2 MiB fault covers 512 pages, so charge each of them its share.
+            page_nanos /= (LARGE_PAGE_BYTES / PAGE_SIZE) as u128;
+        }
         if page_nanos > slowest {
             slowest = page_nanos;
         }
@@ -686,6 +717,45 @@ fn report_path_size() {
     }
 }
 
+/// Map the initramfs file read only and read a byte from the mapping.
+///
+/// The mapping is file backed: the kernel points the page table entry at the
+/// archive bytes instead of copying them, and the first read faults the page
+/// in. The size the kernel accepted is part of the serial contract, so the log
+/// proves the path end to end.
+fn map_file(descriptor: u64, size: u64) {
+    // Map every whole page of the file; a partial last page would reach past
+    // the file and the kernel refuses that.
+    let length = (size as usize) / PAGE_SIZE * PAGE_SIZE;
+    if length == 0 {
+        println!("FILE mmap=0");
+        return;
+    }
+    // SAFETY: mmap takes six arguments; the descriptor is open read only and
+    // the offset is page aligned.
+    let mapped = unsafe {
+        syscall6(
+            SYS_MMAP,
+            0,
+            length as u64,
+            PROT_READ,
+            MAP_PRIVATE,
+            descriptor,
+            0,
+        )
+    };
+    if mapped < 0 {
+        println!("FILE mmap ERR {mapped}");
+        return;
+    }
+    // SAFETY: the range was just mapped readable and the first byte is inside
+    // it. The read faults the first page in.
+    let byte = unsafe { core::ptr::read_volatile(mapped as *const u8) };
+    println!("FILE mmap={length}");
+    println!("FILE mmap-byte={byte}");
+    unmap(mapped as u64, length);
+}
+
 /// Read the whole file and report how many bytes the kernel returned.
 fn read_file(descriptor: u64, size: u64) {
     let mut buffer = [0u8; PAGE_SIZE];
@@ -747,6 +817,7 @@ fn check_file() {
                 println!("FILE size={size}");
                 println!("FILE mode={}", stat_mode(&block));
                 report_path_size();
+                map_file(descriptor, size);
                 read_file(descriptor, size);
             }
             // SAFETY: the descriptor came from open and close takes one
@@ -775,8 +846,19 @@ fn main() {
         report("mmap", "ns/MiB", measure_mmap());
     }
     let scale = TickScale::measure();
+    // Large pages first: the 2 MiB blocks need clean free memory, and the
+    // 4 KiB run that follows leaves page table pages scattered behind it.
+    for _ in 0..WEIGHTS_HUGE_ITERATIONS {
+        let result = measure_weights(scale, true);
+        report("weights-huge", "ns/MiB", result.map(|sample| sample.0));
+        report(
+            "weights-huge-tail",
+            "ns/page",
+            result.map(|sample| sample.1),
+        );
+    }
     for _ in 0..WEIGHTS_ITERATIONS {
-        let result = measure_weights(scale);
+        let result = measure_weights(scale, false);
         report("weights", "ns/MiB", result.map(|sample| sample.0));
         report("weights-tail", "ns/page", result.map(|sample| sample.1));
     }

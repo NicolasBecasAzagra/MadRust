@@ -43,23 +43,32 @@ fn with<R>(f: impl FnOnce(&mut MappingTable<CAPACITY>) -> R) -> R {
     f(table)
 }
 
-/// Record a new anonymous mapping.
-pub fn record(base: u64, length: u64, protection: u64) -> Result<(), MappingError> {
-    with(|table| table.insert(Mapping::anonymous(base, length, protection)))
+/// Record a new mapping.
+pub fn record(mapping: Mapping) -> Result<(), MappingError> {
+    with(|table| table.insert(mapping))
 }
 
-/// Replace `[base, base + length)` with one new anonymous mapping.
+/// Replace `[base, base + length)` with one new mapping.
 ///
 /// The edit runs on a copy of the table, so a failure leaves the old records
 /// untouched even when the range would need a split and the table is full.
-pub fn replace(base: u64, length: u64, protection: u64) -> Result<(), MappingError> {
+pub fn replace(base: u64, length: u64, mapping: Mapping) -> Result<(), MappingError> {
     with(|table| {
         let mut next = *table;
         next.remove_range(base, base.saturating_add(length))?;
-        next.insert(Mapping::anonymous(base, length, protection))?;
+        next.insert(mapping)?;
         *table = next;
         Ok(())
     })
+}
+
+/// Copy of the current table.
+///
+/// `munmap` and a `MAP_FIXED` replacement take one snapshot before they edit
+/// the table: the snapshot tells the page table walk whether a present page
+/// belongs to a file mapping, whose physical frames must not be freed.
+pub fn snapshot() -> MappingTable<CAPACITY> {
+    with(|table| *table)
 }
 
 /// Remove every record of `[base, base + length)`.
@@ -70,6 +79,11 @@ pub fn remove(base: u64, length: u64) -> Result<(), MappingError> {
 /// Change the protection of `[base, base + length)`.
 pub fn protect(base: u64, length: u64, protection: u64) -> Result<(), MappingError> {
     with(|table| table.protect(base, base.saturating_add(length), protection))
+}
+
+/// Set or clear the large page hint of `[base, base + length)`.
+pub fn advise(base: u64, length: u64, huge: bool) -> Result<(), MappingError> {
+    with(|table| table.advise(base, base.saturating_add(length), huge))
 }
 
 /// Record that contains `address`, if any.

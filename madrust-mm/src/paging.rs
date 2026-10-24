@@ -85,6 +85,24 @@ pub const fn large_page_entry(physical: u64) -> Option<u64> {
     Some(entry(physical) | LARGE_PAGE)
 }
 
+/// Entry of a page directory that maps one 2 MiB page for ring 3.
+///
+/// `writable` clears the writable bit for a read only user range. Returns
+/// `None` when `physical` is not 2 MiB aligned.
+pub const fn user_large_page_entry(physical: u64, writable: bool) -> Option<u64> {
+    match large_page_entry(physical) {
+        None => None,
+        Some(entry) => {
+            let entry = entry | USER;
+            if writable {
+                Some(entry)
+            } else {
+                Some(entry & !WRITABLE)
+            }
+        }
+    }
+}
+
 /// Number of 2 MiB pages needed to cover `[start, end)`.
 pub const fn large_pages_for(start: u64, end: u64) -> u64 {
     if end <= start {

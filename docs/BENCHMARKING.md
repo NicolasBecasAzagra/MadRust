@@ -189,6 +189,28 @@ was a flake and not a difference between the kernels. Both runs are in the
 repository: `bench/results/anomaly/` is the run with the missing samples and
 `bench/results/repeat/` is the repetition.
 
+### Large pages
+
+Mapping the weights with 2 MiB pages instead of 4 KiB ones is the change that
+moves the cost of loading a model the most, and the rig measures both
+regimes on the same kernel:
+
+```text
+                          MadRust, 4 KiB    MadRust, 2 MiB
+cost per MiB                    896593 ns        435933 ns
+slowest single fault           277732 ns         15646 ns
+```
+
+Twice the throughput and a tail eighteen times shorter, because 512 faults
+become one. The `weights-huge-tail` figure is the slowest fault divided by the
+512 pages it covers, so it is comparable with the 4 KiB figure.
+
+These numbers are from the MadRust side only and are recorded in
+`bench/results/e2/`. The comparison against mainline has to be run again: the
+reference image was lost with the volume it was on, and the published
+comparison in `bench/results/` was measured with the kernel of the previous
+milestone.
+
 ### What the numbers mean
 
 The comparison is between two kernels running the same binary under the same

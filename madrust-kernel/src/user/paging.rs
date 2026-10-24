@@ -11,9 +11,10 @@
 //! direct map. There is one address space for the whole milestone: no PML4 is
 //! cloned and no address space is destroyed when the program exits.
 //!
-//! [`reserve_page`] creates the tables and clears the leaf entry, which is how
-//! an anonymous mapping takes address space without a frame; [`map_page`]
-//! fills the leaf when the page fault handler takes the frame.
+//! [`map_page`] fills a 4 KiB leaf when the page fault handler takes the
+//! frame, and [`map_large_page`] installs a 2 MiB leaf in the page directory
+//! when the range was marked with `madvise(MADV_HUGEPAGE)`. The tables are
+//! created on demand, so an `mmap` that is never touched takes no frame.
 
 use core::ptr::addr_of;
 
@@ -66,9 +67,16 @@ fn write_entry(table: *mut u64, index: usize, value: u64) {
 }
 
 /// Follow, or create, one level of the page table walk.
+///
+/// A present 2 MiB leaf is not a table: the caller handles it before it reaches
+/// this function, so a large page entry reports `None` instead of turning the
+/// mapped physical block into a table.
 fn next_table(table: *mut u64, index: usize) -> Option<*mut u64> {
     let entry = read_entry(table, index);
     if entry & paging::PRESENT != 0 {
+        if entry & paging::LARGE_PAGE != 0 {
+            return None;
+        }
         return Some(table_pointer(entry_address(entry)));
     }
     let fresh = allocate_table()?;
@@ -76,19 +84,35 @@ fn next_table(table: *mut u64, index: usize) -> Option<*mut u64> {
     Some(table_pointer(fresh))
 }
 
-/// Pointer to the leaf entry that maps `address`, if every level exists.
-fn leaf_entry(address: u64) -> Option<*mut u64> {
+/// Pointer to the page directory entry that maps the 2 MiB span of `address`.
+fn directory_entry(address: u64) -> Option<*mut u64> {
     let indices = paging::Indices::of(address);
     // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3,
     // and every entry followed below was present in the previous level.
     let mut table = addr_of!(mm_pml4) as *mut u64;
-    for index in [indices.pml4, indices.pdpt, indices.directory] {
+    for index in [indices.pml4, indices.pdpt] {
         let entry = read_entry(table, index);
         if entry & paging::PRESENT == 0 {
             return None;
         }
         table = table_pointer(entry_address(entry));
     }
+    Some(
+        // SAFETY: `table` points at the page directory for this address and
+        // `indices.directory` is a valid entry index within it.
+        unsafe { table.add(indices.directory) },
+    )
+}
+
+/// Pointer to the leaf entry that maps `address`, if every level exists.
+fn leaf_entry(address: u64) -> Option<*mut u64> {
+    let indices = paging::Indices::of(address);
+    let directory = directory_entry(address)?;
+    let entry = read_entry(directory, 0);
+    if entry & paging::PRESENT == 0 || entry & paging::LARGE_PAGE != 0 {
+        return None;
+    }
+    let table = table_pointer(entry_address(entry));
     Some(
         // SAFETY: `table` points at the page table page for this address and
         // `indices.table` is a valid entry index within it.
@@ -97,7 +121,17 @@ fn leaf_entry(address: u64) -> Option<*mut u64> {
 }
 
 /// Physical address backing `address`, if the user half maps it.
+///
+/// A 2 MiB leaf covers the whole span, so every address inside it resolves to
+/// the matching offset of the physical block.
 pub fn frame_at(address: u64) -> Option<u64> {
+    if let Some(directory) = directory_entry(address) {
+        let entry = read_entry(directory, 0);
+        if entry & paging::PRESENT != 0 && entry & paging::LARGE_PAGE != 0 {
+            let offset = address & (paging::LARGE_PAGE_SIZE - 1);
+            return Some(entry_address(entry) + offset);
+        }
+    }
     let entry = read_entry(leaf_entry(address)?, 0);
     if entry & paging::PRESENT == 0 {
         return None;
@@ -105,11 +139,29 @@ pub fn frame_at(address: u64) -> Option<u64> {
     Some(entry_address(entry))
 }
 
-/// Remove one user mapping and return the frame it held.
+/// One leaf removed from the page tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unmapped {
+    /// One 4 KiB frame.
+    Page(u64),
+    /// One 2 MiB block, allocated at [`madrust_mm::LARGE_PAGE_ORDER`].
+    LargePage(u64),
+}
+
+/// Remove one user leaf and return the physical memory it held.
 ///
-/// Returns `None` when the page is not mapped. The caller owns the frame and
-/// returns it to the allocator.
-pub fn unmap_page(address: u64) -> Option<u64> {
+/// Returns `None` when the address is not mapped. The caller owns the result
+/// and returns it to the allocator at the matching order.
+pub fn unmap(address: u64) -> Option<Unmapped> {
+    if let Some(directory) = directory_entry(address) {
+        let entry = read_entry(directory, 0);
+        if entry & paging::PRESENT != 0 && entry & paging::LARGE_PAGE != 0 {
+            let base = address & !(paging::LARGE_PAGE_SIZE - 1);
+            write_entry(directory, 0, 0);
+            madrust_arch::cpu::invalidate_page(base);
+            return Some(Unmapped::LargePage(entry_address(entry)));
+        }
+    }
     let table = leaf_entry(address)?;
     let entry = read_entry(table, 0);
     if entry & paging::PRESENT == 0 {
@@ -117,16 +169,29 @@ pub fn unmap_page(address: u64) -> Option<u64> {
     }
     write_entry(table, 0, 0);
     madrust_arch::cpu::invalidate_page(address);
-    Some(entry_address(entry))
+    Some(Unmapped::Page(entry_address(entry)))
 }
 
 /// Make a mapped user page writable or read only.
 ///
-/// Returns `false` when the page is not mapped. Every user page of this
+/// Returns `false` when the address is not mapped. Every user page of this
 /// milestone is present and reachable from ring 3; only the writable bit and
 /// the executable state change here, and x86-64 has no executable bit without
 /// `EFER.NXE`, so a non executable page stays readable and executable.
 pub fn set_writable(address: u64, writable: bool) -> bool {
+    if let Some(directory) = directory_entry(address) {
+        let entry = read_entry(directory, 0);
+        if entry & paging::PRESENT != 0 && entry & paging::LARGE_PAGE != 0 {
+            let updated = if writable {
+                entry | paging::WRITABLE
+            } else {
+                entry & !paging::WRITABLE
+            };
+            write_entry(directory, 0, updated);
+            madrust_arch::cpu::invalidate_page(address & !(paging::LARGE_PAGE_SIZE - 1));
+            return true;
+        }
+    }
     let Some(table) = leaf_entry(address) else {
         return false;
     };
@@ -147,8 +212,11 @@ pub fn set_writable(address: u64, writable: bool) -> bool {
 /// Map one 4 KiB user page at `address`.
 ///
 /// Intermediate tables are created on demand. Returns `None` when a frame for
-/// a table page cannot be allocated.
+/// a table page cannot be allocated or when `physical` is not page aligned.
 pub fn map_page(address: u64, physical: u64, writable: bool) -> Option<()> {
+    if !physical.is_multiple_of(paging::PAGE_SIZE) {
+        return None;
+    }
     let indices = paging::Indices::of(address);
     // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3.
     let mut table = addr_of!(mm_pml4) as *mut u64;
@@ -164,29 +232,30 @@ pub fn map_page(address: u64, physical: u64, writable: bool) -> Option<()> {
     Some(())
 }
 
-/// Reserve one 4 KiB user page as not present.
+/// Map one 2 MiB user page at `address`.
 ///
-/// The intermediate tables are created; the leaf entry is cleared, so the next
-/// access raises a page fault and the fault handler installs the frame. This is
-/// what `mmap` does: it reserves address space without taking physical memory.
-pub fn reserve_page(address: u64) -> Option<()> {
+/// The page directory entry must still be empty, so a range that already
+/// faulted 4 KiB pages is left alone and the caller falls back to the small
+/// page path. Returns `None` when the address or the physical block is not
+/// 2 MiB aligned, or when the tables cannot be created.
+pub fn map_large_page(address: u64, physical: u64, writable: bool) -> Option<()> {
+    if !address.is_multiple_of(paging::LARGE_PAGE_SIZE)
+        || !physical.is_multiple_of(paging::LARGE_PAGE_SIZE)
+    {
+        return None;
+    }
     let indices = paging::Indices::of(address);
     // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3.
     let mut table = addr_of!(mm_pml4) as *mut u64;
-    for index in [indices.pml4, indices.pdpt, indices.directory] {
+    for index in [indices.pml4, indices.pdpt] {
         table = next_table(table, index)?;
     }
-    write_entry(table, indices.table, 0);
-    Some(())
-}
-
-/// Reserve every page of `[address, address + length)` as not present.
-pub fn reserve_range(address: u64, length: u64) -> Option<()> {
-    let mut page = address;
-    while page < address.checked_add(length)? {
-        reserve_page(page)?;
-        page = page.checked_add(paging::PAGE_SIZE)?;
+    if read_entry(table, indices.directory) & paging::PRESENT != 0 {
+        return None;
     }
+    let entry = paging::user_large_page_entry(physical, writable)?;
+    write_entry(table, indices.directory, entry);
+    madrust_arch::cpu::invalidate_page(address);
     Some(())
 }
 

@@ -25,6 +25,13 @@ pub const PROT_WRITE: u64 = 1 << 1;
 pub enum MappingKind {
     /// Private anonymous memory, faulted in one page at a time.
     Anonymous,
+    /// Read only memory borrowed from a file of the initramfs.
+    ///
+    /// `physical` is the physical address of the first byte of the file data
+    /// and `offset` is the file offset the mapping starts at. Both are needed
+    /// because the archive lives in reserved physical memory and a fault maps
+    /// the page that already holds the bytes.
+    File { physical: u64, offset: u64 },
 }
 
 /// One reserved range of the user half.
@@ -38,6 +45,11 @@ pub struct Mapping {
     pub protection: u64,
     /// What backs the range.
     pub kind: MappingKind,
+    /// `true` when the range asked for 2 MiB pages with `madvise`.
+    ///
+    /// It is a hint: the fault handler still falls back to a 4 KiB page when
+    /// the address is not aligned or when the block cannot be allocated.
+    pub huge: bool,
 }
 
 impl Mapping {
@@ -48,6 +60,18 @@ impl Mapping {
             length,
             protection,
             kind: MappingKind::Anonymous,
+            huge: false,
+        }
+    }
+
+    /// Build a read only file mapping record.
+    pub const fn file(base: u64, length: u64, protection: u64, physical: u64, offset: u64) -> Self {
+        Self {
+            base,
+            length,
+            protection,
+            kind: MappingKind::File { physical, offset },
+            huge: false,
         }
     }
 
@@ -65,6 +89,28 @@ impl Mapping {
     pub const fn is_writable(&self) -> bool {
         self.protection & PROT_WRITE != 0
     }
+
+    /// `true` when the range is backed by a file.
+    pub const fn is_file(&self) -> bool {
+        matches!(self.kind, MappingKind::File { .. })
+    }
+
+    /// Physical address that backs `address` of a file mapping.
+    ///
+    /// Returns `None` for an anonymous mapping and for an address outside the
+    /// record. The caller checks that the result is page aligned before it
+    /// installs it in a page table.
+    pub fn file_physical(&self, address: u64) -> Option<u64> {
+        let MappingKind::File { physical, offset } = self.kind else {
+            return None;
+        };
+        if !self.contains(address) {
+            return None;
+        }
+        physical
+            .checked_add(offset)?
+            .checked_add(address.checked_sub(self.base)?)
+    }
 }
 
 /// Why the table refused an edit.
@@ -74,6 +120,8 @@ pub enum MappingError {
     Full,
     /// The range is empty or wraps around the address space.
     InvalidRange,
+    /// A write protection was requested for a file backed range.
+    ReadOnly,
 }
 
 /// Fixed-size table of user mappings.
@@ -224,6 +272,18 @@ impl<const CAPACITY: usize> MappingTable<CAPACITY> {
         if base >= end {
             return Err(MappingError::InvalidRange);
         }
+        // A file mapping borrows reserved memory and cannot take a write
+        // protection, so refuse the edit before it changes any record.
+        if protection & PROT_WRITE != 0 {
+            let writes_file = self
+                .slots
+                .iter()
+                .flatten()
+                .any(|mapping| mapping.is_file() && mapping.base < end && base < mapping.end());
+            if writes_file {
+                return Err(MappingError::ReadOnly);
+            }
+        }
         self.split_at(base)?;
         self.split_at(end)?;
         for slot in &mut self.slots {
@@ -233,6 +293,26 @@ impl<const CAPACITY: usize> MappingTable<CAPACITY> {
                         protection,
                         ..mapping
                     });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Set or clear the large page hint of every record of `[base, end)`.
+    ///
+    /// The range is split at both boundaries, so the hint covers exactly the
+    /// records the program advised. The hint does not change the addresses.
+    pub fn advise(&mut self, base: u64, end: u64, huge: bool) -> Result<(), MappingError> {
+        if base >= end {
+            return Err(MappingError::InvalidRange);
+        }
+        self.split_at(base)?;
+        self.split_at(end)?;
+        for slot in &mut self.slots {
+            if let Some(mapping) = *slot {
+                if mapping.base >= base && mapping.end() <= end {
+                    *slot = Some(Mapping { huge, ..mapping });
                 }
             }
         }
@@ -273,7 +353,7 @@ impl<const CAPACITY: usize> MappingTable<CAPACITY> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mapping, MappingError, MappingTable, USER_HALF_END};
+    use super::{Mapping, MappingError, MappingTable, PROT_WRITE, USER_HALF_END};
 
     /// One page.
     const PAGE: u64 = 0x1000;
@@ -402,6 +482,56 @@ mod tests {
             Some(2 * PAGE)
         );
         assert_eq!(table.find(0x4000).map(|mapping| mapping.length), Some(PAGE));
+    }
+
+    #[test]
+    fn a_file_mapping_resolves_the_physical_address_of_each_page() {
+        let mapping = Mapping::file(0x4000, 2 * PAGE, 0x1, 0x20_0000, 0x3000);
+        assert!(mapping.is_file());
+        assert!(!mapping.is_writable());
+        assert_eq!(mapping.file_physical(0x4000), Some(0x20_3000));
+        assert_eq!(mapping.file_physical(0x5000), Some(0x20_4000));
+        assert_eq!(mapping.file_physical(0x6000), None);
+        assert_eq!(
+            Mapping::anonymous(0x4000, PAGE, 0x1).file_physical(0x4000),
+            None
+        );
+    }
+
+    #[test]
+    fn advise_marks_the_range_and_survives_a_split() {
+        let mut table = MappingTable::<8>::new();
+        table
+            .insert(Mapping::anonymous(0x1000, 4 * PAGE, 0x3))
+            .expect("record fits");
+        table.advise(0x2000, 0x4000, true).expect("range fits");
+        assert_eq!(table.find(0x1000).map(|mapping| mapping.huge), Some(false));
+        assert_eq!(table.find(0x2000).map(|mapping| mapping.huge), Some(true));
+        assert_eq!(table.find(0x3000).map(|mapping| mapping.huge), Some(true));
+        assert_eq!(table.find(0x4000).map(|mapping| mapping.huge), Some(false));
+
+        table.advise(0x3000, 0x4000, false).expect("range fits");
+        assert_eq!(table.find(0x2000).map(|mapping| mapping.huge), Some(true));
+        assert_eq!(table.find(0x3000).map(|mapping| mapping.huge), Some(false));
+    }
+
+    #[test]
+    fn protect_refuses_to_make_a_file_mapping_writable() {
+        let mut table = MappingTable::<4>::new();
+        table
+            .insert(Mapping::file(0x1000, PAGE, 0x1, 0x20_0000, 0))
+            .expect("record fits");
+        assert_eq!(
+            table.protect(0x1000, 0x2000, PROT_WRITE),
+            Err(MappingError::ReadOnly)
+        );
+        assert_eq!(
+            table.find(0x1000).map(|mapping| mapping.protection),
+            Some(0x1)
+        );
+        table
+            .protect(0x1000, 0x2000, 0x1)
+            .expect("read stays valid");
     }
 
     #[test]

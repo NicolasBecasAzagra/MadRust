@@ -27,6 +27,7 @@
 use core::cell::UnsafeCell;
 
 use madrust_initramfs::Entry;
+use madrust_mm::virt_to_phys;
 
 use crate::console::console;
 use crate::sync;
@@ -326,6 +327,27 @@ pub fn seek(descriptor: u64, offset: i64, whence: u64) -> i64 {
     file.offset = target;
     guard.table.descriptors[index] = Some(Kind::File(file));
     i64::try_from(target).unwrap_or(i64::MAX)
+}
+
+/// Physical address and length of the file behind a descriptor.
+///
+/// `mmap` uses it to point the page table entry at the archive bytes instead
+/// of copying them. The entry data comes from reserved module memory, so the
+/// address is stable and through the direct map. A descriptor that is not a
+/// regular file reports `ENODEV`.
+pub fn file_backing(descriptor: u64) -> Result<(u64, u64), i64> {
+    let guard = lock();
+    let Some(kind) = descriptor_kind(&guard.table.descriptors, descriptor) else {
+        return Err(EBADF);
+    };
+    let Kind::File(file) = kind else {
+        return Err(ENODEV);
+    };
+    let data = file.entry.data();
+    let Some(physical) = virt_to_phys(data.as_ptr() as u64) else {
+        return Err(ENODEV);
+    };
+    Ok((physical, data.len() as u64))
 }
 
 /// `close`: release one descriptor.

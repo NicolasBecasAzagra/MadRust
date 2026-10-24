@@ -4,12 +4,13 @@
 use crate::buddy::BuddyAllocator;
 use crate::heap::{HeapError, SizeClassHeap, MAX_SMALL, SIZE_CLASSES};
 use crate::paging::{
-    directories_for, entry, large_page_entry, large_pages_for, Indices, DIRECTORY_SPAN, LARGE_PAGE,
-    LARGE_PAGE_SIZE, PAGE_SIZE, PRESENT, WRITABLE,
+    directories_for, entry, large_page_entry, large_pages_for, user_large_page_entry, Indices,
+    DIRECTORY_SPAN, LARGE_PAGE, LARGE_PAGE_SIZE, PAGE_SIZE, PRESENT, USER, WRITABLE,
 };
 use crate::store::{SliceStore, VecStore};
 use crate::{
-    phys_to_virt, virt_to_phys, FrameError, DIRECT_MAP_BASE, DIRECT_MAP_SPAN, FRAME_SIZE, MAX_ORDER,
+    phys_to_virt, virt_to_phys, FrameError, DIRECT_MAP_BASE, DIRECT_MAP_SPAN, FRAME_SIZE,
+    LARGE_PAGE_ORDER, MAX_ORDER,
 };
 
 /// Virtual address the linker script links the kernel image at.
@@ -473,6 +474,34 @@ fn large_pages_require_two_mib_alignment() {
     );
     assert_eq!(large_page_entry(KERNEL_PHYSICAL_BASE), None);
     assert_eq!(large_page_entry(0x20_1000), None);
+}
+
+#[test]
+fn a_user_large_page_is_reachable_from_ring_three() {
+    assert_eq!(
+        user_large_page_entry(0x40_0000, true),
+        Some(0x40_0000 | PRESENT | WRITABLE | USER | LARGE_PAGE)
+    );
+    assert_eq!(
+        user_large_page_entry(0x40_0000, false),
+        Some(0x40_0000 | PRESENT | USER | LARGE_PAGE)
+    );
+    assert_eq!(user_large_page_entry(0x40_1000, true), None);
+}
+
+#[test]
+fn the_allocator_serves_a_two_mib_block() {
+    let frames = 1usize << LARGE_PAGE_ORDER;
+    let mut allocator = released(frames);
+    let base = allocator
+        .allocate(LARGE_PAGE_ORDER)
+        .expect("one large block available");
+    assert_eq!(base, 0);
+    assert_eq!(allocator.free_frames(), 0);
+    allocator
+        .deallocate(base, LARGE_PAGE_ORDER)
+        .expect("block was allocated");
+    assert_eq!(allocator.free_frames(), frames);
 }
 
 #[test]

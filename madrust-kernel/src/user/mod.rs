@@ -156,5 +156,6 @@ pub fn run(program: &Program) -> u64 {
     cpu::enable_interrupts();
     let (used, capacity) = vm::mapping_usage();
     crate::kprintln!("[user] mappings: {} of {} slots in use", used, capacity);
+    crate::kprintln!("[user] large pages mapped: {}", vm::large_pages());
     status
 }

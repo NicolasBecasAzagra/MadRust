@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! User virtual memory: the program break and the anonymous mappings.
+//! User virtual memory: the program break, anonymous mappings and file
+//! mappings over the initramfs.
 //!
 //! The kernel owns the whole user half of the address space and there is one
 //! user context, so the mapping bookkeeping is a pair of statics: the program
-//! break grows the image upwards, and the anonymous mappings come from a bump
-//! allocator that starts at 256 MiB.
+//! break grows the image upwards, and the mappings come from a bump allocator
+//! that starts at 256 MiB.
 //!
-//! Anonymous mappings reserve address space, they do not allocate it. `mmap`
-//! records the range in [`super::mappings`] and creates not-present page table
-//! entries with [`super::paging::reserve_range`]; the page fault handler in
-//! [`handle_page_fault`] installs a zeroed frame the first time the program
-//! touches a page. `munmap` and a `MAP_FIXED` replacement walk the page table
-//! of the range and return the frames that were actually faulted in, so a
-//! program that maps and unmaps in a loop does not leak physical memory.
+//! Mappings reserve address space, they do not allocate it. `mmap` records the
+//! range in [`super::mappings`]; the page fault handler in
+//! [`handle_page_fault`] installs a zeroed frame for an anonymous page, a
+//! 2 MiB block when `madvise(MADV_HUGEPAGE)` marked the range and the fault is
+//! aligned, or the physical page the initramfs already holds for a file page.
+//! `munmap` and a `MAP_FIXED` replacement walk the page table of the range and
+//! return anonymous memory to the allocator, so a program that maps and unmaps
+//! in a loop does not leak physical memory. A file page is unmapped without a
+//! free: the archive frames belong to the initramfs, not to the mapping.
 //!
 //! The program break keeps its eager behaviour: `brk` maps and unmaps its
 //! frames directly, without a record in the mapping table. `mremap` is not
@@ -23,7 +26,7 @@
 //! | Range | Use |
 //! |-------|-----|
 //! | `0x0000_0000_0040_0000` | loaded image, then the program break |
-//! | `0x0000_0000_1000_0000` | anonymous mappings |
+//! | `0x0000_0000_1000_0000` | mappings |
 //! | `0x0000_0000_8000_0000` | top of the user stack; it grows downwards |
 //!
 //! The running program never sees an overlap: the loader maps the image, the
@@ -33,12 +36,13 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use madrust_elf::USER_SPACE_END;
-use madrust_mm::mapping::PROT_WRITE;
-use madrust_mm::paging::PAGE_SIZE;
+use madrust_mm::mapping::{Mapping, MappingTable, PROT_WRITE};
+use madrust_mm::paging::{LARGE_PAGE_SIZE, PAGE_SIZE};
+use madrust_mm::LARGE_PAGE_ORDER;
 
-use super::errno::{EEXIST, EINVAL, ENODEV, ENOMEM};
-use super::mappings;
-use super::paging;
+use super::errno::{EEXIST, EINVAL, ENODEV, ENOMEM, EROFS};
+use super::mappings::CAPACITY;
+use super::{fd, mappings, paging};
 use crate::memory;
 
 /// First address handed out by `mmap`.
@@ -64,6 +68,15 @@ pub const MAP_ANONYMOUS: u64 = 1 << 5;
 
 /// `MAP_FIXED_NOREPLACE`: like `MAP_FIXED`, but fail when something is mapped.
 pub const MAP_FIXED_NOREPLACE: u64 = 1 << 20;
+
+/// `MADV_HUGEPAGE`: prefer 2 MiB pages in the range.
+const MADV_HUGEPAGE: u64 = 14;
+
+/// `MADV_NOHUGEPAGE`: go back to 4 KiB pages in the range.
+const MADV_NOHUGEPAGE: u64 = 15;
+
+/// Large pages the kernel mapped since boot.
+static LARGE_PAGES: AtomicU64 = AtomicU64::new(0);
 
 /// Page fault error code: the fault is a protection violation, not a missing
 /// translation. The hardware sets this bit when the entry is present.
@@ -143,7 +156,9 @@ pub fn sys_brk(requested: u64) -> u64 {
             return floor;
         }
     } else if new_end < old_end {
-        unmap_region(new_end, old_end - new_end);
+        // The break has no mapping record, so every page it holds is
+        // anonymous and the empty table makes the walk free them all.
+        unmap_region(&MappingTable::new(), new_end, old_end - new_end);
     }
 
     PROGRAM_BREAK.store(requested, Ordering::Release);
@@ -170,15 +185,16 @@ fn checked_length(length: u64) -> Result<u64, i64> {
     Ok(page_up(length))
 }
 
-/// `mmap`: reserve an anonymous mapping and return its base address.
+/// `mmap`: reserve an anonymous or file backed mapping and return its base.
 ///
-/// The call records the range, its protection and its kind, and creates the
-/// page table entries as not present. It does not take a frame: the frames
-/// arrive when the program touches the pages and the fault handler maps them.
+/// The call records the range and its protection and takes no frame. An
+/// anonymous page faults in a zeroed frame the first time it is touched. A
+/// file page is mapped to the physical page the initramfs already holds, so
+/// the mapping copies nothing and frees nothing.
 ///
-/// File backed mappings are rejected with `ENODEV`, because this kernel has no
-/// filesystem to read them from. Everything a static standard library program
-/// maps is anonymous.
+/// A file mapping is read only: `PROT_WRITE` reports `EROFS`, the offset must
+/// be page aligned, the length covers whole pages, and a range that reaches
+/// past the end of the file reports `EINVAL`.
 pub fn mmap(
     hint: u64,
     length: u64,
@@ -187,14 +203,39 @@ pub fn mmap(
     descriptor: i64,
     offset: u64,
 ) -> Result<u64, i64> {
-    if length == 0 || offset != 0 {
+    if length == 0 {
         return Err(EINVAL);
     }
-    if flags & MAP_ANONYMOUS == 0 {
-        return Err(ENODEV);
-    }
     let length = checked_length(length)?;
+    let anonymous = flags & MAP_ANONYMOUS != 0;
     let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+
+    let file = if anonymous {
+        if offset != 0 {
+            return Err(EINVAL);
+        }
+        None
+    } else {
+        if !offset.is_multiple_of(PAGE_SIZE) {
+            return Err(EINVAL);
+        }
+        if protection & PROT_WRITE != 0 {
+            return Err(EROFS);
+        }
+        let Ok(descriptor) = u64::try_from(descriptor) else {
+            return Err(ENODEV);
+        };
+        let (physical, size) = fd::file_backing(descriptor)?;
+        let end = offset.checked_add(length).ok_or(EINVAL)?;
+        if end > size {
+            return Err(EINVAL);
+        }
+        let physical = physical.checked_add(offset).ok_or(EINVAL)?;
+        if !physical.is_multiple_of(PAGE_SIZE) {
+            return Err(EINVAL);
+        }
+        Some((physical, offset))
+    };
 
     let base = if fixed {
         if hint == 0 || !hint.is_multiple_of(PAGE_SIZE) {
@@ -212,22 +253,21 @@ pub fn mmap(
         allocate_address(length)?
     };
 
-    if fixed {
-        // MAP_FIXED replaces whatever the program had mapped there: replace
-        // the records first, then return the frames they faulted in.
-        mappings::replace(base, length, protection).map_err(|_| ENOMEM)?;
-        unmap_region(base, length);
-    } else {
-        mappings::record(base, length, protection).map_err(|_| ENOMEM)?;
-    }
-    if paging::reserve_range(base, length).is_none() {
-        let _ = mappings::remove(base, length);
-        return Err(ENOMEM);
-    }
+    let mapping = match file {
+        Some((physical, offset)) => Mapping::file(base, length, protection, physical, offset),
+        None => Mapping::anonymous(base, length, protection),
+    };
 
-    // A mapping is never file backed here, so the descriptor is unused. It is
-    // part of the Linux signature and the program passes -1.
-    let _ = descriptor;
+    if fixed {
+        // MAP_FIXED replaces whatever the program had mapped there. The
+        // snapshot keeps the old kind of each present page, so a file page is
+        // unmapped without freeing the archive memory behind it.
+        let previous = mappings::snapshot();
+        mappings::replace(base, length, mapping).map_err(|_| ENOMEM)?;
+        unmap_region(&previous, base, length);
+    } else {
+        mappings::record(mapping).map_err(|_| ENOMEM)?;
+    }
     Ok(base)
 }
 
@@ -261,8 +301,9 @@ pub fn munmap(address: u64, length: u64) -> Result<(), i64> {
     if end > USER_SPACE_END {
         return Err(EINVAL);
     }
+    let previous = mappings::snapshot();
     mappings::remove(address, length).map_err(|_| ENOMEM)?;
-    unmap_region(address, length);
+    unmap_region(&previous, address, length);
     Ok(())
 }
 
@@ -287,7 +328,11 @@ pub fn mprotect(address: u64, length: u64, protection: u64) -> Result<(), i64> {
 
     // Ranges outside the table belong to the image or to the break; their
     // present pages still change, and a missing page needs no record.
-    mappings::protect(address, page_up(length), protection).map_err(|_| ENOMEM)?;
+    match mappings::protect(address, page_up(length), protection) {
+        Ok(()) => {}
+        Err(madrust_mm::mapping::MappingError::ReadOnly) => return Err(EROFS),
+        Err(_) => return Err(ENOMEM),
+    }
 
     let writable = protection & PROT_WRITE != 0;
     let mut page = address;
@@ -315,33 +360,47 @@ pub fn mremap(
     Err(EINVAL)
 }
 
-/// `madvise`: accept the advice and keep the pages as they are.
+/// `madvise`: record or clear the large page hint of a range.
 ///
-/// This kernel never reclaims a user mapping behind the program's back, so the
-/// advice has no work to do. Rejecting an unknown advice would break a program
-/// that only asks for an optimisation.
-pub fn madvise(address: u64, length: u64) -> Result<(), i64> {
+/// The hint is not an order. A fault inside a hinted range still falls back to
+/// a 4 KiB page when the address is not 2 MiB aligned, when the page directory
+/// entry is already in use, or when no 2 MiB block is free. Any other advice is
+/// accepted and ignored, so a program that only asks for an optimisation is not
+/// broken by the refusal.
+pub fn madvise(address: u64, length: u64, advice: u64) -> Result<(), i64> {
     if address == 0 || !address.is_multiple_of(PAGE_SIZE) {
         return Err(EINVAL);
     }
     if length == 0 {
         return Ok(());
     }
+    let length = page_up(length);
     if address
         .checked_add(length)
         .is_none_or(|end| end > USER_SPACE_END)
     {
         return Err(EINVAL);
     }
+    let huge = match advice {
+        MADV_HUGEPAGE => Some(true),
+        MADV_NOHUGEPAGE => Some(false),
+        _ => None,
+    };
+    if let Some(huge) = huge {
+        mappings::advise(address, length, huge).map_err(|_| ENOMEM)?;
+    }
     Ok(())
 }
 
-/// Fault one page of an anonymous mapping in.
+/// Fault one page in.
 ///
 /// Called from the page fault handler with interrupts disabled, so the mapping
-/// table lookup and the frame allocation cannot race a system call. The frame
-/// comes from the buddy allocator zeroed and is mapped with the protection the
-/// record carries; the faulting instruction then runs again and succeeds.
+/// table lookup and the frame allocation cannot race a system call.
+///
+/// A file page is mapped to the physical page the archive already holds and
+/// takes no frame. An anonymous page takes a zeroed frame, or a zeroed 2 MiB
+/// block when the range asked for large pages and the fault lands on a 2 MiB
+/// boundary. The faulting instruction then runs again and succeeds.
 pub fn handle_page_fault(address: u64, error: u64) -> PageFaultOutcome {
     if address >= USER_SPACE_END {
         return PageFaultOutcome::KernelAddress;
@@ -357,6 +416,30 @@ pub fn handle_page_fault(address: u64, error: u64) -> PageFaultOutcome {
     if error & PAGE_FAULT_WRITE != 0 && !mapping.is_writable() {
         return PageFaultOutcome::Protection;
     }
+    if mapping.is_file() {
+        let Some(physical) = mapping.file_physical(address) else {
+            return PageFaultOutcome::Protection;
+        };
+        if paging::map_page(address, physical, false).is_none() {
+            return PageFaultOutcome::OutOfMemory;
+        }
+        madrust_arch::cpu::invalidate_page(address);
+        return PageFaultOutcome::Resolved;
+    }
+    if mapping.huge
+        && address.is_multiple_of(LARGE_PAGE_SIZE)
+        && address + LARGE_PAGE_SIZE <= mapping.end()
+    {
+        let block = memory::with(|manager| manager.alloc_zeroed_block(LARGE_PAGE_ORDER)).flatten();
+        if let Some(block) = block {
+            if paging::map_large_page(address, block, mapping.is_writable()).is_some() {
+                LARGE_PAGES.fetch_add(1, Ordering::Relaxed);
+                madrust_arch::cpu::invalidate_page(address);
+                return PageFaultOutcome::Resolved;
+            }
+            let _ = memory::with(|manager| manager.free_block(block, LARGE_PAGE_ORDER));
+        }
+    }
     let Some(frame) = memory::with(|manager| manager.alloc_zeroed_frame()).flatten() else {
         return PageFaultOutcome::OutOfMemory;
     };
@@ -366,6 +449,11 @@ pub fn handle_page_fault(address: u64, error: u64) -> PageFaultOutcome {
     }
     madrust_arch::cpu::invalidate_page(address);
     PageFaultOutcome::Resolved
+}
+
+/// Number of 2 MiB pages the kernel mapped since boot.
+pub fn large_pages() -> u64 {
+    LARGE_PAGES.load(Ordering::Relaxed)
 }
 
 /// Number of mapping slots in use and in the table.
@@ -394,16 +482,17 @@ fn region_is_free(address: u64, length: u64) -> bool {
 /// the whole range back, so a failed mapping never leaves a partial range
 /// behind.
 fn map_region_eager(address: u64, length: u64) -> Result<(), i64> {
+    let empty = MappingTable::new();
     let mut page = address;
     while page < address + length {
         let frame = memory::with(|manager| manager.alloc_zeroed_frame()).flatten();
         let Some(frame) = frame else {
-            unmap_region(address, page - address);
+            unmap_region(&empty, address, page - address);
             return Err(ENOMEM);
         };
         if paging::map_page(page, frame, true).is_none() {
             let _ = memory::with(|manager| manager.free_frame(frame));
-            unmap_region(address, page - address);
+            unmap_region(&empty, address, page - address);
             return Err(ENOMEM);
         }
         page += PAGE_SIZE;
@@ -411,16 +500,25 @@ fn map_region_eager(address: u64, length: u64) -> Result<(), i64> {
     Ok(())
 }
 
-/// Remove every present page of the range and return its frames to the
-/// allocator.
+/// Remove every present leaf of the range and return anonymous memory to the
+/// allocator at the order it was taken.
 ///
-/// Pages that were never faulted have no entry, so this walks rows of 512 page
-/// table entries and touches only the leaves that the range covers.
-fn unmap_region(address: u64, length: u64) {
+/// `previous` is the mapping table before the edit. A page that belonged to a
+/// file mapping is unmapped without a free: the archive frames are reserved
+/// and were never allocated to this mapping. Pages that were never faulted
+/// have no entry, so they cost a table walk and nothing else.
+fn unmap_region(previous: &MappingTable<CAPACITY>, address: u64, length: u64) {
     let mut page = address;
     while page < address + length {
-        if let Some(frame) = paging::unmap_page(page) {
-            let _ = memory::with(|manager| manager.free_frame(frame));
+        let file_backed = previous.find(page).is_some_and(|mapping| mapping.is_file());
+        match paging::unmap(page) {
+            Some(paging::Unmapped::Page(frame)) if !file_backed => {
+                let _ = memory::with(|manager| manager.free_frame(frame));
+            }
+            Some(paging::Unmapped::LargePage(block)) if !file_backed => {
+                let _ = memory::with(|manager| manager.free_block(block, LARGE_PAGE_ORDER));
+            }
+            Some(_) | None => {}
         }
         page += PAGE_SIZE;
     }

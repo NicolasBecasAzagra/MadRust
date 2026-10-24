@@ -64,31 +64,83 @@ chmod 666 "$work/dev/null"
 python3 - "$output" <<'PY'
 import sys
 
+# Rewrite the archive so the data of every regular file starts on a page
+# boundary. MadRust maps a file without copying it, so the page table entry has
+# to point at the page that already holds the bytes; a `newc` archive only
+# aligns file data to four bytes. A hidden regular file with enough zero bytes
+# shifts the next header, so the padding costs a few KiB and nothing has to
+# change in either kernel.
 path = sys.argv[1]
 data = bytearray(open(path, "rb").read())
+entries = []
 offset = 0
 while offset + 110 <= len(data):
-    if data[offset : offset + 6] not in (b"070701", b"070702"):
+    magic = bytes(data[offset : offset + 6])
+    if magic not in (b"070701", b"070702"):
         raise SystemExit("mkinitramfs: bad cpio magic")
-    def number(at):
-        return int(data[offset + at : offset + at + 8], 16)
-    name_size = number(94)
-    file_size = number(54)
+    fields = [
+        int(data[offset + 6 + 8 * i : offset + 6 + 8 * (i + 1)], 16)
+        for i in range(13)
+    ]
+    name_size = fields[11]
+    file_size = fields[6]
     name_start = offset + 110
     name = bytes(data[name_start : name_start + name_size - 1])
+    data_start = (name_start + name_size + 3) & ~3
+    body = bytes(data[data_start : data_start + file_size])
+    if name == b"./dev/console":
+        fields[1] = 0o20600  # S_IFCHR | 0600
+        fields[9] = 5  # major
+        fields[10] = 1  # minor
+    elif name == b"./dev/null":
+        fields[1] = 0o20666  # S_IFCHR | 0666
+        fields[9] = 1  # major
+        fields[10] = 3  # minor
+    entries.append((magic, fields, name, body))
     if name == b"TRAILER!!!":
         break
-    data_start = (name_start + name_size + 3) & ~3
-    if name == b"./dev/console":
-        data[offset + 14 : offset + 22] = b"00002180"  # S_IFCHR | 0600
-        data[offset + 78 : offset + 86] = b"00000005"  # major
-        data[offset + 86 : offset + 94] = b"00000001"  # minor
-    elif name == b"./dev/null":
-        data[offset + 14 : offset + 22] = b"000021b6"  # S_IFCHR | 0666
-        data[offset + 78 : offset + 86] = b"00000001"  # major
-        data[offset + 86 : offset + 94] = b"00000003"  # minor
     offset = (data_start + file_size + 3) & ~3
-open(path, "wb").write(data)
+else:
+    raise SystemExit("mkinitramfs: no cpio trailer")
+
+
+def align4(value):
+    return (value + 3) & ~3
+
+
+def encode(magic, fields, name, size):
+    fields = fields.copy()
+    fields[6] = size
+    fields[11] = len(name) + 1
+    block = magic + b"".join(f"{value:08x}".encode() for value in fields)
+    block += name + b"\0"
+    block += b"\0" * (-len(block) % 4)
+    return block
+
+
+out = bytearray()
+pad_index = 0
+for magic, fields, name, body in entries:
+    regular = (fields[1] & 0o170000) == 0o100000
+    if regular and body and name != b"TRAILER!!!":
+        # Compute the data offset the target would get, then pick the padding
+        # length that moves the next header to the page-aligned residue.
+        pad_name = b"./.align%d" % pad_index
+        base = align4(len(out) + 110 + len(pad_name) + 1)
+        header = 110 + len(name) + 1
+        aligned = header + (-header % 4)
+        want = (-aligned) % 4096
+        pad_size = (want - base) % 4096
+        pad_fields = [100000 + pad_index, 0o100644, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+        out += encode(b"070701", pad_fields, pad_name, pad_size)
+        out += b"\0" * pad_size
+        out += b"\0" * (-len(out) % 4)
+        pad_index += 1
+    out += encode(magic, fields, name, len(body))
+    out += body
+    out += b"\0" * (-len(out) % 4)
+
+open(path, "wb").write(out)
 PY
 
 echo "mkinitramfs: wrote $output ($(wc -c < "$output" | tr -d ' ') bytes)"

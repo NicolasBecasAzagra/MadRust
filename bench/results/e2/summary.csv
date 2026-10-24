@@ -1,0 +1,9 @@
+kernel,workload,unit,samples,errors,missing,median,p99,stddev
+madrust,syscall,ns/op,30,0,0,189.50,246.00,14.15
+madrust,mmap,ns/MiB,30,0,0,2920167.50,5021006.00,621690.99
+madrust,weights,ns/MiB,5,0,0,982971.00,1041708.00,30106.23
+madrust,weights-tail,ns/page,5,0,0,321937.00,531343.00,88197.62
+madrust,weights-huge,ns/MiB,10,0,0,486601.50,593227.00,38573.49
+madrust,weights-huge-tail,ns/page,10,0,0,57733.00,258332.00,62632.23
+madrust,futex,ns/roundtrip,30,0,0,3282.00,24555.00,4078.42
+madrust,threads,ns/total,30,0,0,240693.00,641848.00,73505.27

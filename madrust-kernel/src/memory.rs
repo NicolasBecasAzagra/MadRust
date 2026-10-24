@@ -188,6 +188,37 @@ impl MemoryManager {
         self.frames.deallocate(frame, 0)
     }
 
+    /// Allocate one block of `1 << order` frames and return its physical base.
+    ///
+    /// The buddy allocator returns a block aligned to its own size, which is
+    /// what a 2 MiB page table entry needs.
+    pub fn alloc_block(&mut self, order: u8) -> Option<u64> {
+        self.frames
+            .allocate(order)
+            .ok()
+            .map(|frame| frame as u64 * FRAME_SIZE as u64)
+    }
+
+    /// Allocate one block of `1 << order` frames that reads back as zero.
+    pub fn alloc_zeroed_block(&mut self, order: u8) -> Option<u64> {
+        let physical = self.alloc_block(order)?;
+        let size = (1usize << order) * FRAME_SIZE;
+        // SAFETY: the allocator just removed the whole block from its free
+        // lists and nothing else references it, so the zero fill is exclusive.
+        // The direct map translates the physical base.
+        unsafe {
+            core::ptr::write_bytes(phys_to_virt(physical) as *mut u8, 0, size);
+        }
+        Some(physical)
+    }
+
+    /// Return a block obtained from [`MemoryManager::alloc_block`].
+    pub fn free_block(&mut self, physical: u64, order: u8) -> Result<(), FrameError> {
+        let frame = usize::try_from(physical / FRAME_SIZE as u64)
+            .map_err(|_| FrameError::OutOfRange { frame: usize::MAX })?;
+        self.frames.deallocate(frame, order)
+    }
+
     /// Number of free physical frames.
     pub fn free_frames(&self) -> usize {
         self.frames.free_frames()

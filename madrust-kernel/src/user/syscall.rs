@@ -440,7 +440,7 @@ pub extern "C" fn madrust_syscall_dispatch(
         ),
         SYS_MUNMAP => result(vm::munmap(argument1, argument2)),
         SYS_MPROTECT => result(vm::mprotect(argument1, argument2, argument3)),
-        SYS_MADVISE => result(vm::madvise(argument1, argument2)),
+        SYS_MADVISE => result(vm::madvise(argument1, argument2, argument3)),
         SYS_MREMAP => sys_mremap(argument1, argument2, argument3, argument4, argument5),
         SYS_ARCH_PRCTL => sys_arch_prctl(argument1, argument2),
         SYS_RT_SIGACTION => sys_rt_sigaction(argument1, argument3),

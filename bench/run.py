@@ -40,14 +40,21 @@ DEFAULT_ITERATIONS = 30
 # samples than the others and still finishes in a few seconds under emulation.
 WEIGHTS_ITERATIONS = 5
 
+# A 2 MiB fault is rare, so the huge run takes more samples to keep the slowest
+# sample from being a single host preemption.
+WEIGHTS_HUGE_ITERATIONS = 10
+
 # Every workload the binary prints, with its unit and the number of samples one
-# boot must produce. `weights` prints two lines per sample: the cost per MiB and
-# the slowest single page.
+# boot must produce. `weights` and `weights-huge` print two lines per sample:
+# the cost per MiB and the slowest fault per page. The huge variant asks for
+# 2 MiB pages with madvise before it touches the region.
 WORKLOADS = {
     "syscall": ("ns/op", DEFAULT_ITERATIONS),
     "mmap": ("ns/MiB", DEFAULT_ITERATIONS),
     "weights": ("ns/MiB", WEIGHTS_ITERATIONS),
     "weights-tail": ("ns/page", WEIGHTS_ITERATIONS),
+    "weights-huge": ("ns/MiB", WEIGHTS_HUGE_ITERATIONS),
+    "weights-huge-tail": ("ns/page", WEIGHTS_HUGE_ITERATIONS),
     "futex": ("ns/roundtrip", DEFAULT_ITERATIONS),
     "threads": ("ns/total", DEFAULT_ITERATIONS),
 }

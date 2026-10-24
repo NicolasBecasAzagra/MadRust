@@ -71,6 +71,11 @@ pub const fn virt_to_phys(virtual_address: u64) -> Option<u64> {
     }
 }
 
+/// Buddy order that covers one 2 MiB large page.
+///
+/// One 4 KiB frame is order 0, so 512 frames are order 9.
+pub const LARGE_PAGE_ORDER: u8 = 9;
+
 /// Largest buddy order the allocator handles.
 ///
 /// Order 0 is one frame; order 20 is `1 << 20` frames, that is 4 GiB. The

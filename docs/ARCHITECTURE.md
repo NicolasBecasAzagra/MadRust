@@ -252,6 +252,21 @@ crate with one function does not exist yet.
   `Vec` backed one in the unit tests, so splitting, merging, exhaustion and
   double free detection are covered by `cargo test` and not only by the
   on-target self test.
+- **File backed mappings (E2):** a mapping over a file of the initramfs
+  points at the physical pages of the archive, which are already reserved, so
+  nothing is allocated and nothing is copied when the mapping is created. The
+  pages arrive on access, and a fault in one of them installs a page table
+  entry that points at the archive, read only. `munmap` of such a mapping
+  frees nothing, because nothing was taken.
+- **Large pages (E2):** the user page tables hold 2 MiB leaves. `madvise`
+  with `MADV_HUGEPAGE` marks a range, with the Linux semantics of a hint and
+  not an order, and `MADV_NOHUGEPAGE` takes it back. A fault inside a marked
+  range that is 2 MiB aligned takes a 2 MiB block from the buddy allocator,
+  zeroes it and maps it as one leaf. `munmap` detects the large leaf and gives
+  the block back at the right order. The kernel counts the large pages it
+  mapped, so the effect is visible in the boot log instead of being invisible.
+  The page tables are built on demand, so installing a large leaf never
+  leaves an empty page table behind.
 - **File system (E1):** the root directory is the initramfs, and it is read
   only. A path is split into components, empty and `.` components disappear
   and `..` pops the previous one; a path that climbs above the root is
