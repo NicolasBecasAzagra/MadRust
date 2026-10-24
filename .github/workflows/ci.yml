@@ -78,5 +78,10 @@ jobs:
           grep -q "\[mem\] RAM" serial.log
           grep -q "MEM OK" serial.log
           grep -q "HEAP OK 10000" serial.log
+          grep -q "SCHED OK" serial.log
+          # Interleaving proof: every demo thread must appear in the log.
+          grep -q "^T1 " serial.log
+          grep -q "^T2 " serial.log
+          grep -q "^T3 " serial.log
           grep -q "DIV0" serial.log
           grep -q "TICKS 100" serial.log

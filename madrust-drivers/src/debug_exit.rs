@@ -19,6 +19,10 @@ pub const EXIT_BOOT_INFO_INVALID: u32 = 0x11;
 /// fails: QEMU exits with 37.
 pub const EXIT_MEMORY_FAILED: u32 = 0x12;
 
+/// Exit code used when a thread cannot be created, the boot wait expires or
+/// the scheduler loses the running thread: QEMU exits with 39.
+pub const EXIT_SCHEDULER_FAILED: u32 = 0x13;
+
 /// Terminate QEMU with `(code << 1) | 1`.
 ///
 /// If the device is absent the write is ignored, so spin forever after it.

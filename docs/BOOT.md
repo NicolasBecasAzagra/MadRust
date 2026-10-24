@@ -144,17 +144,29 @@ image.
 The boot path is deterministic and asserted by CI:
 
 ```text
-MadRust: x86_64 kernel, M1
-[boot] hvm_start_info at 0x...: version=1 flags=0x0 modules=0
+MadRust: x86_64 kernel, M3
+[mm] kernel virtual: 0xffffffff80000000
+[mm] direct map: 0xffff888000000000
+MM DIRECTMAP OK
+[boot] hvm_start_info at physical 0x0000000000001580: version=1 flags=0x0 modules=0
 [mem] 9 memory map entries
 [mem] RAM 0x000000000000 - 0x0000000009fc00 (639 KiB)
 [mem] RAM 0x00000000100000 - 0x00001ffdf000 (523132 KiB)
 [mem] total usable RAM: 536341504 bytes (511 MiB)
+MEM managed frames: 131039
+MEM free frames: 130679
+MEM OK
+HEAP OK 10000
 [cpu] vendor: AuthenticAMD
 [arch] GDT and TSS loaded
 [arch] IDT loaded
 [irq] PIC remapped, IRQ0 unmasked
 [irq] PIT programmed at 100 Hz
+T1 0
+T2 0
+T3 0
+... the three threads take turns, one line per time slice ...
+SCHED OK
 EXCEPTION 0 DIV0 RIP=0x...
 MadRust: exception survived
 TICKS 100

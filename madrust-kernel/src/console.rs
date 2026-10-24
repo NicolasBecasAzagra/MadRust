@@ -5,6 +5,15 @@ use core::fmt::{self, Write};
 
 use madrust_drivers::uart::{Uart16550, COM1};
 
+use crate::sync::IrqSpinLock;
+
+/// Serialises whole lines between threads.
+///
+/// The lock keeps interrupts disabled while it is held, so the timer cannot
+/// switch threads in the middle of a formatted line and the serial log stays
+/// readable.
+static CONSOLE_LOCK: IrqSpinLock = IrqSpinLock::new("console");
+
 /// Create a handle to the primary serial console.
 pub const fn console() -> Uart16550 {
     Uart16550::new(COM1)
@@ -12,6 +21,7 @@ pub const fn console() -> Uart16550 {
 
 /// Format and write `args` to the serial console.
 pub fn print_args(args: fmt::Arguments<'_>) {
+    let _guard = CONSOLE_LOCK.lock();
     let mut uart = console();
     let _ = uart.write_fmt(args);
 }

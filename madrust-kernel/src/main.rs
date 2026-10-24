@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MadRust x86_64 kernel entry point (milestone M2b).
+//! MadRust x86_64 kernel entry point (milestone M3).
 //!
 //! Boots through the Xen PVH protocol: QEMU jumps to `_start32`, the 32-bit
 //! trampoline enables long mode with an identity map of the first GiB, and the
@@ -10,8 +10,9 @@
 //!
 //! The kernel then builds a physical frame allocator and a kernel heap from the
 //! PVH memory map, installs a GDT with a TSS, an IDT with recoverable exception
-//! stubs, remaps the 8259 PIC and programs the PIT to run at 100 Hz before
-//! enabling interrupts.
+//! stubs, remaps the 8259 PIC and programs the PIT to run at 100 Hz. Finally it
+//! spawns three kernel threads, lets the timer preempt them round robin, waits
+//! for them to finish and only then runs the exception and tick checks.
 
 #![no_std]
 #![no_main]
@@ -27,6 +28,9 @@ mod idt;
 mod memory;
 mod pic;
 mod pit;
+mod sched;
+mod sync;
+mod thread;
 
 use core::fmt::Write as _;
 
@@ -39,6 +43,18 @@ use crate::console::console;
 
 core::arch::global_asm!(include_str!("trampoline.s"), options(att_syntax));
 core::arch::global_asm!(include_str!("isrs.s"), options(att_syntax));
+core::arch::global_asm!(include_str!("context.s"), options(att_syntax));
+
+/// Lines each demo thread prints before it returns.
+const DEMO_ITERATIONS: u64 = 20;
+/// Demo threads the boot path spawns.
+const DEMO_THREADS: usize = 3;
+/// Upper bound on the wait for the demo threads, in timer ticks (20 s).
+///
+/// The worst case is twenty lines per thread at one tick per line, so the
+/// bound leaves a large margin while still turning a lost thread or a broken
+/// scheduler into a clear failure instead of a hang.
+const SCHED_DEADLINE_TICKS: u64 = 2_000;
 
 /// 64-bit kernel entry point, called by `higher_half_start` once the kernel
 /// runs from the higher half.
@@ -57,7 +73,7 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     let uart = console();
     uart.init();
 
-    kprintln!("MadRust: x86_64 kernel, M2b");
+    kprintln!("MadRust: x86_64 kernel, M3");
     kprintln!(
         "[mm] kernel virtual: 0x{:016x}",
         memory::kernel_virtual_base()
@@ -169,10 +185,49 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     pit::init();
     kprintln!("[irq] PIT programmed at {} Hz", pit::TICK_HZ);
 
+    sched::init();
+    for name in ["T1", "T2", "T3"] {
+        if let Err(error) = sched::spawn(name, demo_thread) {
+            kprintln!(
+                "MadRust: boot FAILED: cannot create thread {}: {:?}",
+                name,
+                error
+            );
+            uart.flush();
+            debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+        }
+    }
+
+    cpu::enable_interrupts();
+
+    // The first timer tick preempts this thread and the three demo threads run
+    // round robin. The loop yields and halts between checks: a thread that
+    // blocks or a scheduler bug must not hang the boot forever.
+    let deadline = pit::ticks() + SCHED_DEADLINE_TICKS;
+    while sched::finished_threads() < DEMO_THREADS {
+        if pit::ticks() >= deadline {
+            kprintln!(
+                "MadRust: boot FAILED: scheduler stopped with {} of {} threads finished",
+                sched::finished_threads(),
+                DEMO_THREADS
+            );
+            uart.flush();
+            debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+        }
+        sched::yield_now();
+        cpu::hlt();
+    }
+
+    if thread::reclaim_finished() != DEMO_THREADS {
+        kprintln!("MadRust: boot FAILED: scheduler lost a thread");
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+    }
+    kprintln!("SCHED OK");
+
     fault::trigger_divide_by_zero();
     kprintln!("MadRust: exception survived");
 
-    cpu::enable_interrupts();
     while pit::ticks() < pit::TICK_HZ {
         cpu::hlt();
     }
@@ -182,6 +237,19 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
 
     uart.flush();
     debug_exit::exit(debug_exit::EXIT_SUCCESS);
+}
+
+/// Entry function of every demo thread.
+///
+/// The thread control block supplies the name, so one function serves all
+/// three threads. The `hlt` between lines waits for the next timer tick; with
+/// one-tick time slices every thread prints exactly one line per turn, so the
+/// serial log alternates between the three identifiers.
+fn demo_thread(name: &'static str) {
+    for iteration in 0..DEMO_ITERATIONS {
+        kprintln!("{name} {iteration}");
+        cpu::hlt();
+    }
 }
 
 #[panic_handler]

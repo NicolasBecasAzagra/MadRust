@@ -6,6 +6,7 @@ members = [
     "madrust-drivers",
     "madrust-kernel",
     "madrust-mm",
+    "madrust-sched",
 ]
 
 [workspace.package]

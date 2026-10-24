@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-sched"
+description = "Thread state, context and run queue logic shared by MadRust and its host tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

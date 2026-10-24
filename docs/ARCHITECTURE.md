@@ -10,8 +10,7 @@ people can read, learn from, and measure.
 
 ## Current state
 
-Milestones M0, M1, M2a and M2b are implemented, verified locally and asserted
-in CI:
+Milestones M0 to M3 are implemented, verified locally and asserted in CI:
 
 - M0: the kernel boots under QEMU through the Xen PVH handover, reports the
   physical memory map and the CPU vendor over the serial line, and exits with
@@ -24,10 +23,12 @@ in CI:
   self test on the target.
 - M2b: the kernel runs from the higher half with a direct map of physical
   memory, so a frame index is no longer a virtual address.
+- M3: kernel threads with a preemptive round-robin scheduler, interrupt safe
+  locks and a recursion guard.
 
-The next milestone is M3: kernel threads and a preemptive scheduler. Before
-the benchmark phase, the frame metadata has to become dynamic so the kernel
-can use more than 1 GiB of RAM (see the limits below).
+The next milestone is M4: the Linux system call ABI, the ELF loader and a
+static userland. Before the benchmark phase, the frame metadata has to become
+dynamic so the kernel can use more than 1 GiB of RAM (see the limits below).
 
 ## Repository layout
 
@@ -63,8 +64,26 @@ crate with one function does not exist yet.
 - **System calls: `SYSCALL`/`SYSRET` only.** `INT 0x80` is not implemented.
 - **No async.** Kernel threads, wait queues and spinlocks with interrupts
   disabled locally. Sleeping while holding a lock is forbidden.
-- **Lock discipline:** a lockdep-lite checker from M3 that records the owning
-  CPU and the holding stack, and halts on violation.
+- **Threads (M3):** one CPU, one address space: a thread differs only in its
+  kernel stack, so a switch is a register exchange plus a stack pointer
+  change. The run queue is a fixed size array of eight slots, so the
+  scheduling path never allocates. Each thread owns a page aligned 16 KiB
+  stack from the kernel heap.
+- **Preemption (M3):** the timer handler calls the scheduler every tick, ten
+  milliseconds at 100 Hz. The handler runs on the stack of the thread it
+  interrupted, above that thread's interrupt frame, and the switch saves that
+  stack pointer as the thread context. The interrupted frame is never copied:
+  it stays exactly where the CPU and the stubs put it, and the thread resumes
+  by returning through `iretq`. No interrupt is lost and no thread ever
+  resumes in the middle of an instruction.
+- **Locking policy (M3):** the kernel spinlock saves RFLAGS, clears the
+  interrupt flag, acquires, and restores RFLAGS on release. Holding the lock
+  therefore also blocks preemption, which is what makes the lock safe on a
+  single CPU: the holder always finishes its critical section, and a thread
+  that spins on the lock cannot be preempted while it waits. Two rules follow
+  and must be respected: never hold a lock across a context switch, and never
+  block while holding one. A recursion guard reports a thread that takes a
+  lock it already holds instead of deadlocking on it.
 - **Allocator:** buddy allocator for physical frames, slab allocator with size
   classes for kernel objects. Not rtlmalloc: its semantics are a poor fit for
   kernel use and its interrupt-safety guarantees are weaker.

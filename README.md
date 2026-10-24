@@ -20,7 +20,7 @@ SPDX headers below.
 | M0 | Boot under QEMU, print to serial | done |
 | M1 | GDT/TSS/IDT, PIC, PIT, panic handler | planned |
 | M2 | Physical memory, paging, direct map, heap | done |
-| M3 | Kernel threads, preemptive scheduler | planned |
+| M3 | Kernel threads, preemptive scheduler | done |
 | M4 | Syscalls, ELF loader, static userland | planned |
 | M5 | VFS, initramfs, pipes, fork/exec/wait | planned |
 | M6 | Dynamic linking (musl), read-only ext2 | planned |

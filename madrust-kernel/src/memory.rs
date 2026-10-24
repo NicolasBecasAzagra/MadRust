@@ -12,7 +12,6 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use madrust_bootinfo::{BootInfo, HvmMemmapEntry};
 use madrust_mm::buddy::BuddyAllocator;
@@ -20,6 +19,8 @@ use madrust_mm::heap::{HeapError, SizeClassHeap, MIN_ALIGN, SIZE_CLASSES};
 use madrust_mm::paging;
 use madrust_mm::store::StaticStore;
 use madrust_mm::{phys_to_virt, FrameError, DIRECT_MAP_DIRECTORIES, FRAME_SIZE};
+
+use crate::sync::IrqSpinLock;
 
 /// Frames the static metadata can describe: 1 GiB of physical memory.
 pub const MAX_FRAMES: usize = 262_144;
@@ -73,38 +74,10 @@ static MANAGER: ManagerCell = ManagerCell(UnsafeCell::new(None));
 
 /// Guards the manager so that the global allocator can be called from anywhere.
 ///
-/// Interrupt handlers never allocate, so holding the lock with interrupts
-/// enabled cannot deadlock.
-struct ManagerLock(AtomicBool);
-
-impl ManagerLock {
-    const fn new() -> Self {
-        Self(AtomicBool::new(false))
-    }
-
-    /// Take the lock, spinning until it is free.
-    fn acquire(&self) -> ManagerGuard<'_> {
-        while self
-            .0
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-        ManagerGuard(&self.0)
-    }
-}
-
-static MANAGER_LOCK: ManagerLock = ManagerLock::new();
-
-/// Releases [`MANAGER_LOCK`] when it goes out of scope.
-struct ManagerGuard<'a>(&'a AtomicBool);
-
-impl Drop for ManagerGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
+/// The lock disables interrupts while it is held: a thread that is allocating
+/// cannot be preempted by the timer handler, and the recursion guard rejects a
+/// second take from the same thread (for example a nested [`with`] call).
+static MANAGER_LOCK: IrqSpinLock = IrqSpinLock::new("memory manager");
 
 /// Reason why the memory manager could not be built or the self test failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,9 +205,10 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
 /// Run `f` with the global memory manager.
 ///
 /// Returns `None` before [`init`] succeeded. The closure must not call [`with`]
-/// again: the manager is behind a spin lock, so a nested call would deadlock.
+/// again: the manager is behind an interrupt safe spin lock, and the recursion
+/// guard reports the second take as a lock violation instead of deadlocking.
 pub fn with<R>(f: impl FnOnce(&mut MemoryManager) -> R) -> Option<R> {
-    let _guard = MANAGER_LOCK.acquire();
+    let _guard = MANAGER_LOCK.lock();
     // SAFETY: the manager is created once during single-threaded boot and this
     // function is the only way to reach it. The lock excludes every other
     // caller, so the exclusive borrow cannot overlap.
@@ -301,7 +275,7 @@ pub fn self_test() -> Result<(), MemoryError> {
 /// Exercise the global allocator that the `alloc` crate uses.
 ///
 /// Runs outside [`with`] on purpose: the global allocator takes the manager
-/// lock itself, so calling it while the lock is held would deadlock.
+/// lock itself, and the recursion guard would report a second take.
 fn global_allocator_test() -> Result<(), MemoryError> {
     use alloc::string::String;
     use alloc::vec::Vec;

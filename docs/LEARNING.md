@@ -61,6 +61,19 @@ serial log. The log is the instrument.
   kernel stops instead of looping forever.
 - **Break the PVH note** (change the descriptor in `trampoline.s`) and read
   the QEMU error. This is the fastest way to learn why the note exists.
+- **Change the preemption interval** in `madrust-kernel/src/sched.rs` from one
+  tick to ten and watch the interleaving in the serial log change. Then set
+  it to zero and explain why the scheduler stops preempting.
+- **Make a thread hold the console lock and yield** inside the critical
+  section. Predict the deadlock before you run it, then find the rule in
+  `docs/ARCHITECTURE.md` that forbids it.
+- **Take the same lock twice** in one thread and see the recursion guard
+  report it instead of hanging.
+- **Change the thread stack size** in `madrust-kernel/src/thread.rs` to 4 KiB
+  and give one thread a deep call chain. Find out how much room the
+  interrupt frame needs on top of the thread stack.
+- **Add a fourth thread** and watch the run queue handle it. Then spawn nine
+  and read what happens when the fixed size queue is full.
 
 ## Debugging
 

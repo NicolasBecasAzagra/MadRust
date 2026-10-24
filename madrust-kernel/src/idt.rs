@@ -147,7 +147,10 @@ pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
 
     if vector == u64::from(pic::TIMER_VECTOR) {
         pit::record_tick();
+        // Acknowledge before scheduling: the switch may keep this thread off
+        // the CPU for a while, and the next tick must not be lost.
         pic::send_eoi(vector as u8);
+        crate::sched::on_tick();
         return;
     }
 
