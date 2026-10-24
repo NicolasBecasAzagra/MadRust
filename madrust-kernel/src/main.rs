@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MadRust x86_64 kernel entry point (milestone M2a).
+//! MadRust x86_64 kernel entry point (milestone M2b).
 //!
 //! Boots through the Xen PVH protocol: QEMU jumps to `_start32`, the 32-bit
-//! trampoline enables long mode and calls [`_start`]. The kernel then builds a
-//! physical frame allocator and a kernel heap from the PVH memory map, installs
-//! a GDT with a TSS, an IDT with recoverable exception stubs, remaps the 8259
-//! PIC and programs the PIT to run at 100 Hz before enabling interrupts.
+//! trampoline enables long mode with an identity map of the first GiB, and the
+//! 64-bit switch routine then installs the final page tables, loads the new
+//! PML4 and jumps to the higher half. From that point on the kernel runs at
+//! `0xffffffff80000000` and reaches physical memory only through the direct map
+//! at `0xffff888000000000`.
+//!
+//! The kernel then builds a physical frame allocator and a kernel heap from the
+//! PVH memory map, installs a GDT with a TSS, an IDT with recoverable exception
+//! stubs, remaps the 8259 PIC and programs the PIT to run at 100 Hz before
+//! enabling interrupts.
 
 #![no_std]
 #![no_main]
@@ -27,35 +33,53 @@ use core::fmt::Write as _;
 use madrust_arch::cpu;
 use madrust_bootinfo::{BootInfo, HvmMemmapEntry, HvmStartInfo};
 use madrust_drivers::debug_exit;
+use madrust_mm::{phys_to_virt, DIRECT_MAP_BASE};
 
 use crate::console::console;
 
 core::arch::global_asm!(include_str!("trampoline.s"), options(att_syntax));
 core::arch::global_asm!(include_str!("isrs.s"), options(att_syntax));
 
-/// 64-bit kernel entry point, called by the trampoline with the physical
-/// address of `hvm_start_info` in the first argument.
+/// 64-bit kernel entry point, called by `higher_half_start` once the kernel
+/// runs from the higher half.
+///
+/// `start_info_physical` is the *physical* address of `hvm_start_info`, `probe`
+/// the physical address the trampoline read before the switch and `observed`
+/// the value it read there.
 ///
 /// # Safety
 ///
-/// Called exactly once from the `long_mode_start` assembly stub with a pointer
-/// to a valid Xen PVH `hvm_start_info`. It never returns.
+/// Called exactly once from the `higher_half_start` assembly stub with a
+/// physical address that points to a valid Xen PVH `hvm_start_info`, and with a
+/// probe pair taken from RAM. It never returns.
 #[no_mangle]
-unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
+unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64) -> ! {
     let uart = console();
     uart.init();
 
-    kprintln!("MadRust: x86_64 kernel, M2a");
+    kprintln!("MadRust: x86_64 kernel, M2b");
+    kprintln!(
+        "[mm] kernel virtual: 0x{:016x}",
+        memory::kernel_virtual_base()
+    );
+    kprintln!("[mm] direct map: 0x{:016x}", DIRECT_MAP_BASE);
 
-    if start_info.is_null() {
+    if !memory::direct_map_probe_matches(probe, observed) {
+        kprintln!("MadRust: boot FAILED: the direct map does not translate physical memory");
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_MEMORY_FAILED);
+    }
+    kprintln!("MM DIRECTMAP OK");
+
+    if start_info_physical == 0 {
         kprintln!("MadRust: boot FAILED: null hvm_start_info");
         debug_exit::exit(debug_exit::EXIT_BOOT_INFO_INVALID);
     }
 
-    // SAFETY: the PVH loader guarantees a valid `hvm_start_info` at the address
-    // it passed in EBX, and the kernel runs with identity-mapped memory, so the
-    // physical address is also a valid virtual address.
-    let start = unsafe { &*start_info };
+    // SAFETY: the PVH loader guarantees a valid `hvm_start_info` at the physical
+    // address it passed in EBX, and the trampoline hands that same address
+    // over. The direct map translates it into a valid virtual address.
+    let start = unsafe { &*(phys_to_virt(start_info_physical) as *const HvmStartInfo) };
 
     let memmap: &[HvmMemmapEntry] = if start.memmap_entries == 0 {
         &[]
@@ -64,11 +88,11 @@ unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
         debug_exit::exit(debug_exit::EXIT_BOOT_INFO_INVALID);
     } else {
         // SAFETY: the PVH loader points `memmap_paddr` at `memmap_entries`
-        // consecutive `hvm_memmap_table_entry` records that are identity
-        // mapped and live for the whole kernel lifetime.
+        // consecutive `hvm_memmap_table_entry` records in RAM, and the direct
+        // map translates the table for as long as the kernel runs.
         unsafe {
             core::slice::from_raw_parts(
-                start.memmap_paddr as *const HvmMemmapEntry,
+                phys_to_virt(start.memmap_paddr) as *const HvmMemmapEntry,
                 start.memmap_entries as usize,
             )
         }
@@ -83,8 +107,8 @@ unsafe extern "C" fn _start(start_info: *const HvmStartInfo) -> ! {
     };
 
     kprintln!(
-        "[boot] hvm_start_info at 0x{:016x}: version={} flags=0x{:x} modules={}",
-        start_info as u64,
+        "[boot] hvm_start_info at physical 0x{:016x}: version={} flags=0x{:x} modules={}",
+        start_info_physical,
         start.version,
         start.flags,
         start.nr_modules

@@ -3,8 +3,20 @@
 
 use crate::buddy::BuddyAllocator;
 use crate::heap::{HeapError, SizeClassHeap, MAX_SMALL, SIZE_CLASSES};
+use crate::paging::{
+    directories_for, entry, large_page_entry, large_pages_for, Indices, DIRECTORY_SPAN, LARGE_PAGE,
+    LARGE_PAGE_SIZE, PAGE_SIZE, PRESENT, WRITABLE,
+};
 use crate::store::VecStore;
-use crate::{FrameError, FRAME_SIZE, MAX_ORDER};
+use crate::{
+    phys_to_virt, virt_to_phys, FrameError, DIRECT_MAP_BASE, DIRECT_MAP_SPAN, FRAME_SIZE, MAX_ORDER,
+};
+
+/// Virtual address the linker script links the kernel image at.
+const KERNEL_VIRTUAL_BASE: u64 = 0xffff_ffff_8000_0000;
+
+/// Physical address the linker script loads the kernel image at.
+const KERNEL_PHYSICAL_BASE: u64 = 0x10_0000;
 
 /// Allocator of `frames` frames with every frame released to it.
 fn released(frames: usize) -> BuddyAllocator<VecStore> {
@@ -314,4 +326,128 @@ fn rejects_zero_sized_requests() {
     assert_eq!(heap.dealloc(&mut frames, ptr, 0), Err(HeapError::ZeroSize));
     heap.dealloc(&mut frames, ptr, MAX_SMALL)
         .expect("block was allocated");
+}
+
+#[test]
+fn direct_map_translates_physical_addresses() {
+    assert_eq!(phys_to_virt(0), DIRECT_MAP_BASE);
+    assert_eq!(phys_to_virt(0x1000), DIRECT_MAP_BASE + 0x1000);
+    assert_eq!(
+        phys_to_virt(KERNEL_PHYSICAL_BASE),
+        DIRECT_MAP_BASE + KERNEL_PHYSICAL_BASE
+    );
+    // The kernel half and the direct map never overlap.
+    assert!(phys_to_virt(u32::MAX as u64) < KERNEL_VIRTUAL_BASE);
+}
+
+#[test]
+fn virt_to_phys_round_trips_within_the_direct_map() {
+    for physical in [
+        0,
+        1,
+        FRAME_SIZE as u64,
+        0xff00_0000,
+        0x1ffd_f000,
+        DIRECT_MAP_SPAN - 1,
+    ] {
+        assert_eq!(virt_to_phys(phys_to_virt(physical)), Some(physical));
+    }
+}
+
+#[test]
+fn virt_to_phys_rejects_addresses_outside_the_direct_map() {
+    assert_eq!(virt_to_phys(DIRECT_MAP_BASE - 1), None);
+    assert_eq!(virt_to_phys(0), None);
+    assert_eq!(virt_to_phys(KERNEL_VIRTUAL_BASE), None);
+    // The reservation stops at 4 GiB of physical memory.
+    assert_eq!(virt_to_phys(DIRECT_MAP_BASE + DIRECT_MAP_SPAN), None);
+    assert_eq!(
+        virt_to_phys(DIRECT_MAP_BASE + DIRECT_MAP_SPAN - 1),
+        Some(DIRECT_MAP_SPAN - 1)
+    );
+}
+
+#[test]
+fn frame_addresses_are_direct_map_addresses() {
+    let (mut heap, mut frames) = heap(8);
+    let page = heap
+        .alloc(&mut frames, FRAME_SIZE)
+        .expect("frame available");
+    let address = page.as_ptr() as u64;
+    assert!(address >= DIRECT_MAP_BASE);
+    let physical = virt_to_phys(address).expect("block is in the direct map");
+    assert_eq!(physical % FRAME_SIZE as u64, 0);
+    heap.dealloc(&mut frames, page, FRAME_SIZE)
+        .expect("block was allocated");
+}
+
+#[test]
+fn index_extraction_matches_the_paging_hierarchy() {
+    assert_eq!(
+        Indices::of(KERNEL_VIRTUAL_BASE),
+        Indices {
+            pml4: 511,
+            pdpt: 510,
+            directory: 0,
+            table: 0,
+        }
+    );
+    assert_eq!(
+        Indices::of(DIRECT_MAP_BASE),
+        Indices {
+            pml4: 273,
+            pdpt: 0,
+            directory: 0,
+            table: 0,
+        }
+    );
+    // 2 MiB later in the direct map is the next page directory entry.
+    let next = Indices::of(DIRECT_MAP_BASE + LARGE_PAGE_SIZE);
+    assert_eq!(next.directory, 1);
+    assert_eq!(next.pdpt, 0);
+    // 1 GiB later moves to the next page directory pointer entry.
+    assert_eq!(Indices::of(DIRECT_MAP_BASE + DIRECTORY_SPAN).pdpt, 1);
+    // The kernel image and the direct map live in different PML4 entries.
+    assert_ne!(
+        Indices::of(KERNEL_VIRTUAL_BASE).pml4,
+        Indices::of(DIRECT_MAP_BASE).pml4
+    );
+}
+
+#[test]
+fn entries_carry_the_address_and_the_flags() {
+    assert_eq!(entry(0x1234_5000), 0x1234_5000 | PRESENT | WRITABLE);
+    // The low bits of the address never leak into the flags.
+    assert_eq!(
+        entry(0x1000_0fff),
+        (0x1000_0fff & !0xfff) | PRESENT | WRITABLE
+    );
+}
+
+#[test]
+fn large_pages_require_two_mib_alignment() {
+    assert_eq!(
+        large_page_entry(0x20_0000),
+        Some(0x20_0000 | PRESENT | WRITABLE | LARGE_PAGE)
+    );
+    assert_eq!(large_page_entry(KERNEL_PHYSICAL_BASE), None);
+    assert_eq!(large_page_entry(0x20_1000), None);
+}
+
+#[test]
+fn spans_are_rounded_up_to_whole_pages() {
+    assert_eq!(large_pages_for(0, 0), 0);
+    assert_eq!(large_pages_for(0, 1), 1);
+    assert_eq!(large_pages_for(0, LARGE_PAGE_SIZE), 1);
+    assert_eq!(large_pages_for(0x100000, 0x15d000), 1);
+    assert_eq!(large_pages_for(0x200000, 0x400000), 1);
+
+    assert_eq!(directories_for(0), 0);
+    assert_eq!(directories_for(0x1ffd_f000), 1);
+    assert_eq!(directories_for(DIRECTORY_SPAN), 1);
+    assert_eq!(directories_for(DIRECTORY_SPAN + 1), 2);
+    // QEMU is started with 512 MiB, which fits in one page directory.
+    assert_eq!(directories_for(512 * 1024 * 1024), 1);
+    // The page table sizes the boot code uses.
+    assert_eq!(PAGE_SIZE * 512, LARGE_PAGE_SIZE);
 }

@@ -10,8 +10,8 @@ people can read, learn from, and measure.
 
 ## Current state
 
-Milestones M0, M1 and the first half of M2 are implemented, verified locally
-and asserted in CI:
+Milestones M0, M1, M2a and M2b are implemented, verified locally and asserted
+in CI:
 
 - M0: the kernel boots under QEMU through the Xen PVH handover, reports the
   physical memory map and the CPU vendor over the serial line, and exits with
@@ -22,9 +22,12 @@ and asserted in CI:
 - M2a: a buddy allocator over 4 KiB physical frames and a size class kernel
   heap on top of it, with the allocator logic unit tested on the host and a
   self test on the target.
+- M2b: the kernel runs from the higher half with a direct map of physical
+  memory, so a frame index is no longer a virtual address.
 
-The next milestone is M2b: higher-half relocation and a direct map of physical
-memory.
+The next milestone is M3: kernel threads and a preemptive scheduler. Before
+the benchmark phase, the frame metadata has to become dynamic so the kernel
+can use more than 1 GiB of RAM (see the limits below).
 
 ## Repository layout
 
@@ -87,6 +90,18 @@ crate with one function does not exist yet.
   `Vec` backed one in the unit tests, so splitting, merging, exhaustion and
   double free detection are covered by `cargo test` and not only by the
   on-target self test.
+- **Address space (M2b):** the kernel runs from `0xffffffff80000000` and the
+  physical memory is mapped at `0xffff888000000000` with 2 MiB pages. A frame
+  index is not an address: the heap translates through the direct map, and
+  the reverse translation rejects a pointer outside the direct map instead of
+  turning it into a bogus frame.
+- **Current limits.** The frame metadata is a static buffer of one byte per
+  frame, so the kernel manages at most 1 GiB of physical memory
+  (`MAX_FRAMES = 262144` frames). The direct map reserves four page
+  directories, so it covers 4 GiB. A guest with more RAM than the metadata
+  can describe is refused at boot with a clear message and exit status 37,
+  never a panic or a hang. Both limits have to go before the benchmark phase,
+  where the rig uses 4 GiB guests.
 - **Panic:** print the faulting RIP, the saved registers and the fault address,
   then halt. Do not attempt to kill a single thread.
 - **Exceptions are fatal by default.** The only recoverable exception is the

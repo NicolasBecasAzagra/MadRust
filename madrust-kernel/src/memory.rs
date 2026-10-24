@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Physical memory manager and kernel heap (milestone M2a).
+//! Physical memory manager and kernel heap (milestone M2b).
 //!
 //! The manager is built from the PVH memory map: only RAM entries are usable.
-//! The kernel image, the boot page tables, the boot stack and the first MiB are
-//! reserved before the rest is released to the buddy allocator.
+//! The kernel image and the first MiB are taken out before the rest is released
+//! to the buddy allocator.
+//!
+//! The kernel runs from the higher half, so a physical address is no longer a
+//! pointer: the frame allocator stays index based and every access to a frame
+//! goes through the direct map with [`madrust_mm::phys_to_virt`].
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
@@ -13,8 +17,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use madrust_bootinfo::{BootInfo, HvmMemmapEntry};
 use madrust_mm::buddy::BuddyAllocator;
 use madrust_mm::heap::{HeapError, SizeClassHeap, MIN_ALIGN, SIZE_CLASSES};
+use madrust_mm::paging;
 use madrust_mm::store::StaticStore;
-use madrust_mm::{FrameError, FRAME_SIZE};
+use madrust_mm::{phys_to_virt, FrameError, DIRECT_MAP_DIRECTORIES, FRAME_SIZE};
 
 /// Frames the static metadata can describe: 1 GiB of physical memory.
 pub const MAX_FRAMES: usize = 262_144;
@@ -23,16 +28,13 @@ pub const MAX_FRAMES: usize = 262_144;
 pub const SELF_TEST_BLOCKS: usize = 10_000;
 
 /// End of the reserved low memory: real-mode structures, firmware data and the
-/// null page live below 1 MiB.
+/// PVH boot structures live below 1 MiB.
 const LOW_MEMORY_END: u64 = 0x10_0000;
 
 extern "C" {
+    static __kernel_start__: u8;
     static __kernel_physical_start__: u8;
     static __kernel_physical_end__: u8;
-    static __stack_bottom: u8;
-    static __stack_top: u8;
-    static boot_pml4: u8;
-    static boot_pd: u8;
 }
 
 /// One byte of buddy metadata per physical frame.
@@ -117,6 +119,9 @@ pub enum MemoryError {
     Heap(HeapError),
     /// The manager was used before [`init`] succeeded.
     NotInitialised,
+    /// The direct map is smaller than the physical memory the memory map
+    /// reports, so part of RAM would be unreachable.
+    DirectMapTooSmall { required: u64, available: u64 },
     /// The self test could not allocate a block.
     AllocationFailed { size: usize, iteration: usize },
     /// The self test received a pointer below the documented alignment.
@@ -170,6 +175,17 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
         });
     }
 
+    // The boot code clamps the direct map to the page directories it reserved,
+    // so RAM above that limit has no mapping. Reject it here instead of faulting
+    // on the first access to an unmapped frame.
+    let directories = paging::directories_for(highest);
+    if directories > DIRECT_MAP_DIRECTORIES {
+        return Err(MemoryError::DirectMapTooSmall {
+            required: directories,
+            available: DIRECT_MAP_DIRECTORIES,
+        });
+    }
+
     let layout = KernelLayout::read();
 
     // SAFETY: the metadata buffer is handed out here, once, as an exclusive
@@ -183,17 +199,14 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
             start: 0,
             end: LOW_MEMORY_END,
         },
+        /*
+         * The whole image, including `.bss`: the boot stack, the boot page
+         * tables, the final page tables and the static metadata buffers all
+         * live there, so one range covers every kernel owned page.
+         */
         Range {
             start: layout.physical_start,
             end: layout.physical_end,
-        },
-        Range {
-            start: layout.page_tables_start,
-            end: layout.page_tables_end,
-        },
-        Range {
-            start: layout.stack_start,
-            end: layout.stack_end,
         },
     ];
     reserved.sort_unstable_by_key(|range| range.start);
@@ -312,18 +325,14 @@ fn global_allocator_test() -> Result<(), MemoryError> {
     Ok(())
 }
 
-/// Addresses the linker script defines for the kernel image and its boot data.
+/// Addresses the linker script defines for the kernel image.
 ///
-/// Only the load addresses are used: M2a runs identity mapped, so a physical
-/// address is a valid virtual address. M2b replaces the direct use of these
-/// values with a translation through the direct map.
+/// Both values are physical: the image is linked at a higher-half virtual
+/// address and loaded at 0x100000, and the memory manager works on physical
+/// frames.
 struct KernelLayout {
     physical_start: u64,
     physical_end: u64,
-    page_tables_start: u64,
-    page_tables_end: u64,
-    stack_start: u64,
-    stack_end: u64,
 }
 
 impl KernelLayout {
@@ -333,12 +342,28 @@ impl KernelLayout {
         Self {
             physical_start: core::ptr::addr_of!(__kernel_physical_start__) as u64,
             physical_end: core::ptr::addr_of!(__kernel_physical_end__) as u64,
-            page_tables_start: core::ptr::addr_of!(boot_pml4) as u64,
-            page_tables_end: core::ptr::addr_of!(boot_pd) as u64 + FRAME_SIZE as u64,
-            stack_start: core::ptr::addr_of!(__stack_bottom) as u64,
-            stack_end: core::ptr::addr_of!(__stack_top) as u64,
         }
     }
+}
+
+/// Virtual address the kernel is linked at, as the linker script defines it.
+pub fn kernel_virtual_base() -> u64 {
+    core::ptr::addr_of!(__kernel_start__) as u64
+}
+
+/// Check that one physical address reads the same through the direct map as it
+/// did through the identity map before the switch.
+///
+/// The trampoline reads `identity_value` from `physical` while the image is
+/// still identity mapped; this compares it with the same word read back through
+/// the direct map, so a wrong translation, a missing table entry or a stale
+/// address space all show up as a mismatch or as a page fault.
+pub fn direct_map_probe_matches(physical: u64, identity_value: u64) -> bool {
+    // SAFETY: `physical` was read by the trampoline before the switch, so it is
+    // inside RAM that the memory map reports; the direct map translates it and
+    // the volatile 64-bit load matches the one the trampoline made.
+    let mapped = unsafe { (phys_to_virt(physical) as *const u64).read_volatile() };
+    mapped == identity_value
 }
 
 /// A half-open range of physical addresses.

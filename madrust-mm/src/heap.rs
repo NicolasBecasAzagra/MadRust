@@ -11,14 +11,17 @@
 //! the class size. When the last live block of a class is freed, its slabs go
 //! back to the frame allocator, so an idle heap holds no frames at all.
 //!
-//! Frame index 0 maps to address 0, so the frame source must never hand it out;
-//! the kernel reserves the first MiB for that reason. Should it happen anyway,
-//! the heap gives the frame back and reports a failed allocation instead of
-//! returning a null pointer.
+//! A frame index is not a virtual address: the kernel runs from the higher
+//! half, so every frame is turned into a pointer with [`crate::phys_to_virt`]
+//! and every large block is turned back into an index with
+//! [`crate::virt_to_phys`]. Frame 0 is the low reserved memory that holds the
+//! real-mode structures, so the frame source must never hand it out; should it
+//! happen anyway, the heap gives the frame back and reports a failed allocation
+//! instead of handing out that page.
 
 use core::ptr::NonNull;
 
-use crate::{FrameError, FrameSource, FRAME_SIZE, MAX_ORDER};
+use crate::{phys_to_virt, virt_to_phys, FrameError, FrameSource, FRAME_SIZE, MAX_ORDER};
 
 /// Block sizes served by the small allocator.
 pub const SIZE_CLASSES: [usize; 7] = [16, 32, 64, 128, 256, 512, 1024];
@@ -259,12 +262,12 @@ impl SizeClassHeap {
         let order = pages_order(size)?;
         let frame = frames.alloc_frames(order)?;
         if frame == 0 {
-            // Frame 0 lives at the null address, which is never a valid
-            // pointer. Hand it back instead of leaking the block.
+            // Frame 0 holds the low reserved memory, which is never a valid
+            // block. Hand it back instead of leaking the block.
             let _ = frames.free_frames(frame, order);
             return None;
         }
-        NonNull::new((frame * FRAME_SIZE) as *mut u8)
+        NonNull::new(frame_address(frame) as *mut u8)
     }
 
     /// Release a block obtained from [`SizeClassHeap::alloc_large`].
@@ -274,12 +277,13 @@ impl SizeClassHeap {
         addr: usize,
         size: usize,
     ) -> Result<(), HeapError> {
-        if !addr.is_multiple_of(FRAME_SIZE) {
+        let physical = virt_to_phys(addr as u64).ok_or(HeapError::Misaligned)?;
+        if physical % FRAME_SIZE as u64 != 0 {
             return Err(HeapError::Misaligned);
         }
         let order = pages_order(size).ok_or(HeapError::OutOfMemory)?;
         frames
-            .free_frames(addr / FRAME_SIZE, order)
+            .free_frames((physical / FRAME_SIZE as u64) as usize, order)
             .map_err(HeapError::Frame)
     }
 
@@ -295,7 +299,7 @@ impl SizeClassHeap {
         }
 
         let frame = frames.alloc_frames(0).ok_or(HeapError::OutOfMemory)?;
-        let base = frame * FRAME_SIZE;
+        let base = frame_address(frame) as usize;
         let stride = SIZE_CLASSES[class];
         for index in 0..blocks {
             let slot = self.take_slot(class).ok_or(HeapError::OutOfMemory)?;
@@ -362,6 +366,14 @@ impl Default for SizeClassHeap {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Virtual address of the first byte of `frame`.
+///
+/// The kernel runs from the higher half, so a frame index only becomes a usable
+/// pointer once it goes through the direct map.
+fn frame_address(frame: usize) -> u64 {
+    phys_to_virt(frame as u64 * FRAME_SIZE as u64)
 }
 
 /// Size class that serves `size`, or `None` for a large request.

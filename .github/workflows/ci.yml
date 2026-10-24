@@ -71,6 +71,10 @@ jobs:
           cat serial.log
           test "$status" -eq 33
           grep -q "MadRust: boot OK" serial.log
+          # The kernel must run from the higher half and reach physical memory
+          # through the direct map only.
+          grep -q "0xffffffff80000000" serial.log
+          grep -q "MM DIRECTMAP OK" serial.log
           grep -q "\[mem\] RAM" serial.log
           grep -q "MEM OK" serial.log
           grep -q "HEAP OK 10000" serial.log

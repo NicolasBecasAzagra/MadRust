@@ -38,6 +38,10 @@ decide.
   and never compared against accelerated runs.
 - Host metadata (kernel, CPU, memory, QEMU version) stored next to the raw
   data.
+- The guest size is currently capped by the kernel itself: the frame metadata
+  is a static buffer, so the kernel refuses a guest with more than 1 GiB of
+  RAM. Until the metadata becomes dynamic, both kernels must run with a
+  guest size the kernel supports, and the same size for both.
 
 ## Benchmarks
 

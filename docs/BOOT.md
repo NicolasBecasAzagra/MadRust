@@ -103,6 +103,42 @@ M0 links the kernel identity-mapped at physical `0x100000`, so virtual and
 physical addresses coincide and the note descriptor is directly the link
 address. Relocation to the higher half happens in M2.
 
+## Higher half
+
+The kernel is linked at the higher half and loaded at a low physical address:
+
+```text
+virtual:  0xffffffff80000000   (kernel image)
+physical: 0x00000000100000      (load address)
+direct map: 0xffff888000000000 (physical memory, 2 MiB pages)
+```
+
+The PVH note keeps carrying the **physical** address of the 32-bit entry
+(`0x100000`), not its virtual address, because that is what the loader jumps
+to.
+
+The boot has three stages:
+
+1. **32-bit entry.** The processor is in protected mode with paging off, so
+   the entry point first clears the kernel `.bss` (the ELF format does not
+   require the loader to do it), then builds a temporary identity map of the
+   first GiB and enables long mode.
+2. **Switch routine.** Still running at its physical address, it builds the
+   final page tables: the kernel image at the higher half (4 KiB pages for the
+   first 2 MiB, because the image starts at 1 MiB and is therefore not 2 MiB
+   aligned, and 2 MiB pages above that) and a direct map of physical memory.
+   It loads the new PML4, moves the stack pointer to the higher-half copy of
+   the boot stack and jumps to the higher half.
+3. **Higher half entry.** The identity map is dropped from `PML4[0]`, so from
+   that point on physical memory is reachable only through the direct map.
+
+Page table indices: the kernel image uses PML4 entry 511, PDPT entry 510 and
+PD entry 0; the direct map uses PML4 entry 273 and PDPT entry 0.
+
+The linker script asserts that the image still fits in the 2 MiB that is
+mapped with 4 KiB pages, and that the entry point is the first byte of the
+image.
+
 ## Runtime sequence
 
 The boot path is deterministic and asserted by CI:
