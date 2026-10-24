@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MadRust x86_64 kernel entry point (milestone M3).
+//! MadRust x86_64 kernel entry point (milestone M4a).
 //!
 //! Boots through the Xen PVH protocol: QEMU jumps to `_start32`, the 32-bit
 //! trampoline enables long mode with an identity map of the first GiB, and the
@@ -13,6 +13,11 @@
 //! stubs, remaps the 8259 PIC and programs the PIT to run at 100 Hz. Finally it
 //! spawns three kernel threads, lets the timer preempt them round robin, waits
 //! for them to finish and only then runs the exception and tick checks.
+//!
+//! After the thread demonstration the kernel loads the embedded user program
+//! into the user half of the same page tables, enters ring 3 with `iretq`,
+//! serves its system calls and continues with the exception and tick checks
+//! once the program exits.
 
 #![no_std]
 #![no_main]
@@ -31,6 +36,7 @@ mod pit;
 mod sched;
 mod sync;
 mod thread;
+mod user;
 
 use core::fmt::Write as _;
 
@@ -73,7 +79,7 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     let uart = console();
     uart.init();
 
-    kprintln!("MadRust: x86_64 kernel, M3");
+    kprintln!("MadRust: x86_64 kernel, M4a");
     kprintln!(
         "[mm] kernel virtual: 0x{:016x}",
         memory::kernel_virtual_base()
@@ -165,6 +171,19 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     kprintln!("MEM OK");
     kprintln!("HEAP OK {}", memory::SELF_TEST_BLOCKS);
 
+    // Parse the embedded program and build its address space and stack now, so
+    // a bad image stops the boot before the threads start.
+    kprintln!("[user] embedded ELF: {} bytes", user::embedded_size());
+    let program = match user::load() {
+        Ok(program) => program,
+        Err(error) => {
+            kprintln!("MadRust: boot FAILED: user program: {:?}", error);
+            uart.flush();
+            debug_exit::exit(debug_exit::EXIT_USER_FAILED);
+        }
+    };
+    kprintln!("[user] entry at 0x{:x}", user::entry(&program));
+
     let cpuid = cpu::cpuid(0);
     let vendor = cpuid.vendor();
     let mut vendor_text = [0u8; 12];
@@ -222,6 +241,19 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
         kprintln!("MadRust: boot FAILED: scheduler lost a thread");
         uart.flush();
         debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+    }
+
+    // Run the user program. It prints through the write system call and leaves
+    // through exit_group; the kernel prints the status it received.
+    let status = user::run(&program);
+    kprintln!("USER OK exit={}", status);
+    if status != 0 {
+        kprintln!(
+            "MadRust: boot FAILED: user program exited with status {}",
+            status
+        );
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_USER_FAILED);
     }
     kprintln!("SCHED OK");
 

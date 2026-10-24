@@ -18,12 +18,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "madrust-elf"
+version = "0.1.0"
+
+[[package]]
 name = "madrust-kernel"
 version = "0.1.0"
 dependencies = [
  "madrust-arch",
  "madrust-bootinfo",
  "madrust-drivers",
+ "madrust-elf",
  "madrust-mm",
  "madrust-sched",
 ]

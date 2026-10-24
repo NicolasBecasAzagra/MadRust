@@ -398,6 +398,7 @@ boot_pd:
      * covers them and the memory manager reserves them with the image.
      */
     .balign 4096
+    .global mm_pml4
 mm_pml4:
     .skip 4096
 mm_pdpt_kernel:

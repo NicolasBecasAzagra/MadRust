@@ -118,6 +118,18 @@ impl MemoryManager {
         self.heap.dealloc(&mut self.frames, block, size)
     }
 
+    /// Allocate one 4 KiB frame and return its physical address.
+    ///
+    /// Used by the user address space builder: a user page table page and a
+    /// user data page are both plain frames, reached through the direct map
+    /// until they are installed in the user half.
+    pub fn alloc_frame(&mut self) -> Option<u64> {
+        self.frames
+            .allocate(0)
+            .ok()
+            .map(|frame| frame as u64 * FRAME_SIZE as u64)
+    }
+
     /// Number of free physical frames.
     pub fn free_frames(&self) -> usize {
         self.frames.free_frames()

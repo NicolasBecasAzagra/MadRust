@@ -1,0 +1,153 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Ring 3 entry, system call entry and system call return.
+ *
+ * madrust_enter_user_mode(entry, user_stack) saves the kernel stack pointer,
+ * builds an iretq frame with the ring 3 code and data selectors and returns to
+ * ring 0 only when the program leaves through madrust_user_return.
+ *
+ * madrust_syscall_entry is the LSTAR target. The CPU arrives in ring 0 with
+ * the user stack pointer still in RSP, the user return address in RCX, the
+ * user flags in R11 and interrupts masked by IA32_SFMASK. The stub:
+ *   1. swaps to the kernel GS base and saves the user RSP in the per-CPU slot,
+ *   2. loads the kernel stack pointer from TSS.rsp0 (the same stack the CPU
+ *      installs for an interrupt from ring 3) through MADRUST_TSS_ADDRESS,
+ *   3. saves every general purpose register plus the user RIP and flags,
+ *   4. calls the Rust dispatcher with the Linux argument order,
+ *   5. restores the registers, reloads the user RSP and returns with sysretq.
+ */
+
+    .section .bss.userentry, "aw", @nobits
+    .balign 8
+/* Kernel RSP and RBP of the frame that called madrust_enter_user_mode. */
+saved_kernel_rsp:
+    .skip 8
+saved_kernel_rbp:
+    .skip 8
+
+    .section .text.userentry, "ax", @progbits
+    .code64
+
+/*
+ * void madrust_enter_user_mode(u64 entry, u64 user_stack) -> u64
+ *
+ * Returns the status passed to madrust_user_return, which is the exit status
+ * of the user program.
+ */
+    .global madrust_enter_user_mode
+    .type madrust_enter_user_mode, @function
+madrust_enter_user_mode:
+    movq %rsp, saved_kernel_rsp(%rip)
+    movq %rbp, saved_kernel_rbp(%rip)
+
+    /* Interrupts stay masked until iretq restores RFLAGS in ring 3. */
+    cli
+
+    movq %rdi, %rax
+    movq %rsi, %rdx
+
+    /* Ring 3 data for the segments the iretq target will use. */
+    movw $0x23, %cx
+    movw %cx, %ds
+    movw %cx, %es
+
+    /* iretq frame, pushed from the lowest address to the highest. */
+    pushq $0x23          /* SS: ring 3 data */
+    pushq %rdx           /* RSP: user stack pointer */
+    pushq $0x202         /* RFLAGS: reserved bit 1 and IF */
+    pushq $0x1b          /* CS: ring 3 code */
+    pushq %rax           /* RIP: program entry point */
+    iretq
+
+/*
+ * void madrust_user_return(u64 status) -> !
+ *
+ * Called from the dispatcher when the program exits. It discards the system
+ * call frame and returns into madrust_enter_user_mode with the status in RAX.
+ */
+    .global madrust_user_return
+    .type madrust_user_return, @function
+madrust_user_return:
+    movq %rdi, %rax
+    swapgs
+    movq saved_kernel_rsp(%rip), %rsp
+    movq saved_kernel_rbp(%rip), %rbp
+    ret
+
+/*
+ * System call entry. The Linux convention puts the number in RAX, the
+ * arguments in RDI, RSI, RDX, R10, R8 and R9, and the result in RAX.
+ */
+    .global madrust_syscall_entry
+    .type madrust_syscall_entry, @function
+madrust_syscall_entry:
+    /*
+     * The user GS base is not valid kernel memory, so swap first and only then
+     * store the user stack pointer in the per-CPU area at GS:0.
+     */
+    swapgs
+    movq %rsp, %gs:0
+
+    /* RSP := TSS.rsp0, the ring 0 stack for a transition from ring 3. */
+    movq MADRUST_TSS_ADDRESS(%rip), %rsp
+    movq 4(%rsp), %rsp
+
+    cld
+
+    /*
+     * Save the user context. RCX and R11 are at the top because sysretq needs
+     * them back unchanged; the frame order is documented below.
+     */
+    pushq %rcx           /* 112: user RIP */
+    pushq %r11           /* 104: user RFLAGS */
+    pushq %rax           /*  96: syscall number */
+    pushq %rbx           /*  88 */
+    pushq %rdx           /*  80: third argument */
+    pushq %rsi           /*  72: second argument */
+    pushq %rdi           /*  64: first argument */
+    pushq %rbp           /*  56 */
+    pushq %r8            /*  48: fifth argument */
+    pushq %r9            /*  40: sixth argument */
+    pushq %r10           /*  32: fourth argument */
+    pushq %r12           /*  24 */
+    pushq %r13           /*  16 */
+    pushq %r14           /*   8 */
+    pushq %r15           /*   0 */
+
+    /*
+     * Marshal the Linux argument order into the SysV order of
+     * madrust_syscall_dispatch(number, a1, a2, a3, a4, a5, a6): the sixth
+     * argument goes on the stack, the other six into registers.
+     */
+    movq 96(%rsp), %rdi  /* number */
+    movq 64(%rsp), %rsi  /* a1 */
+    movq 72(%rsp), %rdx  /* a2 */
+    movq 80(%rsp), %rcx  /* a3 */
+    movq 32(%rsp), %r8   /* a4, from the syscall's R10 */
+    movq 40(%rsp), %r9   /* a5, from the syscall's R8 */
+    movq 48(%rsp), %rax  /* a6, from the syscall's R9 */
+    pushq %rax
+
+    call madrust_syscall_dispatch
+
+    /* Drop the stack argument, restore every register but RAX. */
+    addq $8, %rsp
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rbx
+    addq $8, %rsp        /* saved RAX: the dispatcher result is already in RAX */
+    popq %r11            /* user RFLAGS for sysretq */
+    popq %rcx            /* user RIP for sysretq */
+
+    movq %gs:0, %rsp
+    swapgs
+    sysretq

@@ -25,6 +25,9 @@ pub const PRESENT: u64 = 1 << 0;
 /// Entry flag: the mapping is writable.
 pub const WRITABLE: u64 = 1 << 1;
 
+/// Entry flag: the mapping is reachable from ring 3.
+pub const USER: u64 = 1 << 2;
+
 /// Entry flag: a page directory entry maps a 2 MiB page instead of a table.
 pub const LARGE_PAGE: u64 = 1 << 7;
 
@@ -59,6 +62,16 @@ impl Indices {
 /// Entry that points at the next level with a 4 KiB granularity.
 pub const fn entry(physical: u64) -> u64 {
     (physical & ADDRESS_MASK) | PRESENT | WRITABLE
+}
+
+/// Entry that points at the next level and is reachable from ring 3.
+pub const fn user_table_entry(physical: u64) -> u64 {
+    entry(physical) | USER
+}
+
+/// Leaf entry that maps one 4 KiB page for ring 3.
+pub const fn user_page_entry(physical: u64) -> u64 {
+    entry(physical) | USER
 }
 
 /// Entry of a page directory that maps one 2 MiB page.

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-userland"
+description = "Freestanding MadRust ring 3 test program"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+publish = false
+
+# The program is a separate workspace: it is linked at a user address with its
+# own target and linker script, so it shares neither the kernel target nor the
+# kernel rustflags.
+[workspace]
+
+[[bin]]
+name = "madrust-userland"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false

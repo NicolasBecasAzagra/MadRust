@@ -16,5 +16,6 @@ bench = false
 madrust-arch = { path = "../madrust-arch" }
 madrust-bootinfo = { path = "../madrust-bootinfo" }
 madrust-drivers = { path = "../madrust-drivers" }
+madrust-elf = { path = "../madrust-elf" }
 madrust-mm = { path = "../madrust-mm" }
 madrust-sched = { path = "../madrust-sched" }

@@ -160,6 +160,22 @@ pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
         return;
     }
 
+    // A fault in ring 3 cannot be resumed by the kernel: report it with the
+    // reason and the program counter, then leave QEMU instead of hanging.
+    if frame.cs & 3 == 3 {
+        crate::kprintln!(
+            "MadRust: user program FAILED: exception {} {} RIP=0x{:016x}",
+            vector,
+            exception_name(vector),
+            frame.rip
+        );
+        if vector == 14 {
+            crate::kprintln!("PAGEFAULT ADDR=0x{:016x}", cpu::read_cr2());
+        }
+        crate::console::console().flush();
+        crate::debug_exit::exit(crate::debug_exit::EXIT_USER_FAILED);
+    }
+
     match vector {
         0 => {
             crate::kprintln!(

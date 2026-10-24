@@ -1,27 +1,64 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Global descriptor table, task state segment and interrupt stacks.
+//! Global descriptor table, task state segment and kernel stacks.
 //!
 //! The table keeps the flat kernel code and data descriptors loaded by the
-//! 32-bit trampoline and adds a 64-bit TSS descriptor. The TSS holds the ring-0
-//! stack pointer and IST1, which the double fault gate uses so that a stack
-//! fault remains diagnosable.
+//! 32-bit trampoline, adds the two ring 3 descriptors, and ends with a 64-bit
+//! TSS descriptor. The TSS holds the ring-0 stack pointer (`rsp0`) that the CPU
+//! installs when an interrupt or a `syscall` arrives from ring 3, plus IST1,
+//! which the double fault gate uses so that a stack fault remains diagnosable.
+//!
+//! `rsp0` points at a dedicated static stack: the boot stack belongs to the
+//! kernel thread that starts the user program, and a user program must not be
+//! able to grow its own frames over that thread's state.
+//!
+//! ## Selector layout
+//!
+//! | Selector | Descriptor |
+//! |----------|------------|
+//! | `0x08`   | ring 0 code |
+//! | `0x10`   | ring 0 data |
+//! | `0x1B`   | ring 3 code, used by the `iretq` that enters user mode |
+//! | `0x23`   | ring 3 data |
+//! | `0x2B`   | ring 3 code, the selector `sysretq` returns to |
+//! | `0x30`   | TSS |
+//!
+//! `SYSRET` derives its selectors from `IA32_STAR[63:48]`: code is that field
+//! plus 16 and stack is that field plus 8, both with RPL 3. With the data
+//! selector at `0x23` the field is `0x1B`, so the returned stack selector is
+//! `0x23` and the returned code selector is `0x2B`. The alias at `0x28` is why
+//! the table has one more entry than the descriptors alone need.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
 use core::ptr::{addr_of, addr_of_mut};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-/// Selector of the 64-bit code descriptor.
+/// Selector of the 64-bit ring 0 code descriptor.
 pub const CODE_SELECTOR: u16 = 0x08;
-/// Selector of the 64-bit data descriptor.
+/// Selector of the 64-bit ring 0 data descriptor.
 pub const DATA_SELECTOR: u16 = 0x10;
+/// Selector of the 64-bit ring 3 code descriptor.
+pub const USER_CODE_SELECTOR: u16 = 0x1b;
+/// Selector of the 64-bit ring 3 data descriptor.
+pub const USER_DATA_SELECTOR: u16 = 0x23;
+/// Code selector `sysretq` returns to, as derived from `IA32_STAR`.
+pub const SYSRET_CODE_SELECTOR: u16 = 0x2b;
 /// Selector of the 64-bit TSS descriptor.
-const TSS_SELECTOR: u16 = 0x18;
+const TSS_SELECTOR: u16 = 0x30;
 
 /// IST index used by the double fault gate.
 pub const DOUBLE_FAULT_IST: u8 = 1;
 
-const GDT_ENTRIES: usize = 5;
+// The selectors `SYSRET` derives from `IA32_STAR` must match the table above:
+// the instruction returns to code `STAR[63:48] + 16` and stack
+// `STAR[63:48] + 8`, both with RPL 3, and `init` sets `STAR[63:48]` to
+// `USER_CODE_SELECTOR`. A layout that breaks this would fault on the first
+// system call return, so the relation is checked at compile time.
+const _: () = assert!(SYSRET_CODE_SELECTOR == USER_CODE_SELECTOR + 16);
+const _: () = assert!(USER_DATA_SELECTOR == USER_CODE_SELECTOR + 8);
+
+const GDT_ENTRIES: usize = 8;
 
 #[repr(C, align(8))]
 struct Gdt {
@@ -39,6 +76,9 @@ static GDT: GdtCell = GdtCell(UnsafeCell::new(Gdt {
         0x0000_0000_0000_0000, // null
         0x00AF_9A00_0000_FFFF, // 64-bit code, ring 0, base 0, limit 4 GiB
         0x00AF_9200_0000_FFFF, // 64-bit data, ring 0, base 0, limit 4 GiB
+        0x00AF_FA00_0000_FFFF, // 64-bit code, ring 3
+        0x00AF_F200_0000_FFFF, // 64-bit data, ring 3
+        0x00AF_FA00_0000_FFFF, // 64-bit code, ring 3, SYSRET target
         0,                     // TSS low half, filled in by `init`
         0,                     // TSS high half, filled in by `init`
     ],
@@ -77,10 +117,20 @@ const TSS_ZERO: Tss = Tss {
 struct TssCell(UnsafeCell<Tss>);
 
 // SAFETY: the TSS is written once during single-threaded early boot, before
-// interrupts are enabled, and is only read by the CPU afterwards.
+// interrupts are enabled, and is only read by the CPU afterwards. The syscall
+// stub reads `rsp0`, which never changes again.
 unsafe impl Sync for TssCell {}
 
 static TSS: TssCell = TssCell(UnsafeCell::new(TSS_ZERO));
+
+/// Address of the TSS, published for the assembly system call entry.
+///
+/// The stub reads this word to find the TSS and then loads `rsp0` from it, so
+/// the kernel stack it switches to is the one the CPU installs for a ring 3
+/// interrupt. The value is written once by [`init`], before the first system
+/// call can happen.
+#[no_mangle]
+pub static MADRUST_TSS_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 
@@ -97,10 +147,19 @@ static DOUBLE_FAULT_STACK: DoubleFaultStackCell = DoubleFaultStackCell(UnsafeCel
     DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]),
 ));
 
-extern "C" {
-    /// Top of the kernel stack built by the 32-bit trampoline.
-    static __stack_top: u8;
-}
+const INTERRUPT_STACK_SIZE: usize = 16 * 1024;
+
+#[repr(C, align(16))]
+struct InterruptStack([u8; INTERRUPT_STACK_SIZE]);
+
+struct InterruptStackCell(UnsafeCell<InterruptStack>);
+
+// SAFETY: the stack is the `rsp0` target, so only the CPU touches it, and only
+// after a transition from ring 3. Nothing else aliases it.
+unsafe impl Sync for InterruptStackCell {}
+
+static INTERRUPT_STACK: InterruptStackCell =
+    InterruptStackCell(UnsafeCell::new(InterruptStack([0; INTERRUPT_STACK_SIZE])));
 
 #[repr(C, packed)]
 struct GdtPointer {
@@ -128,27 +187,29 @@ fn tss_descriptor(base: u64) -> (u64, u64) {
 pub fn init() {
     let tss = TSS.0.get();
     let stack = DOUBLE_FAULT_STACK.0.get();
+    let interrupt_stack = INTERRUPT_STACK.0.get();
 
-    // SAFETY: `tss` and `stack` point at static storage owned by this module
-    // and nothing else accesses it during boot. The TSS starts zeroed, so only
-    // the non-zero fields need an unaligned store.
+    // SAFETY: `tss`, `stack` and `interrupt_stack` point at static storage
+    // owned by this module and nothing else accesses it during boot. The TSS
+    // starts zeroed, so only the non-zero fields need an unaligned store.
     unsafe {
         let ist_top = addr_of!(*stack) as u64 + size_of::<DoubleFaultStack>() as u64;
-        let kernel_top = addr_of!(__stack_top) as u64;
-        core::ptr::write_unaligned(addr_of_mut!((*tss).rsp0), kernel_top);
+        let rsp0 = addr_of!(*interrupt_stack) as u64 + size_of::<InterruptStack>() as u64;
+        core::ptr::write_unaligned(addr_of_mut!((*tss).rsp0), rsp0);
         core::ptr::write_unaligned(addr_of_mut!((*tss).ist[0]), ist_top);
         core::ptr::write_unaligned(addr_of_mut!((*tss).iomap_base), size_of::<Tss>() as u16);
     }
 
     let tss_base = tss as u64;
+    MADRUST_TSS_ADDRESS.store(tss_base, Ordering::Release);
     let (tss_low, tss_high) = tss_descriptor(tss_base);
 
     let gdt = GDT.0.get();
-    // SAFETY: `gdt` points at the static GDT above; entries 3 and 4 are the two
+    // SAFETY: `gdt` points at the static GDT above; entries 6 and 7 are the two
     // halves of the TSS descriptor and are not read concurrently.
     unsafe {
-        (*gdt).entries[3] = tss_low;
-        (*gdt).entries[4] = tss_high;
+        (*gdt).entries[6] = tss_low;
+        (*gdt).entries[7] = tss_high;
     }
 
     let pointer = GdtPointer {
@@ -176,7 +237,7 @@ pub fn init() {
         );
     }
 
-    // SAFETY: selector 0x18 was just installed as a present, ring-0, available
+    // SAFETY: selector 0x30 was just installed as a present, ring-0, available
     // 64-bit TSS descriptor whose base points at the initialised TSS.
     unsafe {
         asm!("ltr ax", in("ax") TSS_SELECTOR, options(nostack));

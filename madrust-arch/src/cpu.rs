@@ -73,6 +73,77 @@ mod imp {
         value
     }
 
+    /// Read a model specific register.
+    pub fn read_msr(register: u32) -> u64 {
+        let low: u32;
+        let high: u32;
+        // SAFETY: `rdmsr` reads the register named in ECX into EDX:EAX. It has
+        // no memory side effects and is available on every x86_64 CPU. The
+        // caller must pass a register the CPU implements; a reserved one would
+        // raise #GP.
+        unsafe {
+            asm!(
+                "rdmsr",
+                in("ecx") register,
+                out("eax") low,
+                out("edx") high,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        (u64::from(high) << 32) | u64::from(low)
+    }
+
+    /// Write a model specific register.
+    ///
+    /// # Safety
+    ///
+    /// The caller must pass a register the CPU implements and a value that is
+    /// valid for it: a reserved register raises #GP, and a bad value can change
+    /// how the CPU translates addresses or handles system calls.
+    pub unsafe fn write_msr(register: u32, value: u64) {
+        // SAFETY: the caller guarantees that `register` exists and that `value`
+        // is valid for it, which is the only requirement of `wrmsr`.
+        unsafe {
+            asm!(
+                "wrmsr",
+                in("ecx") register,
+                in("eax") value as u32,
+                in("edx") (value >> 32) as u32,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+    }
+
+    /// Read CR3, the physical address of the top level page table.
+    pub fn read_cr3() -> u64 {
+        let value: u64;
+        // SAFETY: `mov` from CR3 only reads a control register into a general
+        // purpose register and has no memory side effects.
+        unsafe {
+            asm!("mov {}, cr3", out(reg) value, options(nomem, nostack, preserves_flags));
+        }
+        value
+    }
+
+    /// Reload CR3, which discards every cached translation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have finished every change to the active page tables
+    /// that the current instruction stream depends on.
+    pub unsafe fn flush_tlb() {
+        // SAFETY: the caller made the page tables consistent; reloading the
+        // unchanged CR3 value only drops stale TLB entries.
+        unsafe {
+            asm!(
+                "mov {scratch}, cr3",
+                "mov cr3, {scratch}",
+                scratch = out(reg) _,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+    }
+
     /// Halt the CPU until the next interrupt.
     pub fn hlt() {
         // SAFETY: `hlt` only stops instruction retirement; it has no memory
@@ -149,6 +220,30 @@ mod imp {
         0
     }
 
+    /// Host stub: reports a zero register value.
+    pub fn read_msr(_register: u32) -> u64 {
+        0
+    }
+
+    /// Host stub: drops the write.
+    ///
+    /// # Safety
+    ///
+    /// The host has no model specific registers, so nothing can be corrupted.
+    pub unsafe fn write_msr(_register: u32, _value: u64) {}
+
+    /// Host stub: reports a zero top level page table.
+    pub fn read_cr3() -> u64 {
+        0
+    }
+
+    /// Host stub: drops the invalidate.
+    ///
+    /// # Safety
+    ///
+    /// The host has no page tables to invalidate.
+    pub unsafe fn flush_tlb() {}
+
     /// Host stub: does nothing.
     pub fn hlt() {}
 
@@ -167,5 +262,6 @@ mod imp {
 }
 
 pub use imp::{
-    cpuid, cpuid_subleaf, disable_interrupts, enable_interrupts, halt_loop, hlt, read_cr2, Cpuid,
+    cpuid, cpuid_subleaf, disable_interrupts, enable_interrupts, flush_tlb, halt_loop, hlt,
+    read_cr2, read_cr3, read_msr, write_msr, Cpuid,
 };

@@ -23,6 +23,10 @@ pub const EXIT_MEMORY_FAILED: u32 = 0x12;
 /// the scheduler loses the running thread: QEMU exits with 39.
 pub const EXIT_SCHEDULER_FAILED: u32 = 0x13;
 
+/// Exit code used when the user program cannot be loaded, faults or reports a
+/// non-zero exit status: QEMU exits with 41.
+pub const EXIT_USER_FAILED: u32 = 0x14;
+
 /// Terminate QEMU with `(code << 1) | 1`.
 ///
 /// If the device is absent the write is ignored, so spin forever after it.

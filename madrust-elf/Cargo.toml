@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-elf"
+description = "ELF64 parsing for the MadRust user program loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

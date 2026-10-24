@@ -11,5 +11,11 @@ json-target-spec = true
 [target.x86_64-madrust]
 rustflags = ["-C", "link-arg=-Tlinker.ld"]
 
+# The user program is linked at 0x400000 by the script next to its manifest.
+# Cargo runs the linker for that package with `madrust-userland` as the working
+# directory, so the script name is relative to the crate, not to this file.
+[target.x86_64-madrust-user]
+rustflags = ["-C", "link-arg=-Tuserland.ld"]
+
 [alias]
 kbuild = "build --release --target x86_64-madrust.json -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem"

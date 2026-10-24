@@ -78,6 +78,10 @@ jobs:
           grep -q "\[mem\] RAM" serial.log
           grep -q "MEM OK" serial.log
           grep -q "HEAP OK 10000" serial.log
+          # The user program prints through the write system call and exits
+          # through exit_group; the kernel reports the status it received.
+          grep -q "Hello from MadRust userland" serial.log
+          grep -q "USER OK exit=0" serial.log
           grep -q "SCHED OK" serial.log
           # Interleaving proof: every demo thread must appear in the log.
           grep -q "^T1 " serial.log
