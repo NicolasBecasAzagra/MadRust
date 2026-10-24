@@ -95,7 +95,9 @@ jobs:
 
       - name: Boot kernel with the initramfs
         run: |
-          make bench
+          # The weights workload touches the whole region it measures, so the
+          # CI builds it with a small region to finish under emulation.
+          make bench BENCH_FEATURES=small
           sh bench/mkinitramfs.sh
           expected="$(wc -c < madrust-bench/madrust-bench.elf | tr -d ' ')"
           set +e

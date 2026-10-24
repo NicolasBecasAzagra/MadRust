@@ -60,7 +60,11 @@ const STACK_BYTES: usize = 256 * 1024;
 /// The guest has 512 MiB of RAM, so the region takes half of it: large enough
 /// that the fault in path dominates the measurement, small enough that both
 /// kernels can hold it without exhausting memory.
-const WEIGHTS_BYTES: usize = 256 * 1024 * 1024;
+const WEIGHTS_BYTES: usize = if cfg!(feature = "small") {
+    32 * 1024 * 1024
+} else {
+    256 * 1024 * 1024
+};
 
 /// Samples of the weights workload.
 ///

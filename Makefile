@@ -70,8 +70,12 @@ userland:
 	cp $(TARGET_DIR)/userland/$(USER_TARGET)/release/madrust-userland $(USERLAND_ELF)
 
 # Static workload binary for the benchmark rig.
+# The features of the workload. The CI builds it with "small" so that the boot
+# with the initramfs finishes in time under emulation.
+BENCH_FEATURES ?=
+
 bench:
-	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(BENCH_FLAGS)
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(BENCH_FLAGS) $(if $(BENCH_FEATURES),--features $(BENCH_FEATURES),)
 	cp $(TARGET_DIR)/bench/$(USER_TARGET)/release/madrust-bench $(BENCH_ELF)
 
 build: userland

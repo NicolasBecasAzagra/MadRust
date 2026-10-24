@@ -13,6 +13,12 @@ publish = false
 # the static binary into an uncompressed cpio initramfs.
 [workspace]
 
+# The weights workload touches the whole measured region, so a boot with it is
+# slow under emulation. The CI builds the workload with this feature to use a
+# small region and finish in time; the published numbers use the default.
+[features]
+small = []
+
 [[bin]]
 name = "madrust-bench"
 path = "src/main.rs"
