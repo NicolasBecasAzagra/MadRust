@@ -42,6 +42,7 @@ WEIGHTS_ITERATIONS = 5
 
 # A 2 MiB fault is rare, so the huge run takes more samples to keep the slowest
 # sample from being a single host preemption.
+INFER_ITERATIONS = 1
 WEIGHTS_HUGE_ITERATIONS = 10
 
 # Every workload the binary prints, with its unit and the number of samples one
@@ -57,7 +58,17 @@ WORKLOADS = {
     "weights-huge-tail": ("ns/page", WEIGHTS_HUGE_ITERATIONS),
     "futex": ("ns/roundtrip", DEFAULT_ITERATIONS),
     "threads": ("ns/total", DEFAULT_ITERATIONS),
+    "infer-ttft": ("ms", INFER_ITERATIONS),
+    "infer-tps": ("tok/s", INFER_ITERATIONS),
 }
+
+# The inference measurements only exist when the initramfs carries the runtime,
+# so a run without it must not report them as missing.
+OPTIONAL_WORKLOADS = {"infer-ttft", "infer-tps"}
+
+INFER_RE = re.compile(
+    r"^INFER\s+(?P<workload>ttft_ms|tok_per_s)\s+(?P<value>-?\d+(?:\.\d+)?)\s*$"
+)
 
 RESULT_RE = re.compile(
     r"^RESULT\s+(?P<workload>\S+)\s+(?:(?P<error>ERR)\s+)?(?P<value>-?\d+)(?:\s+(?P<unit>\S+))?\s*$"
@@ -136,6 +147,7 @@ def qemu_command(
     log: Path,
     accel: str,
     append_extra: str = "",
+    memory: str = "512M",
 ) -> list[str]:
     kernel_args = "console=ttyS0"
     if append_extra:
@@ -149,7 +161,7 @@ def qemu_command(
         "-smp",
         "1",
         "-m",
-        "512M",
+        memory,
         "-kernel",
         str(image),
         "-initrd",
@@ -189,9 +201,10 @@ def run_once(
     accel: str,
     timeout: float,
     append_extra: str = "",
+    memory: str = "512M",
 ) -> tuple[list[str], str]:
     log = out_dir / f"{label}.log"
-    command = qemu_command(qemu, image, initramfs, log, accel, append_extra)
+    command = qemu_command(qemu, image, initramfs, log, accel, append_extra, memory)
     print(f"[rig] {label}: {' '.join(shlex.quote(part) for part in command)}", file=sys.stderr)
 
     with log.open("wb"):
@@ -272,6 +285,24 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
                 }
             )
 
+    # The inference runtime prints its measurements with its own prefix.
+    for raw_line in text.splitlines():
+        match = INFER_RE.match(raw_line.strip())
+        if not match:
+            continue
+        name = "infer-ttft" if match.group("workload") == "ttft_ms" else "infer-tps"
+        rows.append(
+            {
+                "kernel": label,
+                "workload": name,
+                "iteration": 0,
+                "value": match.group("value"),
+                "unit": WORKLOADS[name][0],
+                "status": "ok",
+                "error": "",
+            }
+        )
+
     # A workload that produced fewer lines than the guest was asked for did not
     # finish. Record the missing samples instead of silently shrinking the set,
     # and say why: the guest never reached the end, or the workload stopped
@@ -279,6 +310,8 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
     guest_finished = "BENCH DONE" in text
     reason = "" if guest_finished else "the guest did not reach the end of the run"
     for workload, (unit, _) in WORKLOADS.items():
+        if workload in OPTIONAL_WORKLOADS and seen[workload] == 0:
+            continue
         for iteration in range(seen[workload], expected[workload]):
             rows.append(
                 {
@@ -401,7 +434,14 @@ def main() -> int:
             "workload, instead of the per-workload defaults"
         ),
     )
-    parser.add_argument("--timeout", type=float, default=180.0, help="seconds per boot")
+    parser.add_argument(
+        "--timeout", type=float, default=600.0, help="seconds per boot"
+    )
+    parser.add_argument(
+        "--memory",
+        default="512M",
+        help="guest memory; the model needs at least 1024M",
+    )
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument(
         "--accel",
@@ -471,6 +511,7 @@ def main() -> int:
             args.accel,
             args.timeout,
             append_extra,
+            args.memory,
         )
         metadata["commands"][label] = shlex.join(command)
         rows = parse_results(label, text, expected)

@@ -29,6 +29,8 @@ commit per milestone.
 | M4b | A real userland: a standard library program running unmodified | done |
 | M4c | Demand paging for anonymous mappings | done |
 | E1 | The initramfs as a read only file system | done |
+| E2 | A file backed mapping and large pages | done |
+| E4 | The inference runtime: a real model, token for token against the reference | done |
 | M8 | Benchmark rig, four workloads, first comparison published | done |
 
 What comes next, in the order it has to happen, is the path to the final
@@ -37,10 +39,9 @@ mainline in the same machine.
 
 | Next | Why it is next |
 |---|---|
-| A file backed mapping and large pages | The weights have to be mapped, not copied, and faulted in with 2 MiB pages: 512 times fewer faults while loading a model, and the single change that moves the number most |
-| A scheduler with a better tail | The one measurement where the scheduler, not the operation, decides the outcome |
-| The inference runtime in Rust | Tokenizer, half precision weights, layers, sampler |
-| The measurement | Tokens per second and time to first token, both kernels, same machine |
+| The measurement of the runtime | Tokens per second and time to the first token, both kernels, same machine, same binary |
+| A scheduler with a better tail | Batching inference requests lives on the tail of the scheduler, and the kernel is still uniprocessor |
+| SMP (LAPIC/IOAPIC) | A server that batches requests needs more than one processor |
 
 Deferred, and named so they are not lost: processes and a real file system,
 dynamic linking, signals, a shell test suite, and SMP. The reasoning is in

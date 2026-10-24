@@ -101,6 +101,18 @@ runtime written in Rust, measured against the same runtime and the same model
 on mainline Linux, in the same virtual machine, with the same flags. The
 numbers are tokens per second and the time to the first token.
 
+**The runtime** (`madrust-infer`) reads a model in the `safetensors` format,
+maps it through the file system of the initramfs without copying it, and
+generates tokens with a Llama style forward pass: RMSNorm, rotary
+embeddings, grouped query attention, the gated feed forward block, a key
+value cache and greedy sampling. It has no dependency outside the standard
+library, and the vocabulary and the configuration are read from the files of
+the model rather than written into the binary.
+
+The weights are bfloat16 and the conversion to `f32` is a single shift, which
+is exact. The prompt is pre-encoded, so the runtime does not implement a
+pre-tokenizer, and the decoder inverts the byte level alphabet of GPT-2.
+
 The plan, in the order it has to happen:
 
 1. **Dynamic frame metadata.** A model is hundreds of megabytes; a guest that
@@ -120,6 +132,8 @@ The plan, in the order it has to happen:
 6. **The measurement.** Tokens per second, time to the first token, and the
    cost of the page faults that stream the weights, for both kernels.
 
+The first five are done. The measurement is running.
+
 Two things this plan deliberately does not do:
 
 - It does not replace Linux for AI training. Nobody is going to run a
@@ -130,10 +144,11 @@ Two things this plan deliberately does not do:
   work per operation and faults weights in with large pages costs less per
   token, and the numbers are published with the losses.
 
-The model for the first run is a small one, so that the whole pipeline fits
-in a guest that the kernel can describe: a character or byte level story
-model of a few tens of megabytes, with weights in half precision. Once the
-pipeline is proven, a larger model is a change of size, not of architecture.
+The model for the first run is SmolLM2-135M: 134.5 million parameters, half
+precision, Apache-2.0, and small enough to fit in a guest the kernel can
+describe. The runtime reproduces the reference implementation token for
+token, which is what makes the performance comparison about the kernel and
+not about the maths.
 
 ## Repository layout
 
