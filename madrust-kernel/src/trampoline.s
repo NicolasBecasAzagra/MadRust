@@ -37,7 +37,7 @@
     .set DIRECT_MAP_BASE, 0xffff888000000000
 
     /* Page directories reserved for the direct map, 1 GiB each. */
-    .set DIRECT_MAP_DIRECTORIES, 4
+    .set DIRECT_MAP_DIRECTORIES, 32
     .set DIRECT_MAP_MAX, DIRECT_MAP_DIRECTORIES * 0x40000000
 
     /* Pages of final page tables: PML4 + kernel PDPT/PD/PT + direct PDPT + PDs. */
@@ -166,6 +166,10 @@ long_mode_start:
  *   R14 = physical address probed before the switch
  *   R13 = highest RAM end from the PVH memory map, clamped to DIRECT_MAP_MAX
  *   R12 = value read at R14 while the identity map was still active
+ *
+ * The unclamped highest RAM end is kept in `boot_highest_ram`, so the Rust
+ * entry point can refuse a guest the reserved page directories cannot map
+ * instead of running with part of its memory unreachable.
  */
     .global switch_to_higher_half
     .type switch_to_higher_half, @function
@@ -293,7 +297,9 @@ switch_to_higher_half:
     jb 8b
 9:
 
-    /* Clamp the direct map to the page directories reserved for it. */
+    /* Keep the unclamped highest RAM end for the Rust refusal check, then
+     * limit the mapping to the page directories this file reserves. */
+    movq %r13, boot_highest_ram(%rip)
     movabsq $DIRECT_MAP_MAX, %rax
     cmpq %rax, %r13
     jbe 10f
@@ -367,10 +373,12 @@ higher_half_start:
     movq %cr3, %rax
     movq %rax, %cr3
 
-    /* RDI = hvm_start_info, RSI = probe address, RDX = probe value. */
+    /* RDI = hvm_start_info, RSI = probe address, RDX = probe value,
+     * RCX = highest RAM end from the memory map. */
     movq %r15, %rdi
     movq %r14, %rsi
     movq %r12, %rdx
+    movq boot_highest_ram(%rip), %rcx
     call _start
 
     cli
@@ -393,6 +401,12 @@ boot_gdtr:
     .balign 4
 boot_start_info:
     .skip 4
+
+    /* Highest RAM end from the PVH memory map, before the direct map limit. */
+    .balign 8
+    .global boot_highest_ram
+boot_highest_ram:
+    .skip 8
 
     .balign 16
     .skip 16384

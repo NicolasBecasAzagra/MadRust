@@ -2,9 +2,9 @@
 //! Storage for the buddy allocator metadata.
 //!
 //! The allocator never owns its metadata: it walks a [`BlockStore`] of one
-//! byte per minimum-size block. The kernel backs the store with a static
-//! buffer, while the host tests use a heap-allocated [`Vec`]. The algorithm
-//! itself is generic over the trait and shared by both.
+//! byte per minimum-size block. The kernel backs the store with a slice over a
+//! reserved region of RAM, while the host tests use a heap-allocated [`Vec`].
+//! The algorithm itself is generic over the trait and shared by both.
 
 /// One byte of metadata per minimum-size block.
 pub trait BlockStore {
@@ -27,20 +27,24 @@ pub trait BlockStore {
     fn set(&mut self, index: usize, value: u8);
 }
 
-/// Metadata store backed by a static buffer owned by the caller.
+/// Metadata store backed by a slice owned by the caller.
+///
+/// The kernel hands over the direct map address of a RAM region it reserved
+/// before it released the first frame; the host tests could wrap any buffer
+/// that outlives the allocator.
 #[derive(Debug)]
-pub struct StaticStore {
+pub struct SliceStore {
     data: &'static mut [u8],
 }
 
-impl StaticStore {
-    /// Wrap a static buffer.
+impl SliceStore {
+    /// Wrap a slice that stays valid for as long as the allocator lives.
     pub fn new(data: &'static mut [u8]) -> Self {
         Self { data }
     }
 }
 
-impl BlockStore for StaticStore {
+impl BlockStore for SliceStore {
     fn len(&self) -> usize {
         self.data.len()
     }

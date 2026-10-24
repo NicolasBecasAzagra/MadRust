@@ -7,7 +7,7 @@ use crate::paging::{
     directories_for, entry, large_page_entry, large_pages_for, Indices, DIRECTORY_SPAN, LARGE_PAGE,
     LARGE_PAGE_SIZE, PAGE_SIZE, PRESENT, WRITABLE,
 };
-use crate::store::VecStore;
+use crate::store::{SliceStore, VecStore};
 use crate::{
     phys_to_virt, virt_to_phys, FrameError, DIRECT_MAP_BASE, DIRECT_MAP_SPAN, FRAME_SIZE, MAX_ORDER,
 };
@@ -96,6 +96,47 @@ fn exhaustion_returns_out_of_memory() {
     }
     assert_eq!(allocator.free_frames(), 0);
     assert_eq!(allocator.allocate(0), Err(FrameError::OutOfMemory));
+}
+
+#[test]
+fn supports_the_largest_order() {
+    let frames = 1usize << MAX_ORDER;
+    let mut allocator = released(frames);
+    assert_eq!(allocator.free_blocks_at(MAX_ORDER), Some(1));
+
+    let base = allocator
+        .allocate(MAX_ORDER)
+        .expect("largest block available");
+    assert_eq!(base, 0);
+    assert_eq!(allocator.free_frames(), 0);
+
+    // The order sits in the low seven bits, so it still decodes next to OWNED.
+    assert_eq!(
+        allocator.deallocate(base, 0),
+        Err(FrameError::OrderMismatch {
+            frame: 0,
+            stored: MAX_ORDER,
+            requested: 0
+        })
+    );
+
+    allocator
+        .deallocate(base, MAX_ORDER)
+        .expect("block was allocated");
+    assert_eq!(allocator.free_blocks_at(MAX_ORDER), Some(1));
+    assert_eq!(allocator.free_frames(), frames);
+}
+
+#[test]
+fn a_slice_store_drives_the_allocator() {
+    let memory: &'static mut [u8] = Box::leak(vec![0u8; 64].into_boxed_slice());
+    let mut allocator = BuddyAllocator::new(SliceStore::new(memory), 64).expect("store is large");
+    allocator
+        .release_range(0, 64)
+        .expect("release the whole range");
+    let frame = allocator.allocate(0).expect("frame available");
+    allocator.deallocate(frame, 0).expect("frame was allocated");
+    assert_eq!(allocator.free_frames(), 64);
 }
 
 #[test]
@@ -359,7 +400,7 @@ fn virt_to_phys_rejects_addresses_outside_the_direct_map() {
     assert_eq!(virt_to_phys(DIRECT_MAP_BASE - 1), None);
     assert_eq!(virt_to_phys(0), None);
     assert_eq!(virt_to_phys(KERNEL_VIRTUAL_BASE), None);
-    // The reservation stops at 4 GiB of physical memory.
+    // The reservation stops at 32 GiB of physical memory.
     assert_eq!(virt_to_phys(DIRECT_MAP_BASE + DIRECT_MAP_SPAN), None);
     assert_eq!(
         virt_to_phys(DIRECT_MAP_BASE + DIRECT_MAP_SPAN - 1),

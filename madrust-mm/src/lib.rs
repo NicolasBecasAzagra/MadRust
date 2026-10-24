@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Physical memory management for MadRust (milestone M2b).
+//! Physical memory management for MadRust (milestone M2c).
 //!
 //! [`buddy`] manages 4 KiB physical frames and [`heap`] carves frames into a
 //! size-class kernel heap. Neither module touches hardware or allocates memory
@@ -20,7 +20,7 @@ pub mod store;
 
 pub use buddy::BuddyAllocator;
 pub use heap::{HeapError, SizeClassHeap};
-pub use store::{BlockStore, StaticStore};
+pub use store::{BlockStore, SliceStore};
 
 #[cfg(test)]
 mod tests;
@@ -39,10 +39,11 @@ pub const DIRECT_MAP_BASE: u64 = 0xffff_8880_0000_0000;
 /// Page directories the boot code reserves for the direct map.
 ///
 /// A page directory maps 1 GiB with 2 MiB pages, so the reservation covers
-/// 4 GiB of physical memory. It matches `DIRECT_MAP_DIRECTORIES` in
-/// `madrust-kernel/src/trampoline.s`; the memory manager rejects RAM above
-/// that limit instead of leaving part of it unmapped.
-pub const DIRECT_MAP_DIRECTORIES: u64 = 4;
+/// 32 GiB of physical memory. It matches `DIRECT_MAP_DIRECTORIES` in
+/// `madrust-kernel/src/trampoline.s`; the boot code refuses a guest with more
+/// RAM than that instead of leaving part of it unmapped, and the memory
+/// manager rejects the same case if the boot path ever hands it over.
+pub const DIRECT_MAP_DIRECTORIES: u64 = 32;
 
 /// Physical memory the direct map covers.
 pub const DIRECT_MAP_SPAN: u64 = DIRECT_MAP_DIRECTORIES * paging::DIRECTORY_SPAN;
@@ -69,8 +70,10 @@ pub const fn virt_to_phys(virtual_address: u64) -> Option<u64> {
 
 /// Largest buddy order the allocator handles.
 ///
-/// Order 0 is one frame; order 15 is `1 << 15` frames, that is 128 MiB.
-pub const MAX_ORDER: u8 = 15;
+/// Order 0 is one frame; order 20 is `1 << 20` frames, that is 4 GiB. The
+/// order is stored in the low seven bits of one metadata byte, so the encoding
+/// still fits and `OWNED`/`COVERED`/`RESERVED` stay unambiguous.
+pub const MAX_ORDER: u8 = 20;
 
 /// Reason why a frame operation was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

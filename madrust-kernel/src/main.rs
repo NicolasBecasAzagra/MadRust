@@ -44,7 +44,7 @@ use core::fmt::Write as _;
 use madrust_arch::cpu;
 use madrust_bootinfo::{BootInfo, HvmMemmapEntry, HvmModule, HvmStartInfo};
 use madrust_drivers::debug_exit;
-use madrust_mm::{phys_to_virt, DIRECT_MAP_BASE};
+use madrust_mm::{phys_to_virt, DIRECT_MAP_BASE, DIRECT_MAP_SPAN};
 
 use crate::console::console;
 
@@ -67,8 +67,10 @@ const SCHED_DEADLINE_TICKS: u64 = 2_000;
 /// runs from the higher half.
 ///
 /// `start_info_physical` is the *physical* address of `hvm_start_info`, `probe`
-/// the physical address the trampoline read before the switch and `observed`
-/// the value it read there.
+/// the physical address the trampoline read before the switch, `observed` the
+/// value it read there and `highest_ram` the highest RAM end the PVH memory map
+/// reported, before the trampoline limited the direct map to the page
+/// directories it reserved.
 ///
 /// # Safety
 ///
@@ -76,7 +78,12 @@ const SCHED_DEADLINE_TICKS: u64 = 2_000;
 /// physical address that points to a valid Xen PVH `hvm_start_info`, and with a
 /// probe pair taken from RAM. It never returns.
 #[no_mangle]
-unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64) -> ! {
+unsafe extern "C" fn _start(
+    start_info_physical: u64,
+    probe: u64,
+    observed: u64,
+    highest_ram: u64,
+) -> ! {
     let uart = console();
     uart.init();
 
@@ -86,6 +93,19 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
         memory::kernel_virtual_base()
     );
     kprintln!("[mm] direct map: 0x{:016x}", DIRECT_MAP_BASE);
+
+    // The trampoline maps the physical memory the boot information reports, up
+    // to the page directories it reserved. More RAM than that has no direct map
+    // entry, so refuse the guest before any frame is handed out.
+    if highest_ram > DIRECT_MAP_SPAN {
+        kprintln!(
+            "MadRust: boot FAILED: the guest has {} MiB of physical memory, the direct map describes at most {} MiB",
+            highest_ram / (1024 * 1024),
+            DIRECT_MAP_SPAN / (1024 * 1024)
+        );
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_MEMORY_FAILED);
+    }
 
     if !memory::direct_map_probe_matches(probe, observed) {
         kprintln!("MadRust: boot FAILED: the direct map does not translate physical memory");
@@ -171,13 +191,23 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     );
 
     if let Err(error) = memory::init(&boot_info) {
-        kprintln!("MadRust: boot FAILED: memory manager: {:?}", error);
+        kprintln!("MadRust: boot FAILED: memory manager: {}", error);
         uart.flush();
         debug_exit::exit(debug_exit::EXIT_MEMORY_FAILED);
     }
 
     let managed_frames = memory::with(|manager| manager.managed_frames()).unwrap_or(0);
     let free_frames = memory::with(|manager| manager.free_frames()).unwrap_or(0);
+    kprintln!(
+        "MEM describable: {} MiB ({} frames)",
+        DIRECT_MAP_SPAN / (1024 * 1024),
+        memory::MAX_FRAMES
+    );
+    kprintln!(
+        "MEM managed: {} MiB",
+        managed_frames as u64 * madrust_mm::FRAME_SIZE as u64 / (1024 * 1024)
+    );
+    kprintln!("MEM metadata: {} bytes (1 byte per frame)", managed_frames);
     kprintln!("MEM managed frames: {}", managed_frames);
     kprintln!("MEM free frames: {}", free_frames);
 

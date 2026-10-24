@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Physical memory manager and kernel heap (milestone M2b).
+//! Physical memory manager and kernel heap (milestone M2c).
 //!
 //! The manager is built from the PVH memory map: only RAM entries are usable.
 //! The kernel image and the first MiB are taken out before the rest is released
 //! to the buddy allocator.
+//!
+//! The buddy metadata is one byte per frame, so the store is sized from the
+//! memory map at boot and carved from the top of the highest RAM region that
+//! can hold it. The region is reserved before the first frame is released and
+//! reached through the direct map, which covers the whole physical memory the
+//! boot code mapped.
 //!
 //! The kernel runs from the higher half, so a physical address is no longer a
 //! pointer: the frame allocator stays index based and every access to a frame
@@ -11,19 +17,23 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
+use core::fmt;
 use core::ptr::NonNull;
 
 use madrust_bootinfo::{BootInfo, HvmMemmapEntry};
 use madrust_mm::buddy::BuddyAllocator;
 use madrust_mm::heap::{HeapError, SizeClassHeap, MIN_ALIGN, SIZE_CLASSES};
-use madrust_mm::paging;
-use madrust_mm::store::StaticStore;
-use madrust_mm::{phys_to_virt, FrameError, DIRECT_MAP_DIRECTORIES, FRAME_SIZE};
+use madrust_mm::store::SliceStore;
+use madrust_mm::{phys_to_virt, FrameError, DIRECT_MAP_SPAN, FRAME_SIZE};
 
 use crate::sync::IrqSpinLock;
 
-/// Frames the static metadata can describe: 1 GiB of physical memory.
-pub const MAX_FRAMES: usize = 262_144;
+/// Largest number of frames the kernel can describe.
+///
+/// One metadata byte per 4 KiB frame, so the direct map reservation is also the
+/// metadata capacity. The boot code maps [`DIRECT_MAP_SPAN`] bytes of physical
+/// memory and refuses a guest above it.
+pub const MAX_FRAMES: usize = (DIRECT_MAP_SPAN / FRAME_SIZE as u64) as usize;
 
 /// Number of blocks the boot self test allocates and frees.
 pub const SELF_TEST_BLOCKS: usize = 10_000;
@@ -39,20 +49,14 @@ const LOW_MEMORY_END: u64 = 0x10_0000;
 /// it is building itself.
 const MAX_MODULES: usize = 8;
 
+/// Reserved ranges: low memory, the kernel image, the modules and the metadata.
+const MAX_RESERVED: usize = 3 + MAX_MODULES;
+
 extern "C" {
     static __kernel_start__: u8;
     static __kernel_physical_start__: u8;
     static __kernel_physical_end__: u8;
 }
-
-/// One byte of buddy metadata per physical frame.
-struct MetadataCell(UnsafeCell<[u8; MAX_FRAMES]>);
-
-// SAFETY: the buffer is handed out exactly once, as an exclusive slice, by
-// [`init`] before any other code can reach it; nothing else aliases it.
-unsafe impl Sync for MetadataCell {}
-
-static METADATA: MetadataCell = MetadataCell(UnsafeCell::new([0; MAX_FRAMES]));
 
 /// The heap bookkeeping. It is a static so that the allocator never stores its
 /// own free lists in the memory it hands out.
@@ -66,7 +70,7 @@ static HEAP: HeapCell = HeapCell(UnsafeCell::new(SizeClassHeap::new()));
 
 /// Physical memory manager and heap, once [`init`] has built the frames.
 pub struct MemoryManager {
-    frames: BuddyAllocator<StaticStore>,
+    frames: BuddyAllocator<SliceStore>,
     heap: &'static mut SizeClassHeap,
 }
 
@@ -91,17 +95,18 @@ static MANAGER_LOCK: IrqSpinLock = IrqSpinLock::new("memory manager");
 pub enum MemoryError {
     /// The memory map does not contain a single usable RAM entry.
     NoUsableRam,
-    /// The physical memory exceeds what the static metadata describes.
-    MetadataTooSmall { required: usize, capacity: usize },
+    /// The physical memory exceeds what the direct map, and therefore the
+    /// metadata, can describe. `required` is the highest RAM end, `available`
+    /// the span the boot code mapped.
+    MemoryTooLarge { required: u64, available: u64 },
+    /// No RAM region can hold the frame metadata.
+    MetadataRegionUnavailable { size: usize, highest: u64 },
     /// The frame allocator rejected an operation.
     Frames(FrameError),
     /// The heap rejected an operation.
     Heap(HeapError),
     /// The manager was used before [`init`] succeeded.
     NotInitialised,
-    /// The direct map is smaller than the physical memory the memory map
-    /// reports, so part of RAM would be unreachable.
-    DirectMapTooSmall { required: u64, available: u64 },
     /// The self test could not allocate a block.
     AllocationFailed { size: usize, iteration: usize },
     /// The self test received a pointer below the documented alignment.
@@ -114,6 +119,28 @@ pub enum MemoryError {
     GlobalAllocatorFailed,
     /// The loader passed more modules than the reserved range list holds.
     TooManyModules { found: usize, capacity: usize },
+}
+
+impl fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoUsableRam => write!(f, "the memory map has no usable RAM"),
+            Self::MemoryTooLarge {
+                required,
+                available,
+            } => write!(
+                f,
+                "the guest has {} MiB of physical memory but the kernel describes at most {} MiB",
+                required / (1024 * 1024),
+                available / (1024 * 1024)
+            ),
+            Self::MetadataRegionUnavailable { size, highest } => write!(
+                f,
+                "no RAM region can hold the {size} byte frame metadata below 0x{highest:x}"
+            ),
+            _ => write!(f, "{self:?}"),
+        }
+    }
 }
 
 impl MemoryManager {
@@ -173,6 +200,9 @@ impl MemoryManager {
 }
 
 /// Build the physical manager from the boot memory map.
+///
+/// The frame metadata is carved from RAM: its size follows from the highest RAM
+/// end, one byte per frame, and it is reserved before any frame is released.
 pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
     let highest = boot_info
         .ram_regions()
@@ -184,31 +214,18 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
     }
 
     let managed = div_ceil(highest, FRAME_SIZE as u64) as usize;
-    if managed > MAX_FRAMES {
-        return Err(MemoryError::MetadataTooSmall {
-            required: managed,
-            capacity: MAX_FRAMES,
-        });
-    }
 
-    // The boot code clamps the direct map to the page directories it reserved,
-    // so RAM above that limit has no mapping. Reject it here instead of faulting
-    // on the first access to an unmapped frame.
-    let directories = paging::directories_for(highest);
-    if directories > DIRECT_MAP_DIRECTORIES {
-        return Err(MemoryError::DirectMapTooSmall {
-            required: directories,
-            available: DIRECT_MAP_DIRECTORIES,
+    // The direct map covers a fixed span and the metadata describes one byte
+    // per frame, so a guest above the span would stay partly unmapped. Refuse
+    // it here instead of handing out frames that fault on first touch.
+    if managed > MAX_FRAMES {
+        return Err(MemoryError::MemoryTooLarge {
+            required: highest,
+            available: DIRECT_MAP_SPAN,
         });
     }
 
     let layout = KernelLayout::read();
-
-    // SAFETY: the metadata buffer is handed out here, once, as an exclusive
-    // slice, and no other code keeps a reference to it.
-    let metadata: &'static mut [u8] = unsafe { &mut *METADATA.0.get() };
-    let mut frames =
-        BuddyAllocator::new(StaticStore::new(metadata), managed).map_err(MemoryError::Frames)?;
 
     let modules = boot_info.modules();
     if modules.len() > MAX_MODULES {
@@ -218,7 +235,7 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
         });
     }
 
-    let mut reserved = [Range { start: 0, end: 0 }; 2 + MAX_MODULES];
+    let mut reserved = [Range { start: 0, end: 0 }; MAX_RESERVED];
     let mut reserved_count = 0;
     reserved[reserved_count] = Range {
         start: 0,
@@ -226,9 +243,9 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
     };
     reserved_count += 1;
     /*
-     * The whole image, including `.bss`: the boot stack, the boot page tables,
-     * the final page tables and the static metadata buffers all live there, so
-     * one range covers every kernel owned page.
+     * The whole image, including `.bss`: the boot stack, the boot page tables
+     * and the final page tables all live there, so one range covers every
+     * kernel owned page.
      */
     reserved[reserved_count] = Range {
         start: layout.physical_start,
@@ -245,6 +262,36 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
         reserved_count += 1;
     }
     reserved[..reserved_count].sort_unstable_by_key(|range| range.start);
+
+    // One metadata byte per frame, rounded up to whole pages. The region comes
+    // from the top of the highest RAM region that can hold it and never
+    // overlaps low memory, the image or a module.
+    let metadata_size = managed;
+    let metadata = place_metadata(boot_info, &reserved[..reserved_count], metadata_size).ok_or(
+        MemoryError::MetadataRegionUnavailable {
+            size: metadata_size,
+            highest,
+        },
+    )?;
+    reserved[reserved_count] = metadata;
+    reserved_count += 1;
+    reserved[..reserved_count].sort_unstable_by_key(|range| range.start);
+
+    /*
+     * SAFETY: `metadata` lies inside a RAM region that the boot information
+     * reports and below `DIRECT_MAP_SPAN`, so the direct map translates every
+     * page of it. The region is recorded in `reserved` and therefore never
+     * released to the buddy allocator, no other code takes a reference to it,
+     * and this is the only slice built over it. The allocator keeps that slice
+     * exclusively for the rest of the boot, which is why `'static` is sound.
+     */
+    let store = unsafe {
+        SliceStore::new(core::slice::from_raw_parts_mut(
+            phys_to_virt(metadata.start) as *mut u8,
+            metadata_size,
+        ))
+    };
+    let mut frames = BuddyAllocator::new(store, managed).map_err(MemoryError::Frames)?;
 
     for region in boot_info.ram_regions() {
         release_usable(&mut frames, region, &reserved[..reserved_count])?;
@@ -409,9 +456,48 @@ struct Range {
     end: u64,
 }
 
+/// Carve the metadata region from the top of the highest RAM region that can
+/// hold it, page aligned and clear of every reserved range.
+///
+/// Trying every region keeps the kernel working when the highest region is too
+/// small for the metadata, for example when the loader puts a tiny RAM entry
+/// above the bulk of memory.
+fn place_metadata(boot_info: &BootInfo<'_>, reserved: &[Range], size: usize) -> Option<Range> {
+    boot_info
+        .ram_regions()
+        .filter_map(|region| carve_top(region, size as u64, reserved))
+        .max_by_key(|range| range.start)
+}
+
+/// Highest `size` bytes of `region` that overlap no reserved range.
+///
+/// Returns `None` when the region cannot hold the region at all.
+fn carve_top(region: &HvmMemmapEntry, size: u64, reserved: &[Range]) -> Option<Range> {
+    let page = FRAME_SIZE as u64;
+    let size = size.next_multiple_of(page);
+    let floor = div_ceil(region.addr, page) * page;
+    let mut end = region.end() / page * page;
+
+    loop {
+        if end < floor.saturating_add(size) {
+            return None;
+        }
+        let start = end - size;
+        match reserved
+            .iter()
+            .find(|range| start < range.end && end > range.start)
+        {
+            // Slide the candidate below the range it hit. Every step lowers
+            // `end`, so the loop terminates.
+            Some(range) => end = range.start / page * page,
+            None => return Some(Range { start, end }),
+        }
+    }
+}
+
 /// Release the part of one RAM region that no reserved range covers.
 fn release_usable(
-    frames: &mut BuddyAllocator<StaticStore>,
+    frames: &mut BuddyAllocator<SliceStore>,
     region: &HvmMemmapEntry,
     reserved: &[Range],
 ) -> Result<(), MemoryError> {
