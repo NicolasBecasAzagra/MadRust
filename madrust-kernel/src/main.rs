@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MadRust x86_64 kernel entry point (milestone M4a).
+//! MadRust x86_64 kernel entry point (milestone M4b).
 //!
 //! Boots through the Xen PVH protocol: QEMU jumps to `_start32`, the 32-bit
 //! trampoline enables long mode with an identity map of the first GiB, and the
@@ -79,7 +79,7 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     let uart = console();
     uart.init();
 
-    kprintln!("MadRust: x86_64 kernel, M4a");
+    kprintln!("MadRust: x86_64 kernel, M4b");
     kprintln!(
         "[mm] kernel virtual: 0x{:016x}",
         memory::kernel_virtual_base()
@@ -182,7 +182,14 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
             debug_exit::exit(debug_exit::EXIT_USER_FAILED);
         }
     };
-    kprintln!("[user] entry at 0x{:x}", user::entry(&program));
+    // The image is loaded at a fixed base. A position independent executable
+    // carries an entry offset, so the first instruction is base + e_entry; both
+    // numbers are logged to keep a wrong base visible.
+    kprintln!("[user] entry at 0x{:x}", user::load_base(&program));
+    kprintln!(
+        "[user] start at 0x{:x} (base + e_entry)",
+        user::entry(&program)
+    );
 
     let cpuid = cpu::cpuid(0);
     let vendor = cpuid.vendor();

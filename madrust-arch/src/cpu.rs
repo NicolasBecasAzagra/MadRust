@@ -125,6 +125,15 @@ mod imp {
         value
     }
 
+    /// Drop the cached translation of one page.
+    pub fn invalidate_page(address: u64) {
+        // SAFETY: `invlpg` only removes the entry for `address` from the TLB.
+        // It does not touch memory and is valid on every x86_64 CPU.
+        unsafe {
+            asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
+        }
+    }
+
     /// Reload CR3, which discards every cached translation.
     ///
     /// # Safety
@@ -245,6 +254,8 @@ mod imp {
     pub unsafe fn flush_tlb() {}
 
     /// Host stub: does nothing.
+    pub fn invalidate_page(_address: u64) {}
+
     pub fn hlt() {}
 
     /// Host stub: does nothing.
@@ -263,5 +274,5 @@ mod imp {
 
 pub use imp::{
     cpuid, cpuid_subleaf, disable_interrupts, enable_interrupts, flush_tlb, halt_loop, hlt,
-    read_cr2, read_cr3, read_msr, write_msr, Cpuid,
+    invalidate_page, read_cr2, read_cr3, read_msr, write_msr, Cpuid,
 };

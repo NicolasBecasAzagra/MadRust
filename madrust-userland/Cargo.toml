@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-only
 [package]
 name = "madrust-userland"
-description = "Freestanding MadRust ring 3 test program"
+description = "Standard library MadRust ring 3 test program"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-only"
 publish = false
 
-# The program is a separate workspace: it is linked at a user address with its
-# own target and linker script, so it shares neither the kernel target nor the
-# kernel rustflags.
+# The program is a separate workspace: it is a normal Rust program for the
+# Linux musl target, so it shares neither the kernel target nor the kernel
+# rustflags. The Makefile builds it with rust-lld and embeds the static
+# position independent executable in the kernel.
 [workspace]
 
 [[bin]]

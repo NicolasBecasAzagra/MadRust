@@ -19,8 +19,12 @@ use super::paging;
 /// Address one past the last byte of the user stack.
 pub const STACK_TOP: u64 = 0x0000_0000_8000_0000;
 
-/// Pages reserved for the user stack, 16 KiB.
-pub const STACK_PAGES: u64 = 4;
+/// Pages reserved for the user stack, 256 KiB.
+///
+/// A standard library program builds its startup state and its `stdio`
+/// buffers on this stack, so the four pages of the freestanding milestone are
+/// not enough: the first `println!` would run off the bottom of the mapping.
+pub const STACK_PAGES: u64 = 64;
 
 /// Number of bytes of random data `AT_RANDOM` points at.
 const RANDOM_SIZE: usize = 16;

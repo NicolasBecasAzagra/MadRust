@@ -8,6 +8,57 @@ userland. It is not a general-purpose distribution, it does not replace Linux,
 and it is not production ready. Its purpose is to produce a kernel that other
 people can read, learn from, and measure.
 
+## The userland and the system call table (M4b)
+
+The test userland is a normal Rust program built against the standard
+library, statically linked for `x86_64-unknown-linux-musl` with the bundled
+`rust-lld`, so no C compiler is involved anywhere. It is a position
+independent executable of about 560 KB, loaded at `0x400000` and entered at the
+base plus `e_entry`.
+
+The system call table uses the Linux numbering, the Linux argument order and
+the Linux error numbers. A call that is not implemented returns `-ENOSYS` and
+the kernel prints its number, so the gaps are visible in the boot log instead
+of hiding.
+
+Implemented:
+
+```text
+read 0        write 1       close 3       fstat 5       poll 7
+mmap 9        mprotect 10   munmap 11     brk 12        rt_sigaction 13
+rt_sigprocmask 14           ioctl 16      sched_yield 24 mremap 25
+madvise 28    dup 32        dup2 33       nanosleep 35  getpid 39
+exit 60       kill 62       uname 63      fcntl 72      getcwd 79
+readlink 89   gettimeofday 96             getrusage 98  getuid 102
+getgid 104    geteuid 107   getegid 108   getppid 110   sigaltstack 131
+prctl 157     arch_prctl 158               gettid 186    futex 202
+sched_getaffinity 204                      getdents64 217
+set_tid_address 218                       clock_gettime 228
+clock_nanosleep 230                       exit_group 231 tgkill 234
+openat 257    newfstatat 262              set_robust_list 273
+dup3 292      pipe2 293     prlimit64 302 getrandom 318 membarrier 324
+statx 332     rseq 334
+```
+
+Not implemented yet, and they return `-ENOSYS`: `lseek` 8, `clone` 56,
+`execve` 59, `wait4` 61, and everything that needs sockets or a file system.
+
+### What the implementations do not do yet
+
+These are deliberate limits of the milestone, not accidents, and each one is a
+task for M5 or M6:
+
+- `mmap` serves anonymous memory only. A file backed mapping returns
+  `ENODEV`, because there is no file system yet.
+- `mprotect` toggles write permission only. The `NXE` bit is not enabled and
+  `PROT_NONE` is not enforced.
+- Pipes are 4 KiB buffers that return `EAGAIN` instead of blocking, and
+  `poll` never blocks.
+- `openat`, `newfstatat`, `statx`, `getdents64` and `readlink` answer
+  `ENOENT`, `ENOTDIR` or `EINVAL`: there is no file system.
+- `FUTEX_WAIT_BITSET` timeouts are treated as relative.
+- The futex wait table holds eight waiters.
+
 ## Current state
 
 Milestones M0 to M3 are implemented, verified locally and asserted in CI:
@@ -25,10 +76,16 @@ Milestones M0 to M3 are implemented, verified locally and asserted in CI:
   memory, so a frame index is no longer a virtual address.
 - M3: kernel threads with a preemptive round-robin scheduler, interrupt safe
   locks and a recursion guard.
+- M4a: user mode. Ring 3 descriptors, `SYSCALL`/`SYSRET`, an ELF64 loader, and
+  a user program that runs, prints through the `write` system call and exits.
+- M4b: a real userland. A standard library program, statically linked for the
+  Linux musl target, runs unmodified: the loader learned position independent
+  executables and the system call table grew to what `std` needs.
 
-The next milestone is M4: the Linux system call ABI, the ELF loader and a
-static userland. Before the benchmark phase, the frame metadata has to become
-dynamic so the kernel can use more than 1 GiB of RAM (see the limits below).
+The next milestone is M5: a file system, an initramfs and process support, so
+the kernel can run a distribution init instead of a single program. Before the
+benchmark phase, the frame metadata has to become dynamic so the kernel can
+use more than 1 GiB of RAM (see the limits below).
 
 ## Repository layout
 
@@ -62,6 +119,28 @@ crate with one function does not exist yet.
 - **Paging: 4 levels, kernel in the higher half** (`0xffff8000_00000000`),
   physical memory direct-mapped with 2 MiB pages, user space below.
 - **System calls: `SYSCALL`/`SYSRET` only.** `INT 0x80` is not implemented.
+- **User mode (M4a):** the kernel half and the user half live in the same
+  page tables for now, so there is one address space and no `CR3` switch.
+  Per process address spaces come later. The selectors are `0x08` kernel
+  code, `0x10` kernel data, `0x1B` and `0x23` the ring 3 code and data used
+  by `iretq`, `0x2B` the ring 3 code used by `sysretq` and `0x30` the TSS.
+  The compile time assertions in the GDT module pin that relation, because
+  `SYSRET` derives the user selectors from `STAR` and a mismatch is a silent
+  fault.
+- **System call policy (M4a):** the Linux numbering, the Linux argument
+  order (number in `RAX`, arguments in `RDI`, `RSI`, `RDX`, `R10`, `R8`,
+  `R9`) and negative errno values on failure. A call that is not implemented
+  returns `-ENOSYS`, never a wrong success. The implemented set is `read`,
+  `write`, `close`, `mmap`, `munmap`, `brk`, `ioctl`, `fcntl`, `exit`,
+  `exit_group`, `uname`, `getpid`, `gettid`, `getppid`, `getuid`, `geteuid`,
+  `getgid`, `getegid` and `clock_gettime`.
+- **System call entry:** the stub swaps to the kernel `GS` base, saves the
+  user stack pointer in the per CPU slot, loads the kernel stack from the TSS
+  `rsp0`, saves every general purpose register and the user `RIP` and flags,
+  and calls the dispatcher with the arguments in the System V order. The
+  `SFMASK` masks the interrupt flag, so a system call is never interrupted by
+  the timer while it runs. The return path restores the registers, reloads
+  the user stack pointer and returns with `sysretq`.
 - **No async.** Kernel threads, wait queues and spinlocks with interrupts
   disabled locally. Sleeping while holding a lock is forbidden.
 - **Threads (M3):** one CPU, one address space: a thread differs only in its

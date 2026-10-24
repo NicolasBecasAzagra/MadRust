@@ -74,6 +74,26 @@ serial log. The log is the instrument.
   interrupt frame needs on top of the thread stack.
 - **Add a fourth thread** and watch the run queue handle it. Then spawn nine
   and read what happens when the fixed size queue is full.
+- **Change the user program** in `madrust-userland` to return a different
+  exit status and watch the kernel report it. Then make it call a system
+  call that is not implemented and read the `-ENOSYS` path.
+- **Break the `SYSRET` selectors** in the GDT module and see what the
+  compile time assertions say. Then read the comment about why `SYSRET`
+  derives the user selectors from `STAR`.
+- **Make the user program execute an invalid instruction** and check that
+  the kernel reports the exception and stops instead of hanging.
+- **Add a system call** to the dispatcher: pick a number, define the
+  semantics, return a negative errno on failure, and add it to the table in
+  `docs/ARCHITECTURE.md`.
+- **Remove the futex timeout** and let a program wait forever. Then read the
+  comment about why the timer hook has to expire the deadline.
+- **Make the user program print an unimplemented system call number** and
+  watch the kernel report it in the serial log.
+- **Change the userland** to use a `std::sync::Mutex` across two threads and
+  watch the futex path work for real.
+- **Change the load base** of the user program and watch the entry point
+  move with it. The boot log prints the base and the real entry separately on
+  purpose.
 
 ## Debugging
 

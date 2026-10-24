@@ -98,10 +98,24 @@ _start32:
     cmpl $512, %ecx
     jb 1b
 
-    /* Enable CR4.PAE. */
+    /*
+     * Enable the floating point unit and SSE. A standard library program and
+     * the musl string routines it calls use SSE2 instructions such as movaps;
+     * the CPU raises #UD on them unless CR4.OSFXSR is set and CR0.EM is clear.
+     * Long mode always has SSE2, so the bits are safe on every CPU that gets
+     * this far. CR4.PAE is set in the same write.
+     */
+    movl %cr0, %eax
+    andl $0xffffffef, %eax        /* TS = 0: no lazy context switch */
+    andl $0xfffffffb, %eax        /* EM = 0: no instruction emulation */
+    orl $0x22, %eax               /* MP and NE */
+    movl %eax, %cr0
+
     movl %cr4, %eax
-    orl $0x20, %eax
+    orl $(0x20 | (1 << 9) | (1 << 10)), %eax  /* PAE, OSFXSR, OSXMMEXCPT */
     movl %eax, %cr4
+
+    fninit
 
     /* Set EFER.LME (MSR 0xC0000080, bit 8). */
     movl $0xC0000080, %ecx

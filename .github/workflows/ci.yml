@@ -22,6 +22,8 @@ jobs:
         with:
           toolchain: nightly-2026-10-24
           components: rust-src, llvm-tools, rustfmt, clippy
+          # The user program is a standard library program for Linux musl.
+          targets: x86_64-unknown-linux-musl
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2

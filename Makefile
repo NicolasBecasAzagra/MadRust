@@ -27,16 +27,17 @@ KERNEL_FLAGS := --target $(KERNEL_TARGET) \
 # target and is excluded from the host runs.
 HOST_ONLY := --exclude madrust-kernel
 
-# The user program is a separate workspace: it is linked at 0x400000 with its
-# own target and linker script, and the kernel embeds the result. It must be
-# built before the kernel, whose `include_bytes!` reads the copy in
-# madrust-userland/madrust-userland.elf.
-USER_TARGET := x86_64-madrust-user
+# The user program is a separate workspace and a normal Rust program built
+# against the standard library of the Linux musl target. That target is
+# precompiled, so no `-Z build-std` is needed and no C toolchain is involved:
+# rust-lld links the static position independent executable. The kernel embeds
+# the copy in madrust-userland/madrust-userland.elf, so it must be built first.
+USER_TARGET := x86_64-unknown-linux-musl
 USERLAND_ELF := madrust-userland/madrust-userland.elf
+USERLAND_RUSTFLAGS := -Z unstable-options -C linker=rust-lld -C linker-flavor=gnu-lld
 USERLAND_FLAGS := --manifest-path madrust-userland/Cargo.toml \
-	--target $(USER_TARGET).json \
-	--target-dir $(TARGET_DIR)/userland \
-	-Z build-std=core
+	--target $(USER_TARGET) \
+	--target-dir $(TARGET_DIR)/userland
 
 QEMU ?= qemu-system-x86_64
 QEMU_FLAGS := -M q35 -m 512M \
@@ -57,7 +58,7 @@ all: build
 # into the repository is what the kernel embeds: the linker writes through
 # mmap, which is not reliable on every file system, while a plain copy is.
 userland:
-	$(CARGO) build --release $(USERLAND_FLAGS)
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(USERLAND_FLAGS)
 	cp $(TARGET_DIR)/userland/$(USER_TARGET)/release/madrust-userland $(USERLAND_ELF)
 
 build: userland
@@ -86,7 +87,7 @@ fmt-check:
 # the userland binary to exist.
 clippy: userland
 	$(CARGO) clippy --workspace --bins --lib $(KERNEL_FLAGS) -- -D warnings
-	$(CARGO) clippy $(USERLAND_FLAGS) -- -D warnings
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(USERLAND_FLAGS) -- -D warnings
 
 clippy-host:
 	$(CARGO) clippy --workspace --all-targets --target $(HOST_TARGET) \

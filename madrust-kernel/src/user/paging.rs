@@ -72,10 +72,11 @@ fn next_table(table: *mut u64, index: usize) -> Option<*mut u64> {
     Some(table_pointer(fresh))
 }
 
-/// Physical address backing `address`, if the user half maps it.
-pub fn frame_at(address: u64) -> Option<u64> {
+/// Pointer to the leaf entry that maps `address`, if every level exists.
+fn leaf_entry(address: u64) -> Option<*mut u64> {
     let indices = paging::Indices::of(address);
-    // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3.
+    // SAFETY: `mm_pml4` is the static page table page the kernel loads in CR3,
+    // and every entry followed below was present in the previous level.
     let mut table = addr_of!(mm_pml4) as *mut u64;
     for index in [indices.pml4, indices.pdpt, indices.directory] {
         let entry = read_entry(table, index);
@@ -84,11 +85,59 @@ pub fn frame_at(address: u64) -> Option<u64> {
         }
         table = table_pointer(entry_address(entry));
     }
-    let entry = read_entry(table, indices.table);
+    Some(
+        // SAFETY: `table` points at the page table page for this address and
+        // `indices.table` is a valid entry index within it.
+        unsafe { table.add(indices.table) },
+    )
+}
+
+/// Physical address backing `address`, if the user half maps it.
+pub fn frame_at(address: u64) -> Option<u64> {
+    let entry = read_entry(leaf_entry(address)?, 0);
     if entry & paging::PRESENT == 0 {
         return None;
     }
     Some(entry_address(entry))
+}
+
+/// Remove one user mapping and return the frame it held.
+///
+/// Returns `None` when the page is not mapped. The caller owns the frame and
+/// returns it to the allocator.
+pub fn unmap_page(address: u64) -> Option<u64> {
+    let table = leaf_entry(address)?;
+    let entry = read_entry(table, 0);
+    if entry & paging::PRESENT == 0 {
+        return None;
+    }
+    write_entry(table, 0, 0);
+    madrust_arch::cpu::invalidate_page(address);
+    Some(entry_address(entry))
+}
+
+/// Make a mapped user page writable or read only.
+///
+/// Returns `false` when the page is not mapped. Every user page of this
+/// milestone is present and reachable from ring 3; only the writable bit and
+/// the executable state change here, and x86-64 has no executable bit without
+/// `EFER.NXE`, so a non executable page stays readable and executable.
+pub fn set_writable(address: u64, writable: bool) -> bool {
+    let Some(table) = leaf_entry(address) else {
+        return false;
+    };
+    let entry = read_entry(table, 0);
+    if entry & paging::PRESENT == 0 {
+        return false;
+    }
+    let updated = if writable {
+        entry | paging::WRITABLE
+    } else {
+        entry & !paging::WRITABLE
+    };
+    write_entry(table, 0, updated);
+    madrust_arch::cpu::invalidate_page(address);
+    true
 }
 
 /// Map one 4 KiB user page at `address`.

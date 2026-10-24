@@ -130,6 +130,28 @@ impl MemoryManager {
             .map(|frame| frame as u64 * FRAME_SIZE as u64)
     }
 
+    /// Allocate one 4 KiB frame that reads back as zero.
+    ///
+    /// Every frame the allocator hands out holds whatever the previous owner
+    /// left behind, so a mapping that requires zeroed memory uses this helper.
+    pub fn alloc_zeroed_frame(&mut self) -> Option<u64> {
+        let frame = self.alloc_frame()?;
+        // SAFETY: the allocator just removed the frame from its free lists and
+        // nothing else references it, so the zero fill is exclusive. The
+        // direct map translates the physical address.
+        unsafe {
+            core::ptr::write_bytes(phys_to_virt(frame) as *mut u8, 0, FRAME_SIZE);
+        }
+        Some(frame)
+    }
+
+    /// Return a frame obtained from [`MemoryManager::alloc_frame`].
+    pub fn free_frame(&mut self, physical: u64) -> Result<(), FrameError> {
+        let frame = usize::try_from(physical / FRAME_SIZE as u64)
+            .map_err(|_| FrameError::OutOfRange { frame: usize::MAX })?;
+        self.frames.deallocate(frame, 0)
+    }
+
     /// Number of free physical frames.
     pub fn free_frames(&self) -> usize {
         self.frames.free_frames()

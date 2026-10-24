@@ -7,26 +7,44 @@
 //! user half with [`super::paging::map_page`]. Pages shared by two segments are
 //! allocated once: the second segment reuses the frame already mapped there.
 //!
-//! The program header table itself sits outside every loadable segment in the
-//! user image, so it is copied into one dedicated user page. That page is what
-//! `AT_PHDR` points at.
+//! Two image kinds are supported. An `ET_EXEC` image carries absolute
+//! addresses and is loaded where it was linked. An `ET_DYN` image, which is
+//! what a statically linked musl binary is, carries offsets from a load base
+//! of zero: every `p_vaddr` is shifted by [`LOAD_BASE`] and the program enters
+//! at `LOAD_BASE + e_entry`.
+//!
+//! `AT_PHDR` must name the program header table of the running image, because
+//! the musl startup code derives the load base and the address of the `PT_TLS`
+//! image from it. For `ET_DYN` the table is already inside the first loadable
+//! segment, so the loader reports that address. In an `ET_EXEC` image the
+//! table sits outside every segment, so it is copied into one dedicated user
+//! page instead.
 
 use core::ptr::copy_nonoverlapping;
 
-use madrust_elf::{Elf, ElfError, ProgramHeader};
+use madrust_elf::{Elf, ElfError, ProgramHeader, USER_SPACE_END};
 use madrust_mm::paging::PAGE_SIZE;
 use madrust_mm::phys_to_virt;
 
 use super::paging;
 
+/// Address a position independent image is loaded at.
+///
+/// The same value the previous `ET_EXEC` images were linked at, so the log and
+/// the debugger keep showing the same picture. The image is well below the
+/// anonymous mapping area at 256 MiB.
+pub const LOAD_BASE: u64 = 0x0040_0000;
+
 /// User address of the page that holds the copied program header table.
 ///
 /// It sits below the stack at 2 GiB and above the program at 4 MiB, so it
-/// cannot collide with either.
+/// cannot collide with either. Only an `ET_EXEC` image needs the copy: the
+/// table of a position independent image is mapped by its first segment.
 const PROGRAM_HEADER_PAGE: u64 = 0x0000_0000_6000_0000;
 
 /// A loaded program, ready to be entered.
 pub struct Image {
+    load_base: u64,
     entry: u64,
     program_headers: u64,
     program_header_entries: u16,
@@ -35,7 +53,15 @@ pub struct Image {
 }
 
 impl Image {
-    /// Entry point from the ELF header.
+    /// Address the image was loaded at.
+    ///
+    /// Zero for an `ET_EXEC` image, whose addresses are absolute, and
+    /// [`LOAD_BASE`] for a position independent one.
+    pub const fn load_base(&self) -> u64 {
+        self.load_base
+    }
+
+    /// Entry point the CPU must jump to, with the load base applied.
     pub const fn entry(&self) -> u64 {
         self.entry
     }
@@ -77,25 +103,52 @@ pub enum LoadError {
 /// Load every `PT_LOAD` segment of `bytes` into the user half.
 pub fn load(bytes: &[u8]) -> Result<Image, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::Elf)?;
+    let base = if elf.is_position_independent() {
+        LOAD_BASE
+    } else {
+        0
+    };
 
     let mut break_address = 0;
     let mut loads = 0;
-    for header in elf.program_headers() {
+    for (index, header) in elf.program_headers().enumerate() {
         if !header.is_load() || header.memsz == 0 {
             continue;
         }
-        load_segment(bytes, &header)?;
-        break_address = break_address.max(header.end());
+        // The parser checked the segment against the user half without the
+        // base, so the shifted end has to be checked again.
+        let end = base
+            .checked_add(header.end())
+            .filter(|end| *end <= USER_SPACE_END)
+            .ok_or(LoadError::Elf(ElfError::SegmentOutsideUserSpace { index }))?;
+        load_segment(bytes, &header, base)?;
+        break_address = break_address.max(end);
         loads += 1;
     }
     if loads == 0 {
         return Err(LoadError::NoLoadableSegment);
     }
 
-    let program_headers = copy_program_headers(bytes, &elf)?;
+    let program_headers = if elf.is_position_independent() {
+        // The table is mapped by the first segment. Reporting a copy would
+        // make the musl startup code derive the wrong load base for `PT_TLS`.
+        match elf.program_header_address() {
+            Some(address) => address + base,
+            None => return Err(LoadError::Elf(ElfError::ProgramHeadersNotMapped)),
+        }
+    } else {
+        copy_program_headers(bytes, &elf)?
+    };
+
+    let entry =
+        elf.entry_with_base(base)
+            .ok_or(LoadError::Elf(ElfError::EntryOutsideUserSpace {
+                entry: elf.entry(),
+            }))?;
 
     Ok(Image {
-        entry: elf.entry(),
+        load_base: base,
+        entry,
         program_headers,
         program_header_entries: elf.program_header_count(),
         program_header_size: elf.program_header_size(),
@@ -103,11 +156,12 @@ pub fn load(bytes: &[u8]) -> Result<Image, LoadError> {
     })
 }
 
-/// Map and fill the pages of one loadable segment.
-fn load_segment(bytes: &[u8], header: &ProgramHeader) -> Result<(), LoadError> {
-    let first = header.vaddr & !(PAGE_SIZE - 1);
-    let end = header.end();
-    let file_end = header.vaddr + header.filesz;
+/// Map and fill the pages of one loadable segment at `base`.
+fn load_segment(bytes: &[u8], header: &ProgramHeader, base: u64) -> Result<(), LoadError> {
+    let vaddr = header.vaddr + base;
+    let first = vaddr & !(PAGE_SIZE - 1);
+    let end = vaddr + header.memsz;
+    let file_end = vaddr + header.filesz;
 
     let mut address = first;
     while address < end {
@@ -130,10 +184,10 @@ fn load_segment(bytes: &[u8], header: &ProgramHeader) -> Result<(), LoadError> {
 
         // Copy the part of this page that the file backs. A page shared by two
         // segments is copied twice at most, always from that segment's bytes.
-        let copy_start = address.max(header.vaddr);
+        let copy_start = address.max(vaddr);
         let copy_end = (address + PAGE_SIZE).min(file_end);
         if copy_start < copy_end {
-            let offset = header.offset + (copy_start - header.vaddr);
+            let offset = header.offset + (copy_start - vaddr);
             let length = usize::try_from(copy_end - copy_start)
                 .map_err(|_| LoadError::Elf(ElfError::SegmentFileRangeOutsideImage { index: 0 }))?;
             let start = usize::try_from(offset)

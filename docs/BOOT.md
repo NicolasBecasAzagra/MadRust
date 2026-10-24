@@ -139,6 +139,26 @@ The linker script asserts that the image still fits in the 2 MiB that is
 mapped with 4 KiB pages, and that the entry point is the first byte of the
 image.
 
+## User mode
+
+The kernel loads a user program and enters ring 3 with it:
+
+- The program is a position independent executable. The loader maps its
+  segments at the load base `0x400000`, adds the base to every `p_vaddr` and
+  enters at the base plus `e_entry`, which is why the boot log prints the base
+  and the real entry point on separate lines.
+- The initial user stack holds the System V argument block: `argc`, `argv`,
+  the environment, and the auxiliary vector with `AT_PHDR`, `AT_ENTRY`,
+  `AT_BASE`, `AT_PAGESZ`, the identifiers and `AT_RANDOM`.
+- The transition is an `iretq` with the ring 3 selectors and the user stack
+  pointer, with the user `RFLAGS` setting the interrupt flag.
+- A system call arrives through `SYSCALL`: the stub swaps to the kernel `GS`
+  base, saves the user stack pointer, switches to the kernel stack from the
+  TSS `rsp0`, saves every register and calls the dispatcher. The return path
+  restores everything and returns with `sysretq`.
+- The `SFMASK` masks the interrupt flag on entry, so a system call is never
+  interrupted by the timer while it runs.
+
 ## Runtime sequence
 
 The boot path is deterministic and asserted by CI:

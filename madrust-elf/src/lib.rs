@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! ELF64 executable parsing for the MadRust user program loader.
 //!
-//! The kernel loads one freestanding executable, so the parser accepts exactly
-//! the shape that loader supports: a 64-bit little endian `ET_EXEC` file for
-//! `EM_X86_64` whose `PT_LOAD` segments stay inside the user half. Anything
-//! else is rejected with a reason instead of being loaded partially.
+//! The kernel loads one static executable, so the parser accepts exactly the
+//! shape that loader supports: a 64-bit little endian `ET_EXEC` or `ET_DYN`
+//! file for `EM_X86_64` whose `PT_LOAD` segments stay inside the user half.
+//! A position independent executable (`ET_DYN`, which is what a statically
+//! linked musl binary is) uses addresses relative to a load base that the
+//! loader chooses; [`Elf::entry_with_base`] applies that base, and the
+//! loadable segments of such a file must not overlap at page granularity.
+//! Anything else is rejected with a reason instead of being loaded partially.
 //!
 //! Nothing here touches hardware or allocates memory: [`Elf::parse`] only
 //! borrows the image bytes and every read is bounds checked, so the same code
@@ -24,6 +28,13 @@ pub const PT_LOAD: u32 = 1;
 
 /// Object file type of a static executable.
 pub const ET_EXEC: u16 = 2;
+
+/// Object file type of a position independent executable.
+///
+/// A statically linked musl binary is an `ET_DYN` whose `e_entry` and
+/// `p_vaddr` values are offsets from a load base of zero. The loader chooses
+/// the base.
+pub const ET_DYN: u16 = 3;
 
 /// Machine type of x86-64.
 pub const EM_X86_64: u16 = 62;
@@ -56,7 +67,7 @@ pub enum ElfError {
     UnsupportedIdentVersion { version: u8 },
     /// `e_version` is not the current ELF version.
     UnsupportedVersion { version: u32 },
-    /// The file is not a static executable.
+    /// The file is neither a static executable nor a position independent one.
     NotExecutable { kind: u16 },
     /// The file was built for another machine.
     WrongMachine { machine: u16 },
@@ -78,6 +89,8 @@ pub enum ElfError {
     EntryOutsideUserSpace { entry: u64 },
     /// The program header table is not covered by any loadable segment.
     ProgramHeadersNotMapped,
+    /// Two loadable segments would map the same page.
+    SegmentsOverlap { first: usize, second: usize },
 }
 
 /// One parsed program header.
@@ -125,6 +138,7 @@ impl ProgramHeader {
 #[derive(Clone, Copy, Debug)]
 pub struct Elf<'a> {
     bytes: &'a [u8],
+    kind: u16,
     entry: u64,
     phoff: u64,
     phentsize: u16,
@@ -180,7 +194,7 @@ impl<'a> Elf<'a> {
             needed: 18,
             found: bytes.len(),
         })?;
-        if kind != ET_EXEC {
+        if kind != ET_EXEC && kind != ET_DYN {
             return Err(ElfError::NotExecutable { kind });
         }
 
@@ -238,6 +252,7 @@ impl<'a> Elf<'a> {
 
         let elf = Self {
             bytes,
+            kind,
             entry,
             phoff,
             phentsize,
@@ -259,12 +274,68 @@ impl<'a> Elf<'a> {
             }
         }
 
+        elf.check_segment_overlap()?;
+
         Ok(elf)
     }
 
     /// Entry point from the file header.
+    ///
+    /// For an `ET_DYN` file this is an offset from the load base; use
+    /// [`Elf::entry_with_base`] to get the address the CPU must jump to.
     pub const fn entry(&self) -> u64 {
         self.entry
+    }
+
+    /// Object file type: [`ET_EXEC`] or [`ET_DYN`].
+    pub const fn kind(&self) -> u16 {
+        self.kind
+    }
+
+    /// `true` when the image must be loaded at a base chosen by the loader.
+    pub const fn is_position_independent(&self) -> bool {
+        self.kind == ET_DYN
+    }
+
+    /// Entry address once `base` is added to every virtual address.
+    ///
+    /// `base` is zero for [`ET_EXEC`], whose addresses are already absolute.
+    /// Returns `None` when the sum leaves the user half, which keeps a crafted
+    /// image from entering the kernel half.
+    pub fn entry_with_base(&self, base: u64) -> Option<u64> {
+        let entry = self.entry.checked_add(base)?;
+        if entry >= USER_SPACE_END {
+            return None;
+        }
+        Some(entry)
+    }
+
+    /// Reject two loadable segments that claim the same byte range.
+    ///
+    /// The loader allocates one frame per page and lets a page shared by two
+    /// adjacent segments take the bytes of both, but it cannot give the same
+    /// byte two different contents. Adjacent segments that only share a page
+    /// boundary are fine; a real overlap is a broken image. Non loadable
+    /// headers, for example `PT_TLS`, may overlap a segment because the loader
+    /// does not map them on their own.
+    fn check_segment_overlap(&self) -> Result<(), ElfError> {
+        let mut previous: Option<(usize, ProgramHeader)> = None;
+
+        for (index, header) in self.program_headers().enumerate() {
+            if !header.is_load() || header.memsz == 0 {
+                continue;
+            }
+            if let Some((first, before)) = previous {
+                if header.vaddr < before.end() {
+                    return Err(ElfError::SegmentsOverlap {
+                        first,
+                        second: index,
+                    });
+                }
+            }
+            previous = Some((index, header));
+        }
+        Ok(())
     }
 
     /// Number of program headers.
@@ -422,10 +493,83 @@ mod tests {
     #[test]
     fn rejects_a_non_executable_file() {
         let mut bytes = image();
-        bytes[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN
+        bytes[16..18].copy_from_slice(&1u16.to_le_bytes()); // ET_REL
         assert_eq!(
             Elf::parse(&bytes).err(),
-            Some(ElfError::NotExecutable { kind: 3 })
+            Some(ElfError::NotExecutable { kind: 1 })
+        );
+    }
+
+    /// Build a position independent image with the given load segments.
+    ///
+    /// Every segment points at the start of the file, which is enough for the
+    /// parser: the loader is what copies the bytes.
+    fn position_independent_image(entry: u64, segments: &[(u64, u64)]) -> Vec<u8> {
+        let size = 0x400;
+        let mut bytes = vec![0u8; size];
+        bytes[0..4].copy_from_slice(b"\x7fELF");
+        bytes[4] = 2;
+        bytes[5] = 1;
+        bytes[6] = 1;
+        bytes[16..18].copy_from_slice(&ET_DYN.to_le_bytes());
+        bytes[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[24..32].copy_from_slice(&entry.to_le_bytes());
+        bytes[32..40].copy_from_slice(&(EHDR_SIZE as u64).to_le_bytes());
+        bytes[52..54].copy_from_slice(&(EHDR_SIZE as u16).to_le_bytes());
+        bytes[54..56].copy_from_slice(&PHDR_SIZE.to_le_bytes());
+        bytes[56..58].copy_from_slice(&(segments.len() as u16).to_le_bytes());
+
+        for (index, (vaddr, memsz)) in segments.iter().enumerate() {
+            let ph = EHDR_SIZE + index * usize::from(PHDR_SIZE);
+            bytes[ph..ph + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+            bytes[ph + 4..ph + 8].copy_from_slice(&5u32.to_le_bytes());
+            bytes[ph + 8..ph + 16].copy_from_slice(&0u64.to_le_bytes());
+            bytes[ph + 16..ph + 24].copy_from_slice(&vaddr.to_le_bytes());
+            bytes[ph + 32..ph + 40].copy_from_slice(&0x100u64.to_le_bytes());
+            bytes[ph + 40..ph + 48].copy_from_slice(&memsz.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn accepts_a_position_independent_executable() {
+        let bytes = position_independent_image(0x18420, &[(0, 0x2000)]);
+        let elf = Elf::parse(&bytes).expect("valid ET_DYN");
+        assert!(elf.is_position_independent());
+        assert_eq!(elf.kind(), ET_DYN);
+        assert_eq!(elf.entry(), 0x18420);
+        assert_eq!(elf.entry_with_base(0x400000), Some(0x418420));
+        assert_eq!(elf.program_header_address(), Some(0x40));
+    }
+
+    #[test]
+    fn computes_the_executable_entry_without_a_base() {
+        let bytes = image();
+        let elf = Elf::parse(&bytes).expect("valid image");
+        assert!(!elf.is_position_independent());
+        assert_eq!(elf.kind(), ET_EXEC);
+        assert_eq!(elf.entry_with_base(0), Some(0x400000));
+    }
+
+    #[test]
+    fn rejects_an_entry_outside_the_user_half_after_applying_the_base() {
+        let bytes = position_independent_image(USER_SPACE_END - 0x10, &[(0, 0x1000)]);
+        let elf = Elf::parse(&bytes).expect("valid ET_DYN");
+        assert_eq!(elf.entry_with_base(0x400000), None);
+    }
+
+    #[test]
+    fn rejects_colliding_segments_of_a_position_independent_executable() {
+        // The second segment starts inside the first one, so the same bytes
+        // would have to hold two different file ranges.
+        let bytes = position_independent_image(0x1000, &[(0x1000, 0x1000), (0x1100, 0x1000)]);
+        assert_eq!(
+            Elf::parse(&bytes).err(),
+            Some(ElfError::SegmentsOverlap {
+                first: 0,
+                second: 1
+            })
         );
     }
 

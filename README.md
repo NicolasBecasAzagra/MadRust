@@ -21,7 +21,7 @@ SPDX headers below.
 | M1 | GDT/TSS/IDT, PIC, PIT, panic handler | planned |
 | M2 | Physical memory, paging, direct map, heap | done |
 | M3 | Kernel threads, preemptive scheduler | done |
-| M4 | Syscalls, ELF loader, static userland | planned |
+| M4 | Syscalls, ELF loader, static userland | done |
 | M5 | VFS, initramfs, pipes, fork/exec/wait | planned |
 | M6 | Dynamic linking (musl), read-only ext2 | planned |
 | M7 | Signals, full tty, shell test suite | planned |

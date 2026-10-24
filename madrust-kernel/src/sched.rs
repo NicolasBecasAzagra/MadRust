@@ -35,6 +35,12 @@ pub const PREEMPT_INTERVAL_TICKS: u64 = 1;
 /// Sentinel stored in [`CURRENT`] before [`init`] runs.
 const NO_THREAD: usize = usize::MAX;
 
+/// Slot of the boot thread in the thread table.
+///
+/// It is the thread that enters the user program. It never sits in the run
+/// queue, because it keeps its stack while it serves a blocking system call.
+const BOOT_THREAD: usize = 0;
+
 static CURRENT: AtomicUsize = AtomicUsize::new(NO_THREAD);
 static FINISHED: AtomicUsize = AtomicUsize::new(0);
 
@@ -122,11 +128,59 @@ pub fn yield_now() {
     sync::interrupt_restore(flags);
 }
 
+/// Remove the running thread from the run queue and mark it blocked.
+///
+/// Used by the futex wait: the caller registers its waiter first, then blocks,
+/// so a wakeup that happens in between is not lost. The thread keeps its
+/// stack, so the caller continues in place once [`wake_thread`] runs.
+pub fn block_current() {
+    let flags = sync::interrupt_save_disable();
+    if let Some(current) = current_id() {
+        // SAFETY: interrupts are disabled, so this is the only access to the
+        // queue and the borrow ends before interrupts are restored.
+        let queue = unsafe { &mut *QUEUE.0.get() };
+        queue.remove(current);
+        if thread::state(current).is_some_and(ThreadState::is_runnable) {
+            thread::set_state(current, ThreadState::Blocked);
+        }
+    }
+    sync::interrupt_restore(flags);
+}
+
+/// Make a blocked thread runnable again.
+///
+/// `token` is the value [`current_token`] returned to the waiter, that is the
+/// thread identifier plus one. The boot thread only changes state: it has
+/// never been switched out, so its context is the one it is running on. Every
+/// other thread goes back to the run queue and is picked up by the next
+/// schedule.
+pub fn wake_thread(token: u64) {
+    let Some(id) = token.checked_sub(1) else {
+        return;
+    };
+    let Ok(id) = usize::try_from(id) else {
+        return;
+    };
+    let flags = sync::interrupt_save_disable();
+    if thread::state(id) == Some(ThreadState::Blocked) {
+        thread::set_state(id, ThreadState::Runnable);
+        if id != BOOT_THREAD {
+            // SAFETY: interrupts are disabled, so this is the only access to
+            // the queue and the borrow ends before interrupts are restored.
+            let _ = unsafe { &mut *QUEUE.0.get() }.push(id);
+        }
+    }
+    sync::interrupt_restore(flags);
+}
+
 /// Timer hook: preempt the running thread every [`PREEMPT_INTERVAL_TICKS`].
 ///
 /// Runs inside the timer interrupt handler, after the EOI, with interrupts
 /// disabled.
 pub fn on_tick() {
+    // Expired futex waiters become runnable before the next pick, so a thread
+    // that timed out is not left waiting for a wakeup that will never come.
+    crate::user::on_tick();
     if crate::pit::ticks().is_multiple_of(PREEMPT_INTERVAL_TICKS) {
         schedule();
     }

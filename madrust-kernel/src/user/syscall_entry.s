@@ -19,10 +19,26 @@
 
     .section .bss.userentry, "aw", @nobits
     .balign 8
-/* Kernel RSP and RBP of the frame that called madrust_enter_user_mode. */
+/*
+ * Kernel registers of the frame that called madrust_enter_user_mode.
+ *
+ * The user program and the system call stubs overwrite the callee saved
+ * registers, and the compiler expects them back unchanged when the call
+ * returns. They are saved once here and restored by madrust_user_return.
+ */
 saved_kernel_rsp:
     .skip 8
 saved_kernel_rbp:
+    .skip 8
+saved_kernel_rbx:
+    .skip 8
+saved_kernel_r12:
+    .skip 8
+saved_kernel_r13:
+    .skip 8
+saved_kernel_r14:
+    .skip 8
+saved_kernel_r15:
     .skip 8
 
     .section .text.userentry, "ax", @progbits
@@ -39,6 +55,11 @@ saved_kernel_rbp:
 madrust_enter_user_mode:
     movq %rsp, saved_kernel_rsp(%rip)
     movq %rbp, saved_kernel_rbp(%rip)
+    movq %rbx, saved_kernel_rbx(%rip)
+    movq %r12, saved_kernel_r12(%rip)
+    movq %r13, saved_kernel_r13(%rip)
+    movq %r14, saved_kernel_r14(%rip)
+    movq %r15, saved_kernel_r15(%rip)
 
     /* Interrupts stay masked until iretq restores RFLAGS in ring 3. */
     cli
@@ -72,6 +93,11 @@ madrust_user_return:
     swapgs
     movq saved_kernel_rsp(%rip), %rsp
     movq saved_kernel_rbp(%rip), %rbp
+    movq saved_kernel_rbx(%rip), %rbx
+    movq saved_kernel_r12(%rip), %r12
+    movq saved_kernel_r13(%rip), %r13
+    movq saved_kernel_r14(%rip), %r14
+    movq saved_kernel_r15(%rip), %r15
     ret
 
 /*
@@ -124,8 +150,8 @@ madrust_syscall_entry:
     movq 72(%rsp), %rdx  /* a2 */
     movq 80(%rsp), %rcx  /* a3 */
     movq 32(%rsp), %r8   /* a4, from the syscall's R10 */
-    movq 40(%rsp), %r9   /* a5, from the syscall's R8 */
-    movq 48(%rsp), %rax  /* a6, from the syscall's R9 */
+    movq 48(%rsp), %r9   /* a5, from the syscall's R8 */
+    movq 40(%rsp), %rax  /* a6, from the syscall's R9 */
     pushq %rax
 
     call madrust_syscall_dispatch

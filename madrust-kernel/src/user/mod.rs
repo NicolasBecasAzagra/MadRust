@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! User mode, system calls and the ELF64 program loader (milestone M4a).
+//! User mode, system calls and the ELF64 program loader (milestone M4b).
+//!
+//! The program is a normal Rust program built against the standard library for
+//! `x86_64-unknown-linux-musl`: a static position independent executable that
+//! the loader maps at [`loader::LOAD_BASE`]. Everything it needs below `main`
+//! arrives through the Linux system call interface in [`syscall`], including
+//! the thread local storage pointer, the program break, anonymous mappings and
+//! futex waits.
 //!
 //! ## One address space, two halves
 //!
@@ -20,10 +27,14 @@
 //! returns to the kernel frame saved by the assembly entry and [`run`] reports
 //! the exit status.
 
+mod errno;
+mod fd;
+mod futex;
 mod loader;
 mod paging;
 mod stack;
 mod syscall;
+mod vm;
 
 use core::arch::global_asm;
 
@@ -72,9 +83,22 @@ pub fn load() -> Result<Program, UserError> {
     Ok(Program { image, stack })
 }
 
-/// Entry point of a loaded program.
+/// Entry point of a loaded program, with the load base applied.
 pub fn entry(program: &Program) -> u64 {
     program.image.entry()
+}
+
+/// Address the program image was loaded at.
+pub fn load_base(program: &Program) -> u64 {
+    program.image.load_base()
+}
+
+/// Timer hook for the user subsystem.
+///
+/// The futex wait queue owns the timeouts, so the timer handler has to run its
+/// expiry scan before the scheduler picks the next thread.
+pub(crate) fn on_tick() {
+    futex::on_tick();
 }
 
 /// Enable the system call model and run the program until it exits.
