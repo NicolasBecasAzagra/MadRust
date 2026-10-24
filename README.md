@@ -28,6 +28,7 @@ commit per milestone.
 | M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 54 Linux system calls | done |
 | M4b | A real userland: a standard library program running unmodified | done |
 | M4c | Demand paging for anonymous mappings | done |
+| E1 | The initramfs as a read only file system | done |
 | M8 | Benchmark rig, four workloads, first comparison published | done |
 
 What comes next, in the order it has to happen, is the path to the final
@@ -36,8 +37,7 @@ mainline in the same machine.
 
 | Next | Why it is next |
 |---|---|
-| The initramfs as a read only file system | The model has to be read from somewhere, and the archive is already parsed |
-| Large pages for the weights | 512 times fewer faults while loading a model; the single change that moves the number most |
+| A file backed mapping and large pages | The weights have to be mapped, not copied, and faulted in with 2 MiB pages: 512 times fewer faults while loading a model, and the single change that moves the number most |
 | A scheduler with a better tail | The one measurement where the scheduler, not the operation, decides the outcome |
 | The inference runtime in Rust | Tokenizer, half precision weights, layers, sampler |
 | The measurement | Tokens per second and time to first token, both kernels, same machine |

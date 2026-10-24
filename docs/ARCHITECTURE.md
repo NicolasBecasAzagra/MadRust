@@ -25,19 +25,19 @@ Implemented:
 
 ```text
 read 0        write 1       close 3       fstat 5       poll 7
-mmap 9        mprotect 10   munmap 11     brk 12        rt_sigaction 13
-rt_sigprocmask 14           ioctl 16      sched_yield 24 mremap 25
-madvise 28    dup 32        dup2 33       nanosleep 35  getpid 39
-exit 60       kill 62       uname 63      fcntl 72      getcwd 79
-readlink 89   gettimeofday 96             getrusage 98  getuid 102
-getgid 104    geteuid 107   getegid 108   getppid 110   sigaltstack 131
-prctl 157     arch_prctl 158               gettid 186    futex 202
-sched_getaffinity 204                      getdents64 217
-set_tid_address 218                       clock_gettime 228
-clock_nanosleep 230                       exit_group 231 tgkill 234
-openat 257    newfstatat 262              set_robust_list 273
-dup3 292      pipe2 293     prlimit64 302 getrandom 318 membarrier 324
-statx 332     rseq 334
+lseek 8       mmap 9        mprotect 10   munmap 11     brk 12
+rt_sigaction 13             rt_sigprocmask 14           ioctl 16
+sched_yield 24              mremap 25     madvise 28    dup 32
+dup2 33      nanosleep 35   getpid 39     exit 60       kill 62
+uname 63     fcntl 72      getcwd 79     readlink 89   gettimeofday 96
+getrusage 98                getuid 102    getgid 104    geteuid 107
+getegid 108  getppid 110   sigaltstack 131             prctl 157
+arch_prctl 158              gettid 186    futex 202     sched_getaffinity 204
+getdents64 217              set_tid_address 218          clock_gettime 228
+clock_nanosleep 230          exit_group 231 tgkill 234   openat 257
+newfstatat 262              set_robust_list 273          dup3 292
+pipe2 293    prlimit64 302  getrandom 318 membarrier 324
+statx 332    rseq 334
 ```
 
 Not implemented yet, and they return `-ENOSYS`: `lseek` 8, `clone` 56,
@@ -46,16 +46,18 @@ Not implemented yet, and they return `-ENOSYS`: `lseek` 8, `clone` 56,
 ### What the implementations do not do yet
 
 These are deliberate limits of the milestone, not accidents, and each one is a
-task for M5 or M6:
+task for the next milestone:
 
-- `mmap` serves anonymous memory only. A file backed mapping returns
-  `ENODEV`, because there is no file system yet.
+- The file system is the initramfs, and it is read only. There is no writable
+  file system, no directories to list and no `getdents`, so a program that
+  wants to enumerate a directory gets nothing.
+- `mmap` serves anonymous memory only. A file backed mapping is not
+  implemented yet, and that is what stops the inference runtime from mapping
+  the weights instead of copying them.
 - `mprotect` toggles write permission only. The `NXE` bit is not enabled and
   `PROT_NONE` is not enforced.
 - Pipes are 4 KiB buffers that return `EAGAIN` instead of blocking, and
   `poll` never blocks.
-- `openat`, `newfstatat`, `statx`, `getdents64` and `readlink` answer
-  `ENOENT`, `ENOTDIR` or `EINVAL`: there is no file system.
 - `FUTEX_WAIT_BITSET` timeouts are treated as relative.
 - The futex wait table holds eight waiters.
 
@@ -250,6 +252,14 @@ crate with one function does not exist yet.
   `Vec` backed one in the unit tests, so splitting, merging, exhaustion and
   double free detection are covered by `cargo test` and not only by the
   on-target self test.
+- **File system (E1):** the root directory is the initramfs, and it is read
+  only. A path is split into components, empty and `.` components disappear
+  and `..` pops the previous one; a path that climbs above the root is
+  rejected instead of being clamped, so `/../etc/passwd` is not a way out. The
+  archive stores its names relative, so both sides are normalised before they
+  are compared. The file data is read in place, from the memory the loader
+  put it in, so a model is never copied into the kernel heap. `/dev/console`
+  writes to the serial port and `/dev/null` discards.
 - **Address space (M2b):** the kernel runs from `0xffffffff80000000` and the
   physical memory is mapped at `0xffff888000000000` with 2 MiB pages. A frame
   index is not an address: the heap translates through the direct map, and
