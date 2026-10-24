@@ -113,6 +113,8 @@ const SYS_DUP: u64 = 32;
 const SYS_DUP2: u64 = 33;
 /// `nanosleep` system call number.
 const SYS_NANOSLEEP: u64 = 35;
+/// `clone` system call number.
+const SYS_CLONE: u64 = 56;
 /// `getpid` system call number.
 const SYS_GETPID: u64 = 39;
 /// `exit` system call number.
@@ -196,6 +198,33 @@ const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 /// Open file limit reported to the program.
 const NOFILE_LIMIT: u64 = 1024;
 
+/// Share the address space with the parent.
+const CLONE_VM: u64 = 0x0000_0100;
+/// Share the file system information.
+const CLONE_FS: u64 = 0x0000_0200;
+/// Share the descriptor table.
+const CLONE_FILES: u64 = 0x0000_0400;
+/// Share the signal handlers.
+const CLONE_SIGHAND: u64 = 0x0000_0800;
+/// Put the child in the same thread group.
+const CLONE_THREAD: u64 = 0x0001_0000;
+/// Share the System V semaphore undo list.
+const CLONE_SYSVSEM: u64 = 0x0004_0000;
+/// Store the child's thread local storage base from the fifth argument.
+const CLONE_SETTLS: u64 = 0x0008_0000;
+/// Clear `child_tid` and wake its futex when the child exits.
+const CLONE_CHILD_CLEARTID: u64 = 0x0020_0000;
+
+/// Flags this kernel implements for `clone`.
+const CLONE_SUPPORTED: u64 = CLONE_VM
+    | CLONE_FS
+    | CLONE_FILES
+    | CLONE_SIGHAND
+    | CLONE_THREAD
+    | CLONE_SYSVSEM
+    | CLONE_SETTLS
+    | CLONE_CHILD_CLEARTID;
+
 /// Number of bytes in each `utsname` field, including the terminating NUL.
 const UTS_FIELD: usize = 65;
 
@@ -210,13 +239,15 @@ const RANDOM_CHUNK: usize = 16;
 struct PerCpu {
     /// User stack pointer saved by `madrust_syscall_entry`.
     ///
-    /// Written and read by `syscall_entry.s` at `GS:0`; the kernel never
-    /// touches it from Rust, so the compiler cannot see the use.
-    #[allow(dead_code)]
+    /// Written and read by `syscall_entry.s` at `GS:0`; the kernel also saves
+    /// it into the thread control block and puts it back on a switch, because
+    /// the slot itself belongs to the CPU.
     user_stack: u64,
-    /// Keeps the slot 16 byte aligned and leaves room for later fields.
-    #[allow(dead_code)]
-    reserved: u64,
+    /// Pointer to the register frame `madrust_syscall_entry` saved.
+    ///
+    /// Written by the stub at `GS:8` and read by `clone`, which needs the
+    /// parent's callee saved registers and its `syscall` return address.
+    user_frame: u64,
 }
 
 #[repr(transparent)]
@@ -228,7 +259,7 @@ unsafe impl Sync for PerCpuCell {}
 
 static PER_CPU: PerCpuCell = PerCpuCell(core::cell::UnsafeCell::new(PerCpu {
     user_stack: 0,
-    reserved: 0,
+    user_frame: 0,
 }));
 
 /// Counter that makes the random bytes differ between boots.
@@ -266,6 +297,44 @@ pub fn init() {
         cpu::write_msr(MSR_SFMASK, RFLAGS_INTERRUPT_FLAG);
         cpu::write_msr(MSR_KERNEL_GS_BASE, per_cpu);
     }
+
+    // The boot thread starts without thread local storage; `arch_prctl` moves
+    // the base once the program asks for it.
+    load_fs_base(0);
+}
+
+/// Address of the per-CPU block, for a new user thread's initial GS state.
+pub(crate) fn per_cpu_address() -> u64 {
+    core::ptr::addr_of!(PER_CPU) as u64
+}
+
+/// User stack pointer the stub stored at `GS:0` on entry.
+pub(crate) fn user_stack() -> u64 {
+    // SAFETY: the stub is the only writer, it runs on this CPU with interrupts
+    // masked, and the caller holds the same exclusion.
+    unsafe { (*PER_CPU.0.get()).user_stack }
+}
+
+/// Put a saved user stack pointer back into the `GS:0` slot.
+///
+/// The scheduler calls this before switching to a thread that was inside a
+/// system call, because the slot itself is shared by every thread on the CPU.
+pub(crate) fn install_user_stack(stack: u64) {
+    // SAFETY: the caller runs with interrupts disabled, so no other thread can
+    // enter a system call and race this write on the same CPU.
+    unsafe {
+        (*PER_CPU.0.get()).user_stack = stack;
+    }
+}
+
+/// Load a thread local storage base into `IA32_FS_BASE`.
+///
+/// The caller owns the MSR: the scheduler calls this when it switches to a
+/// user thread, and `arch_prctl` when the running thread changes its own base.
+pub(crate) fn load_fs_base(base: u64) {
+    // SAFETY: FS_BASE exists on every x86_64 CPU and the scheduler and
+    // `arch_prctl` only pass user addresses or the initial zero.
+    unsafe { cpu::write_msr(MSR_FS_BASE, base) };
 }
 
 /// Remember the initial program break so `brk` can report it.
@@ -324,6 +393,13 @@ pub extern "C" fn madrust_syscall_dispatch(
     argument5: u64,
     argument6: u64,
 ) -> i64 {
+    // The stub left the user stack pointer in the per-CPU slot. Copy it into
+    // the thread control block now, before any call can block and let another
+    // thread overwrite the shared slot.
+    if let Some(id) = crate::sched::current_id() {
+        crate::thread::set_user_stack(id, user_stack());
+    }
+
     match number {
         SYS_READ => sys_read(argument1, argument2, argument3),
         SYS_WRITE => sys_write(argument1, argument2, argument3),
@@ -359,8 +435,10 @@ pub extern "C" fn madrust_syscall_dispatch(
         SYS_GETTIMEOFDAY => sys_gettimeofday(argument1, argument2),
         SYS_GETRANDOM => sys_getrandom(argument1, argument2),
         SYS_FUTEX => sys_futex(argument1, argument2, argument3, argument4),
+        SYS_CLONE => sys_clone(argument1, argument2, argument3, argument4, argument5),
         SYS_EXIT | SYS_EXIT_GROUP => sys_exit(argument1),
-        SYS_GETPID | SYS_GETTID => 1,
+        SYS_GETPID => 1,
+        SYS_GETTID => current_tid(),
         SYS_GETPPID => 0,
         SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => 0,
         SYS_READLINK => EINVAL,
@@ -579,9 +657,12 @@ fn sys_arch_prctl(operation: u64, address: u64) -> i64 {
             if address >= USER_SPACE_END {
                 return EPERM;
             }
+            if let Some(id) = crate::sched::current_id() {
+                crate::thread::set_fs_base(id, address);
+            }
             // SAFETY: FS_BASE exists on every x86_64 CPU. The value is a user
             // address, so the kernel keeps its own segment bases unchanged.
-            unsafe { cpu::write_msr(MSR_FS_BASE, address) };
+            load_fs_base(address);
             0
         }
         ARCH_GET_FS => {
@@ -691,12 +772,9 @@ fn sys_gettimeofday(timeval: u64, timezone: u64) -> i64 {
     0
 }
 
-/// Seconds and nanoseconds since boot from the timer ticks.
+/// Seconds and nanoseconds since boot from the wall clock.
 fn clock_now() -> (u64, u64) {
-    let ticks = pit::ticks();
-    let seconds = ticks / pit::TICK_HZ;
-    let nanoseconds = (ticks % pit::TICK_HZ) * (1_000_000_000 / pit::TICK_HZ);
-    (seconds, nanoseconds)
+    crate::clock::now()
 }
 
 /// `getrandom`: fill the user buffer from the pseudo random generator.
@@ -766,11 +844,121 @@ fn user_timeout(address: u64) -> Result<Option<u64>, i64> {
     Ok(Some(total))
 }
 
+/// `clone`: create a thread that shares the address space of the caller.
+///
+/// The six sharing flags are required together; a call without them would be a
+/// process, which this milestone does not implement. The child resumes at the
+/// `syscall` return address of the parent with RAX zero, exactly like Linux, and
+/// the parent receives the child thread identifier.
+fn sys_clone(flags: u64, child_stack: u64, _parent_tid: u64, child_tid: u64, tls: u64) -> i64 {
+    if flags & !CLONE_SUPPORTED != 0 {
+        return EINVAL;
+    }
+    if flags & (CLONE_VM | CLONE_THREAD) != (CLONE_VM | CLONE_THREAD) {
+        return EINVAL;
+    }
+    if child_stack == 0 || child_stack >= USER_SPACE_END {
+        return EINVAL;
+    }
+    let Some(current) = crate::sched::current_id() else {
+        return EINVAL;
+    };
+
+    // `madrust_syscall_entry` published the frame it saved, so the parent's
+    // registers are still available while the dispatcher runs.
+    let frame = current_frame();
+    let saved = |index: usize| -> u64 {
+        // SAFETY: the stub wrote a pointer to its own frame, the frame is on
+        // the current kernel stack, and interrupts stay masked for the whole
+        // system call. Every index below is inside the fifteen pushed words.
+        unsafe { frame.add(index).read_volatile() }
+    };
+
+    let return_address = saved(14);
+    if !(2 * PAGE_SIZE..USER_SPACE_END).contains(&return_address) {
+        return EINVAL;
+    }
+
+    let fs_base = if flags & CLONE_SETTLS != 0 {
+        if tls >= USER_SPACE_END {
+            return EPERM;
+        }
+        tls
+    } else {
+        crate::thread::fs_base(current).unwrap_or(0)
+    };
+
+    let start = crate::thread::UserStart {
+        rip: return_address,
+        rsp: child_stack,
+        // Keep the parent flags, force interrupts on so the timer can preempt
+        // the new thread, and clear the bits a ring 3 context must not carry
+        // (IOPL, NT and VM).
+        rflags: (saved(13) | RFLAGS_INTERRUPT_FLAG) & !(0x3000 | 0x4000 | 0x2_0000),
+        rax: 0,
+        rbx: saved(11),
+        rbp: saved(7),
+        r12: saved(3),
+        r13: saved(2),
+        r14: saved(1),
+        r15: saved(0),
+        rdi: saved(8),
+        rsi: saved(9),
+        rdx: saved(10),
+        r8: saved(6),
+        r9: saved(5),
+        r10: saved(4),
+    };
+
+    let clear_child_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
+        if child_tid >= USER_SPACE_END {
+            return EFAULT;
+        }
+        child_tid
+    } else {
+        0
+    };
+
+    match crate::sched::spawn_user("user", start, fs_base, clear_child_tid, per_cpu_address()) {
+        Ok(id) => i64::try_from(id + 1).unwrap_or(i64::MAX),
+        Err(_) => EAGAIN,
+    }
+}
+
+/// Thread identifier of the calling thread, one based like Linux.
+fn current_tid() -> i64 {
+    i64::try_from(crate::sched::current_token()).unwrap_or(i64::MAX)
+}
+
+/// Pointer to the register frame the system call stub saved.
+fn current_frame() -> *const u64 {
+    // SAFETY: `madrust_syscall_entry` stores the attacker cannot reach the
+    // pointer before the dispatcher runs, interrupts are masked, and the frame
+    // lives on the current kernel stack. No other path mutates the slot during
+    // the call.
+    unsafe { (*PER_CPU.0.get()).user_frame as *const u64 }
+}
+
 /// `exit_group` and `exit`: leave the program and report the status.
 fn sys_exit(status: u64) -> ! {
-    // SAFETY: the assembly return path restores the kernel frame saved by the
-    // transition into user mode. The program is never resumed.
-    unsafe { madrust_user_return(status & 0xff) }
+    match crate::sched::current_id() {
+        // The boot thread owns the frame `madrust_enter_user_mode` saved; its
+        // exit returns to the kernel boot path.
+        Some(0) | None => {
+            // SAFETY: the assembly return path restores the kernel frame saved
+            // by the transition into user mode. The program is never resumed.
+            unsafe { madrust_user_return(status & 0xff) }
+        }
+        Some(id) => {
+            // A thread created by `clone` wakes whoever waits on its
+            // `child_tid` futex, then retires without touching the boot frame.
+            let address = crate::thread::clear_child_tid(id);
+            if address != 0 && write_user_bytes(address, &0u32.to_le_bytes()) {
+                futex::wake(address, u64::MAX);
+            }
+            crate::sched::retire_current()
+        }
+    }
 }
 
 /// `getcwd`: the program lives at the root of an empty file system.

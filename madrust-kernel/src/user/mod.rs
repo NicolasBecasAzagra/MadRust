@@ -36,6 +36,8 @@ mod stack;
 mod syscall;
 mod vm;
 
+pub mod initramfs;
+
 use core::arch::global_asm;
 
 use madrust_arch::cpu;
@@ -43,7 +45,14 @@ use madrust_arch::cpu;
 pub use loader::LoadError;
 pub use stack::StackError;
 
+use crate::thread::UserStart;
+
 global_asm!(include_str!("syscall_entry.s"), options(att_syntax));
+
+extern "C" {
+    /// Load a saved user context and return to ring 3. Never returns.
+    fn madrust_enter_user_thread(start: *const UserStart) -> !;
+}
 
 /// The user program, built before the kernel by the Makefile.
 ///
@@ -78,7 +87,12 @@ pub fn embedded_size() -> usize {
 
 /// Load the embedded program into the user half and build its stack.
 pub fn load() -> Result<Program, UserError> {
-    let image = loader::load(EMBEDDED).map_err(UserError::Load)?;
+    load_program(EMBEDDED)
+}
+
+/// Load `bytes` into the user half and build the program's initial stack.
+pub fn load_program(bytes: &[u8]) -> Result<Program, UserError> {
+    let image = loader::load(bytes).map_err(UserError::Load)?;
     let stack = stack::build(&image, syscall::random_bytes()).map_err(UserError::Stack)?;
     Ok(Program { image, stack })
 }
@@ -99,6 +113,29 @@ pub fn load_base(program: &Program) -> u64 {
 /// expiry scan before the scheduler picks the next thread.
 pub(crate) fn on_tick() {
     futex::on_tick();
+}
+
+/// Enter ring 3 as the first action of a thread created by `clone`.
+///
+/// Called from the scheduler trampoline with interrupts enabled. The kernel
+/// stack still holds `start`, and the assembly reads all registers out of it
+/// before the `iretq` leaves the kernel for good.
+pub(crate) fn enter_thread(start: UserStart) -> ! {
+    // SAFETY: the caller reached this point from the thread trampoline, the
+    // page tables and the IDT are the ones the boot path installed, and `start`
+    // holds a user return address and stack that the caller validated. The
+    // assembly never returns, so the borrow of the local does not outlive it.
+    unsafe { madrust_enter_user_thread(&start) }
+}
+
+/// Load a thread local storage base into `IA32_FS_BASE`.
+pub(crate) fn load_fs_base(base: u64) {
+    syscall::load_fs_base(base);
+}
+
+/// Put a saved user stack pointer into the shared `GS:0` slot.
+pub(crate) fn install_user_stack(stack: u64) {
+    syscall::install_user_stack(stack);
 }
 
 /// Enable the system call model and run the program until it exits.

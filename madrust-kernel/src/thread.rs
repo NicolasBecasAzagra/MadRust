@@ -67,14 +67,54 @@ impl Stack {
 /// Entry function of one thread; the argument is the thread name.
 pub(crate) type EntryFn = fn(&'static str);
 
+/// First user context of a thread created by the `clone` system call.
+///
+/// The layout is the one `madrust_enter_user_thread` in
+/// `madrust-kernel/src/user/syscall_entry.s` reads, byte for byte. It carries
+/// the registers the child returns with: the parent's callee saved registers,
+/// the return address of its `syscall`, the child stack pointer and RAX zero.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserStart {
+    /// Instruction the child resumes at, the parent's `syscall` return address.
+    pub rip: u64,
+    /// Child stack pointer, the `clone` argument.
+    pub rsp: u64,
+    /// Child RFLAGS, with the interrupt flag forced on.
+    pub rflags: u64,
+    /// Child RAX: zero, the value `clone` returns in the child.
+    pub rax: u64,
+    pub rbx: u64,
+    pub rbp: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+}
+
+/// What a thread runs the first time the scheduler picks it.
+pub(crate) enum Start {
+    /// A kernel thread that calls an entry function.
+    Kernel {
+        function: EntryFn,
+        name: &'static str,
+    },
+    /// A user thread that enters ring 3 with a saved register state.
+    User(UserStart),
+}
+
 /// The three things the trampoline needs to start a thread.
 pub(crate) struct StartEntry {
     /// Thread identifier, for the sanity check in `madrust_thread_start`.
     pub id: usize,
-    /// Function the thread runs.
-    pub function: EntryFn,
-    /// Name passed to the function.
-    pub name: &'static str,
+    /// What to run.
+    pub start: Start,
 }
 
 /// One thread control block.
@@ -87,10 +127,29 @@ pub struct Thread {
     pub state: ThreadState,
     /// Saved machine state; filled on the first switch away.
     pub context: Context,
-    /// Entry function, absent for the boot thread, which is already running.
+    /// Entry function, absent for the boot thread and for user threads.
     pub entry: Option<EntryFn>,
+    /// First user context, absent for kernel threads.
+    pub user: Option<UserStart>,
     /// Stack owned by this thread; absent for the boot thread.
     stack: Option<Stack>,
+    /// Address one past the last byte of the kernel stack.
+    ///
+    /// The CPU installs this in `TSS.rsp0` when the thread runs, so interrupts
+    /// and system calls from ring 3 arrive on the stack of the thread that
+    /// caused them.
+    kernel_stack_top: u64,
+    /// Thread local storage base, loaded into `IA32_FS_BASE` on every switch.
+    fs_base: u64,
+    /// User address the kernel clears and wakes when the thread exits.
+    clear_child_tid: u64,
+    /// User stack pointer saved by the system call stub when the thread last
+    /// entered the kernel.
+    ///
+    /// The stub reads `GS:0` on `sysretq`. That slot is per CPU, so a thread
+    /// that blocks inside a system call must keep its own value in the TCB and
+    /// have the scheduler put it back before the stub returns.
+    user_stack: u64,
 }
 
 const EMPTY: Option<Thread> = None;
@@ -130,7 +189,12 @@ pub(crate) fn install_boot() {
         state: ThreadState::Running,
         context: Context::ZERO,
         entry: None,
+        user: None,
         stack: None,
+        kernel_stack_top: 0,
+        fs_base: 0,
+        clear_child_tid: 0,
+        user_stack: 0,
     });
 }
 
@@ -139,6 +203,36 @@ pub(crate) fn install_boot() {
 /// The stack is prepared so that the trampoline can call `entry` and return to
 /// [`madrust_thread_completed`] when it returns.
 pub(crate) fn spawn(name: &'static str, entry: EntryFn) -> Result<usize, SpawnError> {
+    spawn_thread(name, Some(entry), None, 0, 0, 0)
+}
+
+/// Create a runnable thread that enters ring 3 with `start`.
+pub(crate) fn spawn_user(
+    name: &'static str,
+    start: UserStart,
+    fs_base: u64,
+    clear_child_tid: u64,
+    kernel_gs_base: u64,
+) -> Result<usize, SpawnError> {
+    spawn_thread(
+        name,
+        None,
+        Some(start),
+        fs_base,
+        clear_child_tid,
+        kernel_gs_base,
+    )
+}
+
+/// Shared implementation of the two spawn paths.
+fn spawn_thread(
+    name: &'static str,
+    entry: Option<EntryFn>,
+    user: Option<UserStart>,
+    fs_base: u64,
+    clear_child_tid: u64,
+    kernel_gs_base: u64,
+) -> Result<usize, SpawnError> {
     let id = {
         // SAFETY: the scheduler disables interrupts around every spawn.
         let slots = unsafe { table() };
@@ -171,6 +265,8 @@ pub(crate) fn spawn(name: &'static str, entry: EntryFn) -> Result<usize, SpawnEr
         r14: 0,
         r15: 0,
         rip: madrust_thread_trampoline as *const () as usize as u64,
+        gs_base: 0,
+        kernel_gs_base,
     };
 
     // SAFETY: the slot was free above and interrupts are disabled, so no other
@@ -181,8 +277,13 @@ pub(crate) fn spawn(name: &'static str, entry: EntryFn) -> Result<usize, SpawnEr
         name,
         state: ThreadState::Runnable,
         context,
-        entry: Some(entry),
+        entry,
+        user,
         stack: Some(stack),
+        kernel_stack_top: top,
+        fs_base,
+        clear_child_tid,
+        user_stack: 0,
     });
     Ok(id)
 }
@@ -227,17 +328,94 @@ pub(crate) fn context_ptr(id: usize) -> Option<*const Context> {
         .map(|thread| addr_of!(thread.context))
 }
 
-/// Identifier, entry function and name of one thread.
+/// Identifier, start state and name of one thread.
 pub(crate) fn entry(id: usize) -> Option<StartEntry> {
     // SAFETY: called from the new thread with interrupts disabled by the
     // switch, and the borrow ends before the entry function runs.
     let slots = unsafe { table() };
     let thread = slots.get(id)?.as_ref()?;
+    let start = match (thread.entry, thread.user) {
+        (Some(function), _) => Start::Kernel {
+            function,
+            name: thread.name,
+        },
+        (None, Some(user)) => Start::User(user),
+        (None, None) => return None,
+    };
     Some(StartEntry {
         id: thread.id,
-        function: thread.entry?,
-        name: thread.name,
+        start,
     })
+}
+
+/// Address one past the last byte of the kernel stack of `id`.
+pub(crate) fn kernel_stack_top(id: usize) -> Option<u64> {
+    // SAFETY: the scheduler calls this with interrupts disabled and does not
+    // keep the borrow.
+    let slots = unsafe { table() };
+    slots
+        .get(id)?
+        .as_ref()
+        .map(|thread| thread.kernel_stack_top)
+}
+
+/// Thread local storage base of `id`.
+pub(crate) fn fs_base(id: usize) -> Option<u64> {
+    // SAFETY: the scheduler calls this with interrupts disabled and does not
+    // keep the borrow.
+    let slots = unsafe { table() };
+    slots.get(id)?.as_ref().map(|thread| thread.fs_base)
+}
+
+/// Set the thread local storage base of `id`.
+pub(crate) fn set_fs_base(id: usize, base: u64) {
+    // SAFETY: the caller runs with interrupts disabled and does not keep the
+    // borrow.
+    let slots = unsafe { table() };
+    if let Some(thread) = slots.get_mut(id).and_then(Option::as_mut) {
+        thread.fs_base = base;
+    }
+}
+
+/// User address the kernel must clear when `id` exits.
+pub(crate) fn clear_child_tid(id: usize) -> u64 {
+    // SAFETY: the caller runs with interrupts disabled and does not keep the
+    // borrow.
+    let slots = unsafe { table() };
+    slots
+        .get(id)
+        .and_then(Option::as_ref)
+        .map_or(0, |thread| thread.clear_child_tid)
+}
+
+/// User stack pointer saved by the system call stub for `id`.
+pub(crate) fn user_stack(id: usize) -> u64 {
+    // SAFETY: the caller runs with interrupts disabled and does not keep the
+    // borrow.
+    let slots = unsafe { table() };
+    slots
+        .get(id)
+        .and_then(Option::as_ref)
+        .map_or(0, |thread| thread.user_stack)
+}
+
+/// Replace the saved user stack pointer of `id`.
+pub(crate) fn set_user_stack(id: usize, stack: u64) {
+    // SAFETY: the caller runs with interrupts disabled and does not keep the
+    // borrow.
+    let slots = unsafe { table() };
+    if let Some(thread) = slots.get_mut(id).and_then(Option::as_mut) {
+        thread.user_stack = stack;
+    }
+}
+
+/// Set the kernel stack top of the boot thread.
+pub(crate) fn set_kernel_stack_top(id: usize, top: u64) {
+    // SAFETY: called once during scheduler init with interrupts disabled.
+    let slots = unsafe { table() };
+    if let Some(thread) = slots.get_mut(id).and_then(Option::as_mut) {
+        thread.kernel_stack_top = top;
+    }
 }
 
 /// Remove a thread that never entered the run queue.

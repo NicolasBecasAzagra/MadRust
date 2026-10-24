@@ -39,6 +39,14 @@ USERLAND_FLAGS := --manifest-path madrust-userland/Cargo.toml \
 	--target $(USER_TARGET) \
 	--target-dir $(TARGET_DIR)/userland
 
+# The benchmark workload is a second standard library program, built exactly
+# like the userland one. The rig puts the copy into an uncompressed cpio
+# archive instead of linking it into the kernel.
+BENCH_ELF := madrust-bench/madrust-bench.elf
+BENCH_FLAGS := --manifest-path madrust-bench/Cargo.toml \
+	--target $(USER_TARGET) \
+	--target-dir $(TARGET_DIR)/bench
+
 QEMU ?= qemu-system-x86_64
 QEMU_FLAGS := -M q35 -m 512M \
 	-kernel $(KERNEL) \
@@ -46,7 +54,7 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland print-kernel-path
+.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -60,6 +68,11 @@ all: build
 userland:
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(USERLAND_FLAGS)
 	cp $(TARGET_DIR)/userland/$(USER_TARGET)/release/madrust-userland $(USERLAND_ELF)
+
+# Static workload binary for the benchmark rig.
+bench:
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(BENCH_FLAGS)
+	cp $(TARGET_DIR)/bench/$(USER_TARGET)/release/madrust-bench $(BENCH_ELF)
 
 build: userland
 	$(CARGO) build --release $(KERNEL_FLAGS)
@@ -78,16 +91,19 @@ test:
 fmt:
 	$(CARGO) fmt --all
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml
+	$(CARGO) fmt --manifest-path madrust-bench/Cargo.toml
 
 fmt-check:
 	$(CARGO) fmt --all -- --check
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path madrust-bench/Cargo.toml -- --check
 
 # The kernel build reads the embedded user program, so both lint targets need
 # the userland binary to exist.
 clippy: userland
 	$(CARGO) clippy --workspace --bins --lib $(KERNEL_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(USERLAND_FLAGS) -- -D warnings
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(BENCH_FLAGS) -- -D warnings
 
 clippy-host:
 	$(CARGO) clippy --workspace --all-targets --target $(HOST_TARGET) \
@@ -98,4 +114,4 @@ check: userland
 
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
-	rm -rf $(TARGET_DIR) $(USERLAND_ELF)
+	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF)

@@ -24,6 +24,7 @@ use madrust_sched::{Context, RunQueue, ThreadState};
 
 use crate::sync;
 use crate::thread;
+use crate::thread::Start;
 
 /// Number of timer ticks between two preemptions.
 ///
@@ -64,6 +65,7 @@ extern "C" {
 /// Called once during boot, before interrupts are enabled.
 pub fn init() {
     thread::install_boot();
+    thread::set_kernel_stack_top(BOOT_THREAD, crate::gdt::interrupt_stack_top());
     CURRENT.store(0, Ordering::Release);
 }
 
@@ -79,10 +81,38 @@ pub fn spawn(name: &'static str, entry: thread::EntryFn) -> Result<usize, thread
 }
 
 fn spawn_locked(name: &'static str, entry: thread::EntryFn) -> Result<usize, thread::SpawnError> {
+    // A finished thread owns no stack that is still in use, so its slot can be
+    // recycled before a new thread claims it.
+    thread::reclaim_finished();
     let id = thread::spawn(name, entry)?;
 
     // SAFETY: interrupts are disabled by `spawn`, so this is the only access
     // to the queue.
+    let queue = unsafe { &mut *QUEUE.0.get() };
+    if queue.push(id).is_err() {
+        thread::remove(id);
+        return Err(thread::SpawnError::NoFreeSlot);
+    }
+    Ok(id)
+}
+
+/// Create a user thread from the `clone` system call.
+///
+/// The caller runs inside the system call with interrupts masked, which is the
+/// critical section `spawn` needs. The child is queued and picked up by the
+/// next schedule, exactly like a kernel thread.
+pub fn spawn_user(
+    name: &'static str,
+    start: thread::UserStart,
+    fs_base: u64,
+    clear_child_tid: u64,
+    kernel_gs_base: u64,
+) -> Result<usize, thread::SpawnError> {
+    thread::reclaim_finished();
+    let id = thread::spawn_user(name, start, fs_base, clear_child_tid, kernel_gs_base)?;
+
+    // SAFETY: interrupts are masked for the whole system call, so this is the
+    // only access to the queue.
     let queue = unsafe { &mut *QUEUE.0.get() };
     if queue.push(id).is_err() {
         thread::remove(id);
@@ -150,10 +180,9 @@ pub fn block_current() {
 /// Make a blocked thread runnable again.
 ///
 /// `token` is the value [`current_token`] returned to the waiter, that is the
-/// thread identifier plus one. The boot thread only changes state: it has
-/// never been switched out, so its context is the one it is running on. Every
-/// other thread goes back to the run queue and is picked up by the next
-/// schedule.
+/// thread identifier plus one. The woken thread goes back to the run queue and
+/// is picked up by the next schedule, including the boot thread: it also blocks
+/// and is switched out while a user thread waits on a futex.
 pub fn wake_thread(token: u64) {
     let Some(id) = token.checked_sub(1) else {
         return;
@@ -164,11 +193,9 @@ pub fn wake_thread(token: u64) {
     let flags = sync::interrupt_save_disable();
     if thread::state(id) == Some(ThreadState::Blocked) {
         thread::set_state(id, ThreadState::Runnable);
-        if id != BOOT_THREAD {
-            // SAFETY: interrupts are disabled, so this is the only access to
-            // the queue and the borrow ends before interrupts are restored.
-            let _ = unsafe { &mut *QUEUE.0.get() }.push(id);
-        }
+        // SAFETY: interrupts are disabled, so this is the only access to the
+        // queue and the borrow ends before interrupts are restored.
+        let _ = unsafe { &mut *QUEUE.0.get() }.push(id);
     }
     sync::interrupt_restore(flags);
 }
@@ -224,6 +251,20 @@ pub fn schedule() {
             lost_thread(current, next);
         };
 
+        // The CPU installs `rsp0` on the next interrupt from ring 3 and the
+        // system call stub loads the same field, so it must name the stack of
+        // the thread that is about to run. `IA32_FS_BASE` is per thread too,
+        // because each user thread has its own thread local storage block.
+        if let Some(top) = thread::kernel_stack_top(next) {
+            crate::gdt::set_kernel_stack(top);
+        }
+        if let Some(base) = thread::fs_base(next) {
+            crate::user::load_fs_base(base);
+        }
+        // The user stack slot is per CPU, but a thread that blocked inside a
+        // system call must return to its own stack; give it its saved value.
+        crate::user::install_user_stack(thread::user_stack(next));
+
         // SAFETY: both pointers refer to contexts in the static thread table,
         // interrupts are disabled, and the switch restores the callee saved
         // registers it overwrites. The resume address is written first because
@@ -256,12 +297,16 @@ fn lost_thread(current: usize, next: usize) -> ! {
 
 /// Entry point a new thread reaches through the assembly trampoline.
 ///
-/// `id` arrives in R12 and names the thread table slot. The function returns
-/// when the thread entry returns; the trampoline then retires the thread.
+/// `id` arrives in R12 and names the thread table slot. A kernel thread calls
+/// its entry function and retires when it returns; a user thread enters ring 3
+/// and never comes back through this path.
 #[no_mangle]
 pub extern "C" fn madrust_thread_start(id: usize) {
     match thread::entry(id) {
-        Some(entry) if entry.id == id => (entry.function)(entry.name),
+        Some(entry) if entry.id == id => match entry.start {
+            Start::Kernel { function, name } => function(name),
+            Start::User(start) => crate::user::enter_thread(start),
+        },
         _ => {
             crate::kprintln!("MadRust: scheduler FAILED: thread {} does not exist", id);
             crate::console::console().flush();
@@ -276,6 +321,22 @@ pub extern "C" fn madrust_thread_start(id: usize) {
 /// never selected again, so this never returns.
 #[no_mangle]
 pub extern "C" fn madrust_thread_completed() -> ! {
+    let _flags = sync::interrupt_save_disable();
+    if let Some(current) = current_id() {
+        thread::set_state(current, ThreadState::Finished);
+        FINISHED.fetch_add(1, Ordering::Release);
+    }
+    loop {
+        schedule();
+    }
+}
+
+/// Retire the calling thread after its exit system call.
+///
+/// The thread is finished and never scheduled again. Its kernel stack is
+/// released the next time another thread creates a thread, which is safe
+/// because the switch away is what stops using it.
+pub fn retire_current() -> ! {
     let _flags = sync::interrupt_save_disable();
     if let Some(current) = current_id() {
         thread::set_state(current, ThreadState::Finished);

@@ -17,5 +17,6 @@ madrust-arch = { path = "../madrust-arch" }
 madrust-bootinfo = { path = "../madrust-bootinfo" }
 madrust-drivers = { path = "../madrust-drivers" }
 madrust-elf = { path = "../madrust-elf" }
+madrust-initramfs = { path = "../madrust-initramfs" }
 madrust-mm = { path = "../madrust-mm" }
 madrust-sched = { path = "../madrust-sched" }

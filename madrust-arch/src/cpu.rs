@@ -114,6 +114,26 @@ mod imp {
         }
     }
 
+    /// Read the time stamp counter.
+    ///
+    /// The counter ticks at a constant rate on every x86_64 CPU that reports
+    /// the invariant TSC bit; the kernel calibrates the rate against the PIT.
+    pub fn read_tsc() -> u64 {
+        let low: u32;
+        let high: u32;
+        // SAFETY: `rdtsc` reads the time stamp counter into EDX:EAX. It has no
+        // memory side effects and is available on every x86_64 CPU.
+        unsafe {
+            asm!(
+                "rdtsc",
+                out("eax") low,
+                out("edx") high,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        (u64::from(high) << 32) | u64::from(low)
+    }
+
     /// Read CR3, the physical address of the top level page table.
     pub fn read_cr3() -> u64 {
         let value: u64;
@@ -246,6 +266,11 @@ mod imp {
         0
     }
 
+    /// Host stub: reports a zero time stamp counter.
+    pub fn read_tsc() -> u64 {
+        0
+    }
+
     /// Host stub: drops the invalidate.
     ///
     /// # Safety
@@ -274,5 +299,5 @@ mod imp {
 
 pub use imp::{
     cpuid, cpuid_subleaf, disable_interrupts, enable_interrupts, flush_tlb, halt_loop, hlt,
-    invalidate_page, read_cr2, read_cr3, read_msr, write_msr, Cpuid,
+    invalidate_page, read_cr2, read_cr3, read_msr, read_tsc, write_msr, Cpuid,
 };

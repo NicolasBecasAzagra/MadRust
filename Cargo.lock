@@ -22,6 +22,10 @@ name = "madrust-elf"
 version = "0.1.0"
 
 [[package]]
+name = "madrust-initramfs"
+version = "0.1.0"
+
+[[package]]
 name = "madrust-kernel"
 version = "0.1.0"
 dependencies = [
@@ -29,6 +33,7 @@ dependencies = [
  "madrust-bootinfo",
  "madrust-drivers",
  "madrust-elf",
+ "madrust-initramfs",
  "madrust-mm",
  "madrust-sched",
 ]

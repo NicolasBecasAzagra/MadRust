@@ -119,6 +119,11 @@ pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i6
     }
 
     sched::block_current();
+    // Let a runnable thread take the CPU immediately instead of waiting for
+    // the next timer tick: a wakeup that arrived before the block is already
+    // queued, and a waker that blocks right after its `FUTEX_WAKE` should hand
+    // the CPU to the waiter without a full time slice of delay.
+    sched::yield_now();
     sync::interrupt_restore(flags);
 
     // A system call arrives with interrupts masked. The wait needs the timer,

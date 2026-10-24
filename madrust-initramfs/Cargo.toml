@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-initramfs"
+description = "Uncompressed cpio (newc) initramfs parser for MadRust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

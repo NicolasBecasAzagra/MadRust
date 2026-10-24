@@ -103,6 +103,8 @@ A cargo workspace with one crate per concern:
 | `madrust-sched` | Kernel threads, wait queues, scheduler. |
 | `madrust-vfs` | VFS interfaces, ramfs/tmpfs, cpio initramfs. |
 | `madrust-userland` | Static test binaries used as kernel test fixtures. |
+| `madrust-initramfs` | Parser for uncompressed `cpio` archives in the `newc` format. Pure, host-testable, no `unsafe`. |
+| `madrust-bench` | The benchmark workload binary: a static Linux program that runs on both kernels. |
 
 Crates are added when the milestone that needs them arrives, not before. A
 crate with one function does not exist yet.
@@ -127,13 +129,27 @@ crate with one function does not exist yet.
   The compile time assertions in the GDT module pin that relation, because
   `SYSRET` derives the user selectors from `STAR` and a mismatch is a silent
   fault.
-- **System call policy (M4a):** the Linux numbering, the Linux argument
-  order (number in `RAX`, arguments in `RDI`, `RSI`, `RDX`, `R10`, `R8`,
-  `R9`) and negative errno values on failure. A call that is not implemented
-  returns `-ENOSYS`, never a wrong success. The implemented set is `read`,
-  `write`, `close`, `mmap`, `munmap`, `brk`, `ioctl`, `fcntl`, `exit`,
-  `exit_group`, `uname`, `getpid`, `gettid`, `getppid`, `getuid`, `geteuid`,
-  `getgid`, `getegid` and `clock_gettime`.
+- **Clock:** the guest clock is the time stamp counter, calibrated against
+  the timer interrupt. The timer alone ticks at 100 Hz, which would quantise
+  every measurement to 10 ms.
+- **Initramfs (M8a):** the kernel finds the module QEMU passes with `-initrd`
+  through the PVH module list, and parses it as an uncompressed `cpio` archive
+  in the `newc` format. The parser lives in its own crate, forbids `unsafe`
+  and is unit tested on the host. The program to run is `/bench`, or the
+  first executable in the archive. A mainline kernel accepts the same archive,
+  which is what makes the benchmark fair.
+- **User threads (M8a):** `clone` with the `CLONE_VM`, `CLONE_FS`,
+  `CLONE_FILES`, `CLONE_SIGHAND`, `CLONE_THREAD` and `CLONE_SYSVSEM` flags
+  creates a thread that shares the address space, with its own kernel stack,
+  its own user stack and its own thread local storage base. The base is kept
+  in the thread control block and written to the `FS_BASE` register on every
+  switch. Flags that are not supported are rejected with `EINVAL`, never
+  ignored.
+- **System call policy:** the Linux numbering, the Linux argument order
+  (number in `RAX`, arguments in `RDI`, `RSI`, `RDX`, `R10`, `R8`, `R9`) and
+  negative errno values on failure. A call that is not implemented returns
+  `-ENOSYS`, never a wrong success. The implemented set is listed in the
+  system call table below.
 - **System call entry:** the stub swaps to the kernel `GS` base, saves the
   user stack pointer in the per CPU slot, loads the kernel stack from the TSS
   `rsp0`, saves every general purpose register and the user `RIP` and flags,

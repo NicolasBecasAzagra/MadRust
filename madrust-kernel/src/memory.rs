@@ -32,6 +32,13 @@ pub const SELF_TEST_BLOCKS: usize = 10_000;
 /// PVH boot structures live below 1 MiB.
 const LOW_MEMORY_END: u64 = 0x10_0000;
 
+/// Modules whose bytes are kept out of the frame allocator.
+///
+/// The benchmark rig passes one initramfs module. The bound keeps the reserved
+/// range list a fixed size array, so the memory manager never allocates while
+/// it is building itself.
+const MAX_MODULES: usize = 8;
+
 extern "C" {
     static __kernel_start__: u8;
     static __kernel_physical_start__: u8;
@@ -105,6 +112,8 @@ pub enum MemoryError {
     LeakedFrames { expected: usize, found: usize },
     /// A `Vec` or `String` allocated through the global allocator is wrong.
     GlobalAllocatorFailed,
+    /// The loader passed more modules than the reserved range list holds.
+    TooManyModules { found: usize, capacity: usize },
 }
 
 impl MemoryManager {
@@ -201,25 +210,44 @@ pub fn init(boot_info: &BootInfo<'_>) -> Result<(), MemoryError> {
     let mut frames =
         BuddyAllocator::new(StaticStore::new(metadata), managed).map_err(MemoryError::Frames)?;
 
-    let mut reserved = [
-        Range {
-            start: 0,
-            end: LOW_MEMORY_END,
-        },
-        /*
-         * The whole image, including `.bss`: the boot stack, the boot page
-         * tables, the final page tables and the static metadata buffers all
-         * live there, so one range covers every kernel owned page.
-         */
-        Range {
-            start: layout.physical_start,
-            end: layout.physical_end,
-        },
-    ];
-    reserved.sort_unstable_by_key(|range| range.start);
+    let modules = boot_info.modules();
+    if modules.len() > MAX_MODULES {
+        return Err(MemoryError::TooManyModules {
+            found: modules.len(),
+            capacity: MAX_MODULES,
+        });
+    }
+
+    let mut reserved = [Range { start: 0, end: 0 }; 2 + MAX_MODULES];
+    let mut reserved_count = 0;
+    reserved[reserved_count] = Range {
+        start: 0,
+        end: LOW_MEMORY_END,
+    };
+    reserved_count += 1;
+    /*
+     * The whole image, including `.bss`: the boot stack, the boot page tables,
+     * the final page tables and the static metadata buffers all live there, so
+     * one range covers every kernel owned page.
+     */
+    reserved[reserved_count] = Range {
+        start: layout.physical_start,
+        end: layout.physical_end,
+    };
+    reserved_count += 1;
+    // The loader leaves the initramfs in RAM. Its bytes are the program image,
+    // so no frame the heap hands out may overlap them.
+    for module in modules.iter().filter(|module| module.size != 0) {
+        reserved[reserved_count] = Range {
+            start: module.paddr,
+            end: module.end(),
+        };
+        reserved_count += 1;
+    }
+    reserved[..reserved_count].sort_unstable_by_key(|range| range.start);
 
     for region in boot_info.ram_regions() {
-        release_usable(&mut frames, region, &reserved)?;
+        release_usable(&mut frames, region, &reserved[..reserved_count])?;
     }
 
     // SAFETY: the heap cell is aliased here for the first and only time, and

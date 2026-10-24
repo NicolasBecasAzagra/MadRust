@@ -61,6 +61,96 @@ Every report states the acceleration mode it was produced in.
 A host with hardware acceleration is therefore required before any claim
 about wall clock performance is published.
 
+## The rig
+
+`bench/run.py` boots a kernel image with a fixed configuration, hands it the
+same initramfs, and reads the measurements from the serial line.
+
+```sh
+# both kernels
+bench/run.py --madrust target/.../madrust-kernel --mainline /path/to/vmlinux
+# MadRust only, before the mainline image exists
+bench/run.py --madrust-only
+```
+
+The QEMU configuration is identical for both kernels:
+
+```text
+-M q35 -cpu Skylake-Client -smp 1 -m 512M \
+-kernel <image> -initrd bench/initramfs.cpio \
+-append "console=ttyS0" \
+-display none -monitor none -no-reboot -serial file:<log>
+```
+
+One processor and 512 MiB, because the kernel is uniprocessor today and the
+frame metadata describes 1 GiB at most. The CPU model is fixed on purpose:
+`-cpu host` changes between machines and invalidates the comparison. Mainline
+needs `console=ttyS0` so that its output reaches the same serial line; MadRust
+ignores the command line. The initramfs is an uncompressed `cpio` archive,
+which both kernels accept, so the bytes handed to the two kernels are
+identical. It carries the program and the `/dev/console` and `/dev/null`
+nodes, because a mainline kernel does not mount a device file system on an
+initramfs.
+
+### Workloads
+
+One static Rust binary, built for the Linux musl target, holds every
+measurement. It runs on both kernels without modification.
+
+| Workload | What it measures |
+|---|---|
+| `syscall` | Cost of a system call entry and return, in a tight `getpid` loop |
+| `mmap` | Cost of mapping and touching a region, per MiB |
+| `futex` | Cost of a futex round trip between two threads |
+| `threads` | Wall clock time of several threads doing a fixed amount of work |
+
+The binary prints one `RESULT <workload> <value> <unit>` line per
+measurement, and `BENCH DONE` at the end. A measurement that the kernel
+refuses is printed with the error value, so an incomplete kernel produces
+data instead of silence.
+
+### Protocol
+
+- At least 30 iterations per workload per kernel.
+- Every iteration is recorded, including the ones that failed. Nothing is
+  discarded, nothing is retried until it looks good.
+- The raw data is one CSV per kernel, with one row per iteration: workload,
+  iteration number, value, unit and status. The summary is a CSV with the
+  statistics and a JSON file with the metadata.
+- The summary reports the median, the 99th percentile and the standard
+  deviation for every workload and every kernel, plus the metadata: the QEMU
+  version, the host, the SHA-256 of both kernel images and the exact command
+  line that produced the run.
+- The clock inside the guest is the time stamp counter, calibrated against
+  the timer interrupt. The timer alone ticks at 100 Hz, which would quantise
+  every measurement to 10 ms and make the results meaningless.
+
+### First baseline
+
+The rig has produced MadRust only numbers so far, on a Mac under emulation
+with a single processor. They are the baseline to compare against, not a
+comparison:
+
+```text
+workload   median      p99       stddev   unit
+syscall    231.00      297.00    23.90    ns/op
+mmap       2221819.00  3654837.00  672448.19  ns/MiB
+futex      3839.00     23517.00  3532.99  ns/roundtrip
+threads    1478253.50  1695191.00 53820.39  ns/total
+```
+
+Every one of these numbers is an emulation artefact until the same workload
+runs on mainline under the same flags. The raw rows are in
+`bench/results/`.
+
+### What the numbers mean
+
+The comparison is between two kernels running the same binary under the same
+emulation. It is not a comparison between a kernel and a distribution, and it
+does not predict the performance of either on real hardware. The summary says
+which acceleration mode produced the data, and a run without hardware
+acceleration can only support a relative statement.
+
 ## Benchmarks
 
 Kernel level:

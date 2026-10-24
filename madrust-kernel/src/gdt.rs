@@ -183,6 +183,26 @@ fn tss_descriptor(base: u64) -> (u64, u64) {
     (low, high)
 }
 
+/// Address one past the last byte of the static ring 0 stack.
+pub fn interrupt_stack_top() -> u64 {
+    addr_of!(*INTERRUPT_STACK.0.get()) as u64 + size_of::<InterruptStack>() as u64
+}
+
+/// Point `TSS.rsp0` at the kernel stack of the thread that is about to run.
+///
+/// The CPU reads this field on every transition from ring 3, so an interrupt or
+/// a system call of a user thread lands on that thread's own stack instead of a
+/// stack shared by every thread.
+pub fn set_kernel_stack(top: u64) {
+    let tss = TSS.0.get();
+    // SAFETY: `tss` points at the static TSS and `top` is the top of a live
+    // kernel stack. The caller runs with interrupts disabled, so no transition
+    // from ring 3 can read a half written value.
+    unsafe {
+        core::ptr::write_unaligned(addr_of_mut!((*tss).rsp0), top);
+    }
+}
+
 /// Install the GDT, initialise the TSS and load the task register.
 pub fn init() {
     let tss = TSS.0.get();

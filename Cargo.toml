@@ -5,6 +5,7 @@ members = [
     "madrust-bootinfo",
     "madrust-drivers",
     "madrust-elf",
+    "madrust-initramfs",
     "madrust-kernel",
     "madrust-mm",
     "madrust-sched",

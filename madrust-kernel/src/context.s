@@ -30,6 +30,36 @@ madrust_context_switch:
     movq %r14, 0x28(%rdi)
     movq %r15, 0x30(%rdi)
 
+    /*
+     * Save the GS bases. The system call stub swaps them, so a thread that
+     * blocks inside a call and a thread that was interrupted in ring 3 resume
+     * with different values; the pair has to travel with the context.
+     */
+    movl $0xc0000101, %ecx      /* IA32_GS_BASE */
+    rdmsr
+    shlq $32, %rdx
+    orq %rdx, %rax
+    movq %rax, 0x40(%rdi)
+    movl $0xc0000102, %ecx      /* IA32_KERNEL_GS_BASE */
+    rdmsr
+    shlq $32, %rdx
+    orq %rdx, %rax
+    movq %rax, 0x48(%rdi)
+
+    /* Install the GS bases of the thread that is about to run. */
+    movq 0x40(%rsi), %r8
+    movl $0xc0000101, %ecx
+    movl %r8d, %eax
+    shrq $32, %r8
+    movl %r8d, %edx
+    wrmsr
+    movq 0x48(%rsi), %r8
+    movl $0xc0000102, %ecx
+    movl %r8d, %eax
+    shrq $32, %r8
+    movl %r8d, %edx
+    wrmsr
+
     movq 0x00(%rsi), %rsp
     movq 0x08(%rsi), %rbx
     movq 0x10(%rsi), %rbp

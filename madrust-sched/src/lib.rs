@@ -38,6 +38,14 @@ pub struct Context {
     pub r15: u64,
     /// Address the switch jumps to when the thread runs again.
     pub rip: u64,
+    /// `IA32_GS_BASE` at the moment of the switch.
+    ///
+    /// The system call stub uses `swapgs`, so the active GS base depends on
+    /// whether the thread was interrupted in ring 3 or inside a system call.
+    /// Saving both MSRs keeps that state with the thread instead of the CPU.
+    pub gs_base: u64,
+    /// `IA32_KERNEL_GS_BASE` at the moment of the switch.
+    pub kernel_gs_base: u64,
 }
 
 impl Context {
@@ -51,6 +59,8 @@ impl Context {
         r14: 0,
         r15: 0,
         rip: 0,
+        gs_base: 0,
+        kernel_gs_base: 0,
     };
 }
 
@@ -213,7 +223,9 @@ mod tests {
         assert_eq!(offset_of!(Context, r14), 0x28);
         assert_eq!(offset_of!(Context, r15), 0x30);
         assert_eq!(offset_of!(Context, rip), 0x38);
-        assert_eq!(size_of::<Context>(), 0x40);
+        assert_eq!(offset_of!(Context, gs_base), 0x40);
+        assert_eq!(offset_of!(Context, kernel_gs_base), 0x48);
+        assert_eq!(size_of::<Context>(), 0x50);
     }
 
     #[test]

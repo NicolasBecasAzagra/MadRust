@@ -1,0 +1,75 @@
+{
+  "metadata": {
+    "qemu": "QEMU emulator version 11.1.2",
+    "accel": "tcg",
+    "host": {
+      "hostname": "BlackCat.local",
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "system": "Darwin",
+      "release": "27.0.0",
+      "python": "3.15.0"
+    },
+    "initrd": {
+      "path": "/Volumes/PortableSSD/MadRust/bench/initramfs.cpio",
+      "sha256": "76540e73a0c4a74f227719ede886af05f72b9ec904e5207155bdc6ff4613c3dd"
+    },
+    "kernels": {
+      "madrust": {
+        "path": "/Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel",
+        "sha256": "c8dcd47ef0c5eaf42c6f15dca93c76c10955086089a81199b927fb6945296dd0"
+      }
+    },
+    "commands": {
+      "madrust": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 512M -kernel /Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel -initrd /Volumes/PortableSSD/MadRust/bench/initramfs.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/madrust.log -device isa-debug-exit,iobase=0xf4,iosize=0x04"
+    },
+    "iterations_expected": 30,
+    "started": "2026-10-24T14:21:19Z"
+  },
+  "summary": [
+    {
+      "kernel": "madrust",
+      "workload": "syscall",
+      "unit": "ns/op",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 231.0,
+      "p99": 297.0,
+      "stddev": 23.89941886787673
+    },
+    {
+      "kernel": "madrust",
+      "workload": "mmap",
+      "unit": "ns/MiB",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 2221819.0,
+      "p99": 3654837.0,
+      "stddev": 672448.1893204933
+    },
+    {
+      "kernel": "madrust",
+      "workload": "futex",
+      "unit": "ns/roundtrip",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 3839.0,
+      "p99": 23517.0,
+      "stddev": 3532.99081924775
+    },
+    {
+      "kernel": "madrust",
+      "workload": "threads",
+      "unit": "ns/total",
+      "samples": 30,
+      "errors": 0,
+      "missing": 0,
+      "median": 1478253.5,
+      "p99": 1695191.0,
+      "stddev": 53820.39433275581
+    }
+  ]
+}

@@ -140,6 +140,9 @@ madrust_syscall_entry:
     pushq %r14           /*   8 */
     pushq %r15           /*   0 */
 
+    /* Publish the frame for `clone`, which copies the parent registers. */
+    movq %rsp, %gs:8
+
     /*
      * Marshal the Linux argument order into the SysV order of
      * madrust_syscall_dispatch(number, a1, a2, a3, a4, a5, a6): the sixth
@@ -177,3 +180,44 @@ madrust_syscall_entry:
     movq %gs:0, %rsp
     swapgs
     sysretq
+
+/*
+ * void madrust_enter_user_thread(const struct UserStart *start) -> !
+ *
+ * First entry of a thread created by clone. The pointer is in RDI; R11 becomes
+ * the scratch register because the syscall instruction already clobbers it.
+ * The saved context is loaded, an iretq frame is built from it, and the CPU
+ * leaves ring 0 with the child's registers and stack. R11 and RCX are not
+ * restored: the syscall ABI treats them as clobbered.
+ */
+    .global madrust_enter_user_thread
+    .type madrust_enter_user_thread, @function
+madrust_enter_user_thread:
+    movq %rdi, %r11
+    cli
+
+    movw $0x23, %cx
+    movw %cx, %ds
+    movw %cx, %es
+
+    pushq $0x23          /* SS: ring 3 data */
+    pushq 8(%r11)        /* RSP: child stack */
+    pushq 16(%r11)       /* RFLAGS: interrupt flag set by the caller */
+    pushq $0x1b          /* CS: ring 3 code */
+    pushq 0(%r11)        /* RIP: syscall return address */
+
+    movq 24(%r11), %rax
+    movq 32(%r11), %rbx
+    movq 40(%r11), %rbp
+    movq 48(%r11), %r12
+    movq 56(%r11), %r13
+    movq 64(%r11), %r14
+    movq 72(%r11), %r15
+    movq 80(%r11), %rdi
+    movq 88(%r11), %rsi
+    movq 96(%r11), %rdx
+    movq 104(%r11), %r8
+    movq 112(%r11), %r9
+    movq 120(%r11), %r10
+
+    iretq

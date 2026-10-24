@@ -26,6 +26,7 @@
 
 extern crate alloc;
 
+mod clock;
 mod console;
 mod fault;
 mod gdt;
@@ -41,7 +42,7 @@ mod user;
 use core::fmt::Write as _;
 
 use madrust_arch::cpu;
-use madrust_bootinfo::{BootInfo, HvmMemmapEntry, HvmStartInfo};
+use madrust_bootinfo::{BootInfo, HvmMemmapEntry, HvmModule, HvmStartInfo};
 use madrust_drivers::debug_exit;
 use madrust_mm::{phys_to_virt, DIRECT_MAP_BASE};
 
@@ -120,7 +121,24 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
         }
     };
 
-    let boot_info = match BootInfo::parse(start, memmap) {
+    let modules: &[HvmModule] = if start.nr_modules == 0 {
+        &[]
+    } else if start.modlist_paddr == 0 {
+        kprintln!("MadRust: boot FAILED: nr_modules > 0 but modlist_paddr is zero");
+        debug_exit::exit(debug_exit::EXIT_BOOT_INFO_INVALID);
+    } else {
+        // SAFETY: the PVH loader points `modlist_paddr` at `nr_modules`
+        // consecutive `hvm_modlist_entry` records in RAM, and the direct map
+        // translates the list for as long as the kernel runs.
+        unsafe {
+            core::slice::from_raw_parts(
+                phys_to_virt(start.modlist_paddr) as *const HvmModule,
+                start.nr_modules as usize,
+            )
+        }
+    };
+
+    let boot_info = match BootInfo::parse(start, memmap, modules) {
         Ok(info) => info,
         Err(error) => {
             kprintln!("MadRust: boot FAILED: {:?}", error);
@@ -171,15 +189,46 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     kprintln!("MEM OK");
     kprintln!("HEAP OK {}", memory::SELF_TEST_BLOCKS);
 
-    // Parse the embedded program and build its address space and stack now, so
-    // a bad image stops the boot before the threads start.
-    kprintln!("[user] embedded ELF: {} bytes", user::embedded_size());
-    let program = match user::load() {
-        Ok(program) => program,
-        Err(error) => {
-            kprintln!("MadRust: boot FAILED: user program: {:?}", error);
-            uart.flush();
-            debug_exit::exit(debug_exit::EXIT_USER_FAILED);
+    // Parse the program and build its address space and stack now, so a bad
+    // image stops the boot before the threads start. An initramfs handed over
+    // as a PVH module wins over the embedded copy; without one the embedded
+    // program keeps the old path, including its boot log.
+    let program = match user::initramfs::find(boot_info.modules().len(), boot_info.modules()) {
+        Some(initramfs) => {
+            let modules = initramfs.module_count();
+            let files = initramfs.file_count();
+            kprintln!(
+                "[user] initramfs: {} {}, {} {}",
+                modules,
+                if modules == 1 { "module" } else { "modules" },
+                files,
+                if files == 1 { "file" } else { "files" }
+            );
+            let Some(file) = initramfs.program() else {
+                kprintln!("MadRust: boot FAILED: initramfs has no executable");
+                uart.flush();
+                debug_exit::exit(debug_exit::EXIT_USER_FAILED);
+            };
+            kprintln!("[user] program: /{} ({} bytes)", file.name, file.data.len());
+            match user::load_program(file.data) {
+                Ok(program) => program,
+                Err(error) => {
+                    kprintln!("MadRust: boot FAILED: user program: {:?}", error);
+                    uart.flush();
+                    debug_exit::exit(debug_exit::EXIT_USER_FAILED);
+                }
+            }
+        }
+        None => {
+            kprintln!("[user] embedded ELF: {} bytes", user::embedded_size());
+            match user::load() {
+                Ok(program) => program,
+                Err(error) => {
+                    kprintln!("MadRust: boot FAILED: user program: {:?}", error);
+                    uart.flush();
+                    debug_exit::exit(debug_exit::EXIT_USER_FAILED);
+                }
+            }
         }
     };
     // The image is loaded at a fixed base. A position independent executable
@@ -210,6 +259,8 @@ unsafe extern "C" fn _start(start_info_physical: u64, probe: u64, observed: u64)
     kprintln!("[irq] PIC remapped, IRQ0 unmasked");
     pit::init();
     kprintln!("[irq] PIT programmed at {} Hz", pit::TICK_HZ);
+    let tsc_hz = clock::init();
+    kprintln!("[time] TSC {} MHz", tsc_hz / 1_000_000);
 
     sched::init();
     for name in ["T1", "T2", "T3"] {
