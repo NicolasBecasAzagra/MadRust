@@ -275,7 +275,12 @@ def run_once(
     return command, text, elapsed, peak_rss
 
 
-def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[str, Any]]:
+def parse_results(
+    label: str,
+    text: str,
+    expected: dict[str, int],
+    boot_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen = {name: 0 for name in WORKLOADS}
 
@@ -332,6 +337,11 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
                 "error": "",
             }
         )
+
+    # The measurements the rig takes itself are samples of their workload.
+    for row in boot_rows or []:
+        seen[row["workload"]] = seen.get(row["workload"], 0) + 1
+        rows.append(row)
 
     # A workload that produced fewer lines than the guest was asked for did not
     # finish. Record the missing samples instead of silently shrinking the set,
@@ -485,7 +495,10 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--timeout", type=float, default=600.0, help="seconds per boot"
+        "--timeout",
+        type=float,
+        default=1800.0,
+        help="seconds per boot; several emulated processors make it slower",
     )
     parser.add_argument(
         "--smp",
@@ -586,10 +599,9 @@ def main() -> int:
             args.smp,
         )
         metadata["commands"][label] = shlex.join(command)
-        rows = parse_results(label, text, expected)
         # What a boot costs, measured from the outside: the wall clock of the
         # whole run and the resident memory the process reached.
-        rows.append(
+        boot_rows = [
             {
                 "kernel": label,
                 "workload": "boot-seconds",
@@ -598,19 +610,20 @@ def main() -> int:
                 "unit": "s",
                 "status": "ok",
                 "error": "",
-            }
-        )
-        rows.append(
+            },
             {
                 "kernel": label,
                 "workload": "boot-rss-mb",
                 "iteration": 0,
-                "value": f"{peak_rss / 1024:.1f}",
+                "value": f"{peak_rss / 1024:.1f}" if peak_rss else "",
                 "unit": "MiB",
-                "status": "ok",
-                "error": "",
-            }
-        )
+                "status": "ok" if peak_rss else "error",
+                "error": ""
+                if peak_rss
+                else "this host has no /proc, so the memory is not measured",
+            },
+        ]
+        rows = parse_results(label, text, expected, boot_rows)
         write_csv(out_dir / f"{label}.csv", rows)
         all_rows.extend(rows)
         ok = sum(1 for row in rows if row["status"] == "ok")
