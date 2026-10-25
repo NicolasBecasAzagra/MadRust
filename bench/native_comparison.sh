@@ -36,6 +36,19 @@ GGUF=${GGUF:-model-f16.gguf}
 
 mkdir -p "$WORK"
 
+# Preflight: say what is missing instead of failing in the middle of a build.
+missing=""
+for tool in git cmake curl cc c++; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        missing="$missing $tool"
+    fi
+done
+if [ -n "$missing" ]; then
+    echo "native_comparison: missing tools:$missing" >&2
+    echo "  sudo apt update && sudo apt install -y cmake build-essential curl git" >&2
+    exit 1
+fi
+
 echo "== building llama.cpp =="
 if [ ! -d "$WORK/llama.cpp" ]; then
     git clone --depth=1 https://github.com/ggml-org/llama.cpp "$WORK/llama.cpp"
