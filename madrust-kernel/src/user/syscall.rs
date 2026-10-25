@@ -19,10 +19,10 @@
 //!
 //! * Process identity and lifetime: `getpid`, `gettid`, the ids, `exit`,
 //!   `exit_group`, `set_tid_address`, `set_robust_list`, `kill`, `tgkill`.
-//! * Memory: `brk`, `mmap`, `munmap`, `mprotect`, `madvise`, with the
-//!   implementation in [`super::vm`]. Anonymous mappings reserve address space
-//!   and fault in their frames on first touch; `mremap` is not supported and
-//!   reports `EINVAL`.
+//! * Memory: `brk`, `mmap`, `munmap`, `mprotect`, `madvise`, `mlock` and
+//!   `munlock`, with the implementation in [`super::vm`]. Anonymous mappings
+//!   reserve address space and fault in their frames on first touch; `mremap`
+//!   is not supported and reports `EINVAL`.
 //! * Threads and signals: `arch_prctl` (thread local storage), the signal
 //!   calls, `futex` (with the wait queue in [`super::futex`]) and `rseq`.
 //! * Input and output: the descriptor calls, `write`, `read`, `lseek`,
@@ -151,6 +151,10 @@ const SYS_GETEGID: u64 = 108;
 const SYS_GETPPID: u64 = 110;
 /// `sigaltstack` system call number.
 const SYS_SIGALTSTACK: u64 = 131;
+/// `mlock` system call number.
+const SYS_MLOCK: u64 = 149;
+/// `munlock` system call number.
+const SYS_MUNLOCK: u64 = 150;
 /// `prctl` system call number.
 const SYS_PRCTL: u64 = 157;
 /// `arch_prctl` system call number.
@@ -441,6 +445,8 @@ pub extern "C" fn madrust_syscall_dispatch(
         SYS_MUNMAP => result(vm::munmap(argument1, argument2)),
         SYS_MPROTECT => result(vm::mprotect(argument1, argument2, argument3)),
         SYS_MADVISE => result(vm::madvise(argument1, argument2, argument3)),
+        SYS_MLOCK => result(vm::mlock(argument1, argument2)),
+        SYS_MUNLOCK => result(vm::munlock(argument1, argument2)),
         SYS_MREMAP => sys_mremap(argument1, argument2, argument3, argument4, argument5),
         SYS_ARCH_PRCTL => sys_arch_prctl(argument1, argument2),
         SYS_RT_SIGACTION => sys_rt_sigaction(argument1, argument3),

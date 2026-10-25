@@ -37,7 +37,7 @@ getdents64 217              set_tid_address 218          clock_gettime 228
 clock_nanosleep 230          exit_group 231 tgkill 234   openat 257
 newfstatat 262              set_robust_list 273          dup3 292
 pipe2 293    prlimit64 302  getrandom 318 membarrier 324
-statx 332    rseq 334
+statx 332    rseq 334        mlock 149      munlock 150
 ```
 
 Not implemented yet, and they return `-ENOSYS`: `lseek` 8, `clone` 56,
@@ -320,6 +320,22 @@ crate with one function does not exist yet.
   guest with more memory than the direct map can describe is refused at boot
   with a clear message and exit status 37, never a partial mapping and never
   a panic. The metadata needs 8 MiB for the largest supported guest.
+- **Residency (M4d):** a program can pin a range with `mlock`, and the
+  kernel keeps those pages: they never go back to the allocator and never go
+  to swap, because the kernel has no swap. The pin table remembers the range,
+  the physical address and the order of each block. Unmapping a pinned page
+  removes the translation but keeps the frame, and the frame goes back to the
+  allocator when the last pin that holds it is released and the page is no
+  longer mapped. `munlock` can release part of a range, and a range that
+  covers a large page pins the whole block. The kernel reports the pinned
+  pages and bytes at the end of the user program, so a log says whether the
+  weights of a model are resident or only mapped.
+  - The limit is a fixed table of 2048 pins, and a request that does not fit
+    returns `ENOMEM` even when memory is available.
+  - `mlock2`, with ranges instead of lengths, is not implemented.
+  - Pinning faults the pages in, so the cost of the promise is paid when the
+    range is pinned. That cost is visible in the time to the first token, and
+    it is the price of the guarantee.
 - **Panic:** print the faulting RIP, the saved registers and the fault address,
   then halt. Do not attempt to kill a single thread.
 - **Exceptions are fatal by default.** The only recoverable exception is the

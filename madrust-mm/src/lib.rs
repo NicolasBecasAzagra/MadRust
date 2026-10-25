@@ -11,7 +11,8 @@
 //! layout and the entry arithmetic in a form that host tests can check.
 //! [`mapping`] holds the anonymous and file backed user mapping records and
 //! their lookup, also free of hardware and allocation, so the fault path is
-//! testable on the host.
+//! testable on the host. [`pin`] holds the resident range records that `mlock`
+//! creates, with the same restriction, so the pinning policy is testable too.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -20,6 +21,7 @@ pub mod buddy;
 pub mod heap;
 pub mod mapping;
 pub mod paging;
+pub mod pin;
 pub mod store;
 
 pub use buddy::BuddyAllocator;

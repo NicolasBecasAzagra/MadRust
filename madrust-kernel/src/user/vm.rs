@@ -21,6 +21,17 @@
 //! 4 KiB file page is unmapped without a free: those archive frames belong to
 //! the initramfs, not to the mapping.
 //!
+//! ## Resident ranges
+//!
+//! `mlock` faults the pages of a range in and records a pin in
+//! [`super::pins`]. A pinned page is never written to swap, which is trivial
+//! without a swap file, and, more importantly, [`unmap_region`] never returns
+//! an owned frame that a pin still holds to the allocator. The frames stay with
+//! the pin until `munlock`; a page that is still mapped when the pin ends stays
+//! with its mapping, exactly like an ordinary page. A range that was faulted as
+//! a 2 MiB block is pinned at [`LARGE_PAGE_ORDER`], so the last page of a
+//! partial unlock gives the whole block back at that order.
+//!
 //! The program break keeps its eager behaviour: `brk` maps and unmaps its
 //! frames directly, without a record in the mapping table. `mremap` is not
 //! supported and rejects with `EINVAL`; no program of this milestone needs it.
@@ -42,11 +53,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use madrust_elf::USER_SPACE_END;
 use madrust_mm::mapping::{Mapping, MappingTable, PROT_WRITE};
 use madrust_mm::paging::{LARGE_PAGE_SIZE, PAGE_SIZE};
+use madrust_mm::pin::Pin;
 use madrust_mm::{phys_to_virt, LARGE_PAGE_ORDER};
 
 use super::errno::{EEXIST, EINVAL, ENODEV, ENOMEM, EROFS};
 use super::mappings::CAPACITY;
-use super::{fd, mappings, paging};
+use super::{fd, mappings, paging, pins};
 use crate::memory;
 
 /// First address handed out by `mmap`.
@@ -407,6 +419,293 @@ pub fn madvise(address: u64, length: u64, advice: u64) -> Result<(), i64> {
     Ok(())
 }
 
+/// `mlock`: make a mapped range resident and pin its frames.
+///
+/// The call faults every page of the range in, then records a pin per page or
+/// per 2 MiB block in [`super::pins`]. A pin is all or nothing: a failed call
+/// removes the pins it added and reports [`ENOMEM`], so the pages it managed to
+/// fault in stay mapped and ordinary instead of staying half pinned.
+///
+/// The address must be page aligned, like Linux, and the length is rounded up
+/// to whole pages. A range that is not mapped and has no present page cannot be
+/// made resident, so it reports [`ENOMEM`].
+pub fn mlock(address: u64, length: u64) -> Result<(), i64> {
+    let Some(end) = lock_range(address, length)? else {
+        return Ok(());
+    };
+    let generation = pins::begin();
+    let mut cursor = address;
+    while cursor < end {
+        let Some(candidate) = lock_unit(cursor, end) else {
+            pins::discard(generation);
+            return Err(ENOMEM);
+        };
+        if pins::covers(cursor, candidate.size) {
+            // A pin that outlived a `munmap` still owns its frames, but the
+            // address is no longer mapped: the program cannot ask for it to be
+            // resident again until it maps the range again.
+            if paging::frame_at(cursor).is_none() {
+                pins::discard(generation);
+                return Err(ENOMEM);
+            }
+            cursor += candidate.size;
+            continue;
+        }
+        // A unit that only partly overlaps an existing pin is taken page by
+        // page: a pin is page aligned, so the pages are then either covered or
+        // free and two records never cover the same page.
+        let unit = if candidate.size > PAGE_SIZE && pins::overlaps(cursor, candidate.size) {
+            let Some(page) = lock_page_unit(cursor) else {
+                pins::discard(generation);
+                return Err(ENOMEM);
+            };
+            page
+        } else {
+            candidate
+        };
+        if pins::covers(cursor, unit.size) {
+            if paging::frame_at(cursor).is_none() {
+                pins::discard(generation);
+                return Err(ENOMEM);
+            }
+            cursor += unit.size;
+            continue;
+        }
+        if pin_unit(cursor, &unit, generation).is_err() {
+            pins::discard(generation);
+            return Err(ENOMEM);
+        }
+        cursor += unit.size;
+    }
+    pins::commit(generation);
+    Ok(())
+}
+
+/// `munlock`: release the pin of a range and give back what it no longer holds.
+///
+/// A partial unlock trims the pin, so the pages that stay inside the remaining
+/// range keep the promise. An owned allocation goes back to the allocator only
+/// when no pin holds it any more and the page table no longer maps it: a page
+/// that is still mapped stays with its mapping and is freed by `munmap`.
+pub fn munlock(address: u64, length: u64) -> Result<(), i64> {
+    let Some(end) = lock_range(address, length)? else {
+        return Ok(());
+    };
+    loop {
+        let pin = match pins::claim(address, end) {
+            Ok(Some(pin)) => pin,
+            Ok(None) => return Ok(()),
+            Err(_) => return Err(ENOMEM),
+        };
+        if pin.owned
+            && !pins::holds_physical(pin.physical, pin.allocation_size())
+            && !pin_is_mapped(&pin)
+        {
+            release_pin(&pin);
+        }
+    }
+}
+
+/// Validate an `mlock` or `munlock` range and return its end.
+///
+/// Returns `Ok(None)` for an empty range, which both calls accept as a no-op.
+/// The address must be page aligned and the rounded length must stay inside the
+/// user half, like Linux.
+fn lock_range(address: u64, length: u64) -> Result<Option<u64>, i64> {
+    if address == 0 || !address.is_multiple_of(PAGE_SIZE) {
+        return Err(EINVAL);
+    }
+    if length == 0 {
+        return Ok(None);
+    }
+    let length = page_up_checked(length).ok_or(ENOMEM)?;
+    let end = address.checked_add(length).ok_or(ENOMEM)?;
+    if end > USER_SPACE_END {
+        return Err(ENOMEM);
+    }
+    Ok(Some(end))
+}
+
+/// `length` rounded up to a page boundary, or `None` when it overflows.
+fn page_up_checked(length: u64) -> Option<u64> {
+    length
+        .checked_add(PAGE_SIZE - 1)
+        .map(|value| value & !(PAGE_SIZE - 1))
+}
+
+/// One piece of a locked range that maps to a single allocation.
+struct LockUnit {
+    /// Size of the piece in bytes.
+    size: u64,
+    /// Where the physical memory of the piece comes from.
+    kind: LockKind,
+}
+
+/// How a [`LockUnit`] is backed.
+enum LockKind {
+    /// One 4 KiB frame.
+    Page,
+    /// A 2 MiB block the pin faults in now.
+    FreshBlock,
+    /// A page of an existing 2 MiB leaf; the value is the block base.
+    LargeLeaf(u64),
+}
+
+/// Classify the piece of a locked range that starts at `address`.
+///
+/// Returns `None` when `address` is neither inside a mapping nor present, which
+/// is the unmapped case `mlock` reports as [`ENOMEM`]. The unit is a 2 MiB block
+/// when the whole block fits in the requested range and either a large leaf
+/// already maps it or the mapping asked for large pages and the page directory
+/// entry is still free. Every other address is a 4 KiB pin, including a page of
+/// an existing large leaf when the request starts or ends inside the block.
+fn lock_unit(address: u64, end: u64) -> Option<LockUnit> {
+    if let Some(block) = paging::large_page_at(address) {
+        let chunk = address & !(LARGE_PAGE_SIZE - 1);
+        let size = if address == chunk && chunk + LARGE_PAGE_SIZE <= end {
+            LARGE_PAGE_SIZE
+        } else {
+            PAGE_SIZE
+        };
+        return Some(LockUnit {
+            size,
+            kind: LockKind::LargeLeaf(block),
+        });
+    }
+    let Some(mapping) = mappings::find(address) else {
+        return paging::frame_at(address).map(|_| LockUnit {
+            size: PAGE_SIZE,
+            kind: LockKind::Page,
+        });
+    };
+    let chunk = address & !(LARGE_PAGE_SIZE - 1);
+    if mapping.huge
+        && address == chunk
+        && chunk + LARGE_PAGE_SIZE <= mapping.end()
+        && chunk + LARGE_PAGE_SIZE <= end
+        && paging::large_page_slot_free(chunk)
+    {
+        return Some(LockUnit {
+            size: LARGE_PAGE_SIZE,
+            kind: LockKind::FreshBlock,
+        });
+    }
+    Some(LockUnit {
+        size: PAGE_SIZE,
+        kind: LockKind::Page,
+    })
+}
+
+/// Classify `address` as one 4 KiB page.
+///
+/// Used when a larger unit only partly overlaps an existing pin. The page keeps
+/// the block of an existing large leaf, so the pin still gives the block back
+/// at the large order when its last page is unlocked.
+fn lock_page_unit(address: u64) -> Option<LockUnit> {
+    if let Some(block) = paging::large_page_at(address) {
+        return Some(LockUnit {
+            size: PAGE_SIZE,
+            kind: LockKind::LargeLeaf(block),
+        });
+    }
+    if paging::frame_at(address).is_some() || mappings::find(address).is_some() {
+        return Some(LockUnit {
+            size: PAGE_SIZE,
+            kind: LockKind::Page,
+        });
+    }
+    None
+}
+
+/// Fault one unit in and record its pin under `generation`.
+fn pin_unit(address: u64, unit: &LockUnit, generation: u32) -> Result<(), i64> {
+    let pin = match unit.kind {
+        LockKind::Page => {
+            if paging::frame_at(address).is_none()
+                && handle_page_fault(address, 0) != PageFaultOutcome::Resolved
+            {
+                return Err(ENOMEM);
+            }
+            // A fault at a 2 MiB boundary can install a block even for a page
+            // sized unit. The pin then owns that block, so it must keep the
+            // order the allocator used and give the whole block back.
+            let (physical, order) = match paging::large_page_at(address) {
+                Some(block) => (block, LARGE_PAGE_ORDER),
+                None => {
+                    let Some(frame) = paging::frame_at(address) else {
+                        return Err(ENOMEM);
+                    };
+                    (frame, 0)
+                }
+            };
+            let file = mappings::find(address).is_some_and(|mapping| mapping.is_file());
+            Pin {
+                base: address,
+                length: unit.size,
+                physical,
+                order,
+                owned: order > 0 || !file,
+                generation,
+            }
+        }
+        LockKind::FreshBlock => {
+            if paging::frame_at(address).is_none()
+                && handle_page_fault(address, 0) != PageFaultOutcome::Resolved
+            {
+                return Err(ENOMEM);
+            }
+            let Some(block) = paging::large_page_at(address) else {
+                return Err(ENOMEM);
+            };
+            Pin {
+                base: address,
+                length: unit.size,
+                physical: block,
+                order: LARGE_PAGE_ORDER,
+                owned: true,
+                generation,
+            }
+        }
+        LockKind::LargeLeaf(block) => Pin {
+            base: address,
+            length: unit.size,
+            physical: block,
+            order: LARGE_PAGE_ORDER,
+            owned: true,
+            generation,
+        },
+    };
+    pins::insert(pin).map_err(|_| ENOMEM)
+}
+
+/// `true` when the page table still maps the allocation of `pin`.
+fn pin_is_mapped(pin: &Pin) -> bool {
+    if pin.order == 0 {
+        paging::frame_at(pin.base) == Some(pin.physical)
+    } else {
+        paging::large_page_at(pin.base) == Some(pin.physical)
+    }
+}
+
+/// Return the allocation of `pin` to the allocator at the order it was taken.
+fn release_pin(pin: &Pin) {
+    if pin.order == 0 {
+        let _ = memory::with(|manager| manager.free_frame(pin.physical));
+    } else {
+        let _ = memory::with(|manager| manager.free_block(pin.physical, pin.order));
+    }
+}
+
+/// Number of pages the program pinned.
+pub fn locked_pages() -> u64 {
+    pins::locked_pages()
+}
+
+/// Number of bytes the program pinned.
+pub fn locked_bytes() -> u64 {
+    pins::locked_bytes()
+}
+
 /// Build and map one 2 MiB file page.
 ///
 /// The initramfs data is not aligned to 2 MiB, and a large page entry can only
@@ -584,18 +883,25 @@ fn map_region_eager(address: u64, length: u64) -> Result<(), i64> {
 /// to a file mapping is unmapped without a free: the archive frames are
 /// reserved and were never allocated to this mapping. A 2 MiB block under a
 /// file mapping is different: it is the copy the fault handler built, so it
-/// goes back to the buddy allocator like an anonymous block. Pages that were
-/// never faulted have no entry, so they cost a table walk and nothing else.
+/// goes back to the buddy allocator like an anonymous block. A frame that a pin
+/// still holds is unmapped but not freed: the pin owns it until `munlock`, even
+/// though the program can no longer reach it through this mapping. Pages that
+/// were never faulted have no entry, so they cost a table walk and nothing
+/// else.
 fn unmap_region(previous: &MappingTable<CAPACITY>, address: u64, length: u64) {
     let mut page = address;
     while page < address + length {
         let file_backed = previous.find(page).is_some_and(|mapping| mapping.is_file());
         match paging::unmap(page) {
             Some(paging::Unmapped::Page(frame)) if !file_backed => {
-                let _ = memory::with(|manager| manager.free_frame(frame));
+                if !pins::holds_physical(frame, PAGE_SIZE) {
+                    let _ = memory::with(|manager| manager.free_frame(frame));
+                }
             }
             Some(paging::Unmapped::LargePage(block)) => {
-                let _ = memory::with(|manager| manager.free_block(block, LARGE_PAGE_ORDER));
+                if !pins::holds_physical(block, LARGE_PAGE_SIZE) {
+                    let _ = memory::with(|manager| manager.free_block(block, LARGE_PAGE_ORDER));
+                }
             }
             Some(_) | None => {}
         }

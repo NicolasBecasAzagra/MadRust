@@ -139,6 +139,20 @@ pub fn frame_at(address: u64) -> Option<u64> {
     Some(entry_address(entry))
 }
 
+/// Physical base of the 2 MiB leaf that maps `address`, if it is one.
+///
+/// A pin has to know whether a page belongs to a large leaf before it faults
+/// the range in: the frames of a large leaf are one block at
+/// [`madrust_mm::LARGE_PAGE_ORDER`], while a 4 KiB leaf is one frame.
+pub fn large_page_at(address: u64) -> Option<u64> {
+    let directory = directory_entry(address)?;
+    let entry = read_entry(directory, 0);
+    if entry & paging::PRESENT == 0 || entry & paging::LARGE_PAGE == 0 {
+        return None;
+    }
+    Some(entry_address(entry))
+}
+
 /// One leaf removed from the page tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unmapped {

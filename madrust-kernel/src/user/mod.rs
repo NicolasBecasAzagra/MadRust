@@ -33,6 +33,7 @@ mod futex;
 mod loader;
 mod mappings;
 mod paging;
+mod pins;
 mod stack;
 mod syscall;
 pub(crate) mod vm;
@@ -161,6 +162,11 @@ pub fn run(program: &Program) -> u64 {
         "[user] file page faults: {} ({} large pages)",
         vm::file_page_faults(),
         vm::file_large_pages()
+    );
+    crate::kprintln!(
+        "[user] locked pages: {} ({} bytes)",
+        vm::locked_pages(),
+        vm::locked_bytes()
     );
     status
 }
