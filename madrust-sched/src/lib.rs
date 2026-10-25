@@ -25,7 +25,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 /// Maximum number of threads the kernel can hold at once.
-pub const MAX_THREADS: usize = 8;
+///
+/// The kernel reserves one idle slot per processor, so the bound leaves room
+/// for the boot thread, the idle threads of every processor and the workloads.
+pub const MAX_THREADS: usize = 32;
 
 /// Scheduling priority of one thread.
 ///

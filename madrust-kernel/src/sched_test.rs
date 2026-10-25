@@ -38,6 +38,15 @@ use crate::user::futex;
 /// Ping-pong iterations of the wakeup measurement.
 const WAKE_ITERATIONS: usize = 32;
 
+/// Wakeups that warm the path before the measurement starts.
+///
+/// The first pass through the wake path is cold: its code and data are not in
+/// the caches yet. Two warmups keep that one time cost out of the tail.
+const WAKE_WARMUP: usize = 2;
+
+/// Total warmup and measured wakeup pairs.
+const WAKE_TOTAL: usize = WAKE_WARMUP + WAKE_ITERATIONS;
+
 /// Slice waits measured for the tail.
 const SLICE_ITERATIONS: usize = 8;
 
@@ -49,8 +58,9 @@ const WAKE_LIMIT_US: u64 = 1_000_000 / pit::TICK_HZ / 10;
 
 static WAITER_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static WAKE_WORD: AtomicU32 = AtomicU32::new(0);
-static WAKE_START: [AtomicU64; WAKE_ITERATIONS] = [const { AtomicU64::new(0) }; WAKE_ITERATIONS];
+static WAKE_START: [AtomicU64; WAKE_TOTAL] = [const { AtomicU64::new(0) }; WAKE_TOTAL];
 static WAKE_LATENCY: [AtomicU64; WAKE_ITERATIONS] = [const { AtomicU64::new(0) }; WAKE_ITERATIONS];
+static WAKE_STAMP: AtomicU64 = AtomicU64::new(0);
 static WAKE_DONE: AtomicBool = AtomicBool::new(false);
 static WAKE_FAILED: AtomicBool = AtomicBool::new(false);
 
@@ -111,19 +121,27 @@ fn slice_test() -> bool {
 /// Entry function of the thread that waits on the futex.
 fn wake_waiter(_name: &'static str) {
     let address = &WAKE_WORD as *const AtomicU32 as u64;
-    for (iteration, (start, latency)) in WAKE_START.iter().zip(WAKE_LATENCY.iter()).enumerate() {
+    for iteration in 0..WAKE_TOTAL {
         // The waker stores `iteration + 1` before it wakes us, so the word
         // already holds the value of this iteration when the loop starts.
         let value = WAKE_WORD.load(Ordering::Acquire);
         let expected = iteration as u32;
-        let result = futex::wait(address, value, expected, None);
-        let now = cpu::read_tsc();
-        if result != 0 || value != expected {
+        if iteration < WAKE_WARMUP {
+            if futex::wait(address, value, expected, None) != 0 {
+                WAKE_FAILED.store(true, Ordering::Release);
+                return;
+            }
+            continue;
+        }
+        let result = futex::wait_stamped(address, value, expected, None, &WAKE_STAMP);
+        let now = WAKE_STAMP.load(Ordering::Acquire);
+        if result != 0 || value != expected || now == 0 {
             WAKE_FAILED.store(true, Ordering::Release);
             return;
         }
-        latency.store(
-            clock::microseconds(now.wrapping_sub(start.load(Ordering::Acquire))),
+        let start = WAKE_START[iteration].load(Ordering::Acquire);
+        WAKE_LATENCY[iteration - WAKE_WARMUP].store(
+            clock::microseconds(now.wrapping_sub(start)),
             Ordering::Release,
         );
     }
@@ -146,9 +164,15 @@ fn wake_waker(_name: &'static str) {
             sched::yield_now();
         }
 
+        // The stamp and the wake share one interrupt free section, so a
+        // timer tick cannot land between them and charge the wake with the
+        // rest of a slice.
+        let flags = sync::interrupt_save_disable();
         WAKE_WORD.store(iteration as u32 + 1, Ordering::Release);
         start.store(cpu::read_tsc(), Ordering::Release);
-        if futex::wake(address, 1) != 1 {
+        let woken = futex::wake(address, 1);
+        sync::interrupt_restore(flags);
+        if woken != 1 {
             WAKE_FAILED.store(true, Ordering::Release);
             return;
         }

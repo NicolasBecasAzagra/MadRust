@@ -7,9 +7,13 @@ use core::cell::UnsafeCell;
 use madrust_arch::cpu;
 
 use crate::gdt::{CODE_SELECTOR, DOUBLE_FAULT_IST};
+use crate::lapic;
 use crate::pic;
 use crate::pit;
 use crate::user::vm::PageFaultOutcome;
+use crate::vectors::{
+    IPI_RESCHEDULE_VECTOR, IPI_TLB_VECTOR, LAPIC_TIMER_VECTOR, PIT_IOAPIC_VECTOR, SPURIOUS_VECTOR,
+};
 
 const IDT_ENTRIES: usize = 256;
 const IDT_ENTRY_SIZE: usize = 16;
@@ -97,8 +101,14 @@ extern "C" {
     static isr_table: [u64; IDT_ENTRIES];
 }
 
-/// Install the IDT with one stub per vector.
+/// Install the IDT with one stub per vector and load it here.
 pub fn init() {
+    build();
+    load();
+}
+
+/// Fill every entry of the table once.
+fn build() {
     // SAFETY: `isr_table` is defined in the linked `isrs.s` object with exactly
     // 256 eight-byte entries, one per vector.
     let handlers: &[u64; IDT_ENTRIES] = unsafe { &isr_table };
@@ -112,7 +122,16 @@ pub fn init() {
         let ist = if vector == 8 { DOUBLE_FAULT_IST } else { 0 };
         table[vector] = IdtEntry::new(*handler, ist);
     }
+}
 
+/// Load the IDT on the calling processor.
+///
+/// The table itself is shared and immutable after [`init`], so an application
+/// processor only has to install its descriptor.
+pub fn load() {
+    // SAFETY: the table is a static array of IDT_ENTRIES entries and every
+    // index used by the build is smaller than that length.
+    let table = unsafe { &*IDT.0.get() };
     let pointer = IdtPointer {
         limit: (IDT_ENTRIES * IDT_ENTRY_SIZE - 1) as u16,
         base: table.as_ptr() as u64,
@@ -146,18 +165,58 @@ fn exception_name(vector: u64) -> &'static str {
 pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
     let vector = frame.vector;
 
+    // The local APIC timer of this processor drives preemption. The end of
+    // interrupt comes first: the switch may keep this thread off the CPU for a
+    // while, and the next tick must not be lost.
+    if vector == u64::from(LAPIC_TIMER_VECTOR) {
+        lapic::eoi();
+        crate::sched::on_tick();
+        return;
+    }
+
+    // Another processor placed a thread in this processor's run queue.
+    if vector == u64::from(IPI_RESCHEDULE_VECTOR) {
+        lapic::eoi();
+        crate::sched::on_ipi();
+        return;
+    }
+
+    // The boot processor cleared the identity mapping the startup sequence
+    // needed; every other processor drops its cached translations.
+    if vector == u64::from(IPI_TLB_VECTOR) {
+        // SAFETY: the page tables are consistent and only stale translations
+        // of the removed identity map are being dropped.
+        unsafe { cpu::flush_tlb() };
+        lapic::eoi();
+        return;
+    }
+
+    // The PIT keeps the accounting tick when the input output APIC carries its
+    // line, so the 8259 range is empty on those machines.
+    if vector == u64::from(PIT_IOAPIC_VECTOR) {
+        pit::record_tick();
+        lapic::eoi();
+        return;
+    }
+
+    // A machine without a local APIC keeps the 8259 and its timer vector. When
+    // the local APIC timer drives preemption, the PIT only counts ticks.
     if vector == u64::from(pic::TIMER_VECTOR) {
         pit::record_tick();
-        // Acknowledge before scheduling: the switch may keep this thread off
-        // the CPU for a while, and the next tick must not be lost.
         pic::send_eoi(vector as u8);
-        crate::sched::on_tick();
+        if !lapic::timer_active() {
+            crate::sched::on_tick();
+        }
         return;
     }
 
     if (u64::from(pic::IRQ_BASE)..u64::from(pic::IRQ_BASE) + 16).contains(&vector) {
         crate::kprintln!("IRQ vector=0x{:02x}", vector);
         pic::send_eoi(vector as u8);
+        return;
+    }
+
+    if vector == u64::from(SPURIOUS_VECTOR) {
         return;
     }
 
@@ -202,10 +261,12 @@ pub extern "C" fn madrust_interrupt_handler(frame: &mut InterruptFrame) {
         }
         _ => {
             crate::kprintln!(
-                "EXCEPTION {} {} RIP=0x{:016x}",
+                "EXCEPTION {} {} RIP=0x{:016x} ERR=0x{:x} CS=0x{:x}",
                 vector,
                 exception_name(vector),
-                frame.rip
+                frame.rip,
+                frame.error_code,
+                frame.cs
             );
         }
     }

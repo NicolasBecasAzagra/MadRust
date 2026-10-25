@@ -416,6 +416,7 @@ __stack_top:
     .balign 4096
 boot_pml4:
     .skip 4096
+    .global boot_pdpt
 boot_pdpt:
     .skip 4096
 boot_pd:
@@ -435,8 +436,10 @@ mm_pd_kernel:
     .skip 4096
 mm_pt_kernel:
     .skip 4096
+    .global mm_pdpt_direct
 mm_pdpt_direct:
     .skip 4096
+    .global mm_pd_direct
 mm_pd_direct:
     .skip 4096 * DIRECT_MAP_DIRECTORIES
 

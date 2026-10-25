@@ -9,13 +9,18 @@
 //! at `0xffff888000000000`.
 //!
 //! The kernel then builds a physical frame allocator and a kernel heap from the
-//! PVH memory map, installs a GDT with a TSS, an IDT with recoverable exception
-//! stubs, remaps the 8259 PIC and programs the PIT to interrupt every
-//! millisecond while the accounting tick stays at 100 Hz. Finally it spawns
-//! three kernel threads, lets the timer preempt them round robin, waits for
-//! them to finish and only then runs the exception and tick checks. Before the
-//! user program starts, the scheduler self test measures the wakeup latency and
-//! the slice tail on the target.
+//! PVH memory map, installs a GDT with one TSS per processor, an IDT with
+//! recoverable exception stubs, remaps the 8259 PIC and programs the PIT. The
+//! RSDP from the handover leads to the MADT, which names the processors: the
+//! boot processor starts the others with INIT, SIPI, SIPI, each one gets its
+//! own kernel stack, TSS, `GS` base and per processor block, and every
+//! processor runs its own copy of the scheduler with its own local APIC timer.
+//! The input output APIC takes the PIT line from the 8259, which stays for a
+//! machine without a local APIC. Finally it spawns three kernel threads, lets
+//! the timer preempt them round robin, waits for them to finish and only then
+//! runs the exception and tick checks. Before the user program starts, the
+//! scheduler self test measures the wakeup latency and the slice tail on the
+//! target, and the processors report their heartbeats.
 //!
 //! After the thread demonstration the kernel loads the embedded user program
 //! into the user half of the same page tables, enters ring 3 with `iretq`,
@@ -29,21 +34,28 @@
 
 extern crate alloc;
 
+mod acpi;
 mod clock;
 mod console;
 mod fault;
 mod gdt;
 mod idt;
+mod ioapic;
+mod lapic;
 mod memory;
+mod percpu;
 mod pic;
 mod pit;
 mod sched;
 mod sched_test;
+mod smp;
 mod sync;
 mod thread;
 mod user;
+mod vectors;
 
 use core::fmt::Write as _;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use madrust_arch::cpu;
 use madrust_bootinfo::{BootInfo, HvmMemmapEntry, HvmModule, HvmStartInfo};
@@ -55,6 +67,7 @@ use crate::console::console;
 core::arch::global_asm!(include_str!("trampoline.s"), options(att_syntax));
 core::arch::global_asm!(include_str!("isrs.s"), options(att_syntax));
 core::arch::global_asm!(include_str!("context.s"), options(att_syntax));
+core::arch::global_asm!(include_str!("ap_trampoline.s"), options(att_syntax));
 
 /// Lines each demo thread prints before it returns.
 const DEMO_ITERATIONS: u64 = 20;
@@ -66,6 +79,9 @@ const DEMO_THREADS: usize = 3;
 /// bound leaves a large margin while still turning a lost thread or a broken
 /// scheduler into a clear failure instead of a hang.
 const SCHED_DEADLINE_TICKS: u64 = 2_000;
+
+/// Demo threads that returned from their loop.
+static DEMO_DONE: AtomicUsize = AtomicUsize::new(0);
 
 /// 64-bit kernel entry point, called by `higher_half_start` once the kernel
 /// runs from the higher half.
@@ -91,7 +107,11 @@ unsafe extern "C" fn _start(
     let uart = console();
     uart.init();
 
-    kprintln!("MadRust: x86_64 kernel, M4b");
+    // Install the GS base of the boot processor before the first lock is
+    // taken. The GDT load later resets it and calls back into `percpu`.
+    percpu::init_bsp();
+
+    kprintln!("MadRust: x86_64 kernel, M4b (SMP)");
     kprintln!(
         "[mm] kernel virtual: 0x{:016x}",
         memory::kernel_virtual_base()
@@ -305,31 +325,58 @@ unsafe extern "C" fn _start(
     kprintln!("[time] TSC {} MHz", tsc_hz / 1_000_000);
 
     sched::init();
-    for name in ["T1", "T2", "T3"] {
-        if let Err(error) = sched::spawn(name, demo_thread) {
-            kprintln!(
-                "MadRust: boot FAILED: cannot create thread {}: {:?}",
-                name,
-                error
-            );
-            uart.flush();
-            debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+
+    // Discover the processors and start them before the workloads exist. The
+    // boot processor keeps the loaded thread as its current context; every
+    // other one enters an idle loop on its own stack.
+    let online = smp::init(start.rsdp_paddr);
+    if online > 1 {
+        match smp::wake_test() {
+            Some(target) => kprintln!("SMP wake cpu={} OK", target),
+            None => {
+                kprintln!("MadRust: boot FAILED: cannot wake a thread on another processor");
+                uart.flush();
+                debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+            }
+        }
+    }
+    let mut demo_ids = [usize::MAX; DEMO_THREADS];
+    for (slot, name) in ["T1", "T2", "T3"].into_iter().enumerate() {
+        match sched::spawn(name, demo_thread) {
+            Ok(id) => demo_ids[slot] = id,
+            Err(error) => {
+                kprintln!(
+                    "MadRust: boot FAILED: cannot create thread {}: {:?}",
+                    name,
+                    error
+                );
+                uart.flush();
+                debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+            }
         }
     }
 
     cpu::enable_interrupts();
 
     // The first timer tick preempts this thread and the three demo threads run
-    // round robin. The loop yields and halts between checks: a thread that
-    // blocks or a scheduler bug must not hang the boot forever.
+    // round robin. Count the demo threads themselves: the scheduler counter
+    // also includes the probe thread that ran on another processor.
     let deadline = pit::ticks() + SCHED_DEADLINE_TICKS;
-    while sched::finished_threads() < DEMO_THREADS {
+    while DEMO_DONE.load(Ordering::Acquire) < DEMO_THREADS {
         if pit::ticks() >= deadline {
             kprintln!(
-                "MadRust: boot FAILED: scheduler stopped with {} of {} threads finished",
-                sched::finished_threads(),
+                "MadRust: boot FAILED: scheduler stopped with {} of {} demo threads finished",
+                DEMO_DONE.load(Ordering::Acquire),
                 DEMO_THREADS
             );
+            for id in demo_ids {
+                kprintln!(
+                    "MadRust: lost demo thread {} state {:?} queue {:?}",
+                    id,
+                    thread::state(id),
+                    sched::queue_of(id)
+                );
+            }
             uart.flush();
             debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
         }
@@ -337,8 +384,27 @@ unsafe extern "C" fn _start(
         cpu::hlt();
     }
 
-    if thread::reclaim_finished() != DEMO_THREADS {
-        kprintln!("MadRust: boot FAILED: scheduler lost a thread");
+    let reclaimed = thread::reclaim_finished();
+    let mut lost = 0;
+    for id in demo_ids {
+        if let Some(state) = thread::state(id) {
+            lost += 1;
+            kprintln!(
+                "MadRust: lost demo thread {} state {:?} cpu {:?} on_cpu {:?} queue {:?}",
+                id,
+                state,
+                thread::cpu(id),
+                thread::on_cpu(id),
+                sched::queue_of(id)
+            );
+        }
+    }
+    if lost != 0 {
+        kprintln!(
+            "MadRust: boot FAILED: scheduler lost {} demo threads ({} slots reclaimed)",
+            lost,
+            reclaimed
+        );
         uart.flush();
         debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
     }
@@ -374,6 +440,8 @@ unsafe extern "C" fn _start(
     }
 
     kprintln!("TICKS 100");
+    smp::report_heartbeats();
+    kprintln!("SMP OK cpus={}", smp::online_count());
     kprintln!("MadRust: boot OK");
 
     uart.flush();
@@ -391,6 +459,7 @@ fn demo_thread(name: &'static str) {
         kprintln!("{name} {iteration}");
         cpu::hlt();
     }
+    DEMO_DONE.fetch_add(1, Ordering::Release);
 }
 
 #[panic_handler]

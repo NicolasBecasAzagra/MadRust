@@ -15,6 +15,7 @@ use core::ptr::{addr_of, NonNull};
 use madrust_sched::{Context, Priority, ThreadState, MAX_THREADS};
 
 use crate::memory;
+use crate::sync::IrqSpinLock;
 
 /// Size of every kernel thread stack.
 pub const STACK_SIZE: usize = 16 * 1024;
@@ -152,6 +153,15 @@ pub struct Thread {
     /// that blocks inside a system call must keep its own value in the TCB and
     /// have the scheduler put it back before the stub returns.
     user_stack: u64,
+    /// Processor this thread belongs to for a wakeup.
+    ///
+    /// Set when the thread is queued or when it blocks, so a wakeup lands on
+    /// the processor that knows the thread instead of the caller.
+    cpu: usize,
+    /// Processor that is currently running this thread, or `None`.
+    ///
+    /// A finished thread is only reclaimed once no processor runs it any more.
+    on_cpu: Option<usize>,
 }
 
 const EMPTY: Option<Thread> = None;
@@ -164,6 +174,13 @@ struct Table(UnsafeCell<[Option<Thread>; MAX_THREADS]>);
 unsafe impl Sync for Table {}
 
 static TABLE: Table = Table(UnsafeCell::new([EMPTY; MAX_THREADS]));
+
+/// Serialises the thread table between processors.
+///
+/// Every accessor below holds this lock for one short operation. No borrow and
+/// no guard survives a context switch, so the lock can never be held by a
+/// thread that is not running.
+static TABLE_LOCK: IrqSpinLock = IrqSpinLock::new("thread table");
 
 /// Short-lived exclusive view of the table.
 ///
@@ -182,8 +199,9 @@ unsafe fn table() -> &'static mut [Option<Thread>; MAX_THREADS] {
 /// The boot thread owns no heap stack: it keeps running on the stack the
 /// trampoline built, and its context is filled in on the first switch away.
 pub(crate) fn install_boot() {
-    // SAFETY: called once during boot with interrupts disabled, before any
-    // other thread exists.
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access and the guard is
+    // dropped before any switch.
     let slots = unsafe { table() };
     slots[0] = Some(Thread {
         id: 0,
@@ -198,6 +216,38 @@ pub(crate) fn install_boot() {
         fs_base: 0,
         clear_child_tid: 0,
         user_stack: 0,
+        cpu: 0,
+        on_cpu: Some(0),
+    });
+}
+
+/// Install the idle thread of an application processor.
+///
+/// The stack is owned by the caller for the life of the boot; the slot owns no
+/// heap block, because an idle thread never retires.
+pub(crate) fn install_idle(id: usize, name: &'static str, stack_top: u64) {
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access and the guard is
+    // dropped before any switch.
+    let slots = unsafe { table() };
+    let Some(slot) = slots.get_mut(id) else {
+        return;
+    };
+    *slot = Some(Thread {
+        id,
+        name,
+        state: ThreadState::Running,
+        priority: Priority::DEFAULT,
+        context: Context::ZERO,
+        entry: None,
+        user: None,
+        stack: None,
+        kernel_stack_top: stack_top,
+        fs_base: 0,
+        clear_child_tid: 0,
+        user_stack: 0,
+        cpu: id,
+        on_cpu: None,
     });
 }
 
@@ -242,14 +292,15 @@ fn spawn_thread(
     kernel_gs_base: u64,
     priority: Priority,
 ) -> Result<usize, SpawnError> {
-    let id = {
-        // SAFETY: the scheduler disables interrupts around every spawn.
-        let slots = unsafe { table() };
-        slots
-            .iter()
-            .position(Option::is_none)
-            .ok_or(SpawnError::NoFreeSlot)?
-    };
+    // The slot stays reserved for the whole call: the lock is held while the
+    // stack comes from the heap, so two processors cannot pick the same slot.
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access.
+    let slots = unsafe { table() };
+    let id = slots
+        .iter()
+        .position(Option::is_none)
+        .ok_or(SpawnError::NoFreeSlot)?;
 
     let stack = Stack::allocate()?;
     let top = stack.top();
@@ -278,9 +329,8 @@ fn spawn_thread(
         kernel_gs_base,
     };
 
-    // SAFETY: the slot was free above and interrupts are disabled, so no other
-    // thread can install or read the entry concurrently.
-    let slots = unsafe { table() };
+    // SAFETY: the slot was free above and the lock excludes every other table
+    // access, so no other processor can install or read the entry.
     slots[id] = Some(Thread {
         id,
         name,
@@ -294,12 +344,15 @@ fn spawn_thread(
         fs_base,
         clear_child_tid,
         user_stack: 0,
+        cpu: 0,
+        on_cpu: None,
     });
     Ok(id)
 }
 
 /// Current state of one thread.
 pub(crate) fn state(id: usize) -> Option<ThreadState> {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the scheduler calls this with interrupts disabled and does not
     // hold the borrow afterwards.
     let slots = unsafe { table() };
@@ -308,14 +361,32 @@ pub(crate) fn state(id: usize) -> Option<ThreadState> {
 
 /// Priority of one thread.
 pub(crate) fn priority(id: usize) -> Option<Priority> {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the scheduler calls this with interrupts disabled and does not
     // hold the borrow afterwards.
     let slots = unsafe { table() };
     slots.get(id)?.as_ref().map(|thread| thread.priority)
 }
 
+/// Claim a blocked thread for a wakeup.
+///
+/// The check and the transition happen under the same table lock, so two
+/// processors that wake the same futex cannot both decide to queue it.
+pub(crate) fn claim_runnable(id: usize) -> Option<Priority> {
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access.
+    let slots = unsafe { table() };
+    let thread = slots.get_mut(id)?.as_mut()?;
+    if thread.state != ThreadState::Blocked {
+        return None;
+    }
+    thread.state = ThreadState::Runnable;
+    Some(thread.priority)
+}
+
 /// Write the state of one thread.
 pub(crate) fn set_state(id: usize, state: ThreadState) {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the scheduler calls this with interrupts disabled and does not
     // hold the borrow afterwards.
     let slots = unsafe { table() };
@@ -326,6 +397,7 @@ pub(crate) fn set_state(id: usize, state: ThreadState) {
 
 /// Raw pointer to the saved context of one thread.
 pub(crate) fn context_mut_ptr(id: usize) -> Option<*mut Context> {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the pointer is to static storage and remains valid while the
     // thread exists; no borrow is held on return.
     let slots = unsafe { table() };
@@ -335,19 +407,9 @@ pub(crate) fn context_mut_ptr(id: usize) -> Option<*mut Context> {
         .map(|thread| addr_of!(thread.context) as *mut Context)
 }
 
-/// Raw pointer to the saved context of one thread.
-pub(crate) fn context_ptr(id: usize) -> Option<*const Context> {
-    // SAFETY: the pointer is to static storage and remains valid while the
-    // thread exists; no borrow is held on return.
-    let slots = unsafe { table() };
-    slots
-        .get(id)?
-        .as_ref()
-        .map(|thread| addr_of!(thread.context))
-}
-
 /// Identifier, start state and name of one thread.
 pub(crate) fn entry(id: usize) -> Option<StartEntry> {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: called from the new thread with interrupts disabled by the
     // switch, and the borrow ends before the entry function runs.
     let slots = unsafe { table() };
@@ -368,6 +430,7 @@ pub(crate) fn entry(id: usize) -> Option<StartEntry> {
 
 /// Address one past the last byte of the kernel stack of `id`.
 pub(crate) fn kernel_stack_top(id: usize) -> Option<u64> {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the scheduler calls this with interrupts disabled and does not
     // keep the borrow.
     let slots = unsafe { table() };
@@ -379,6 +442,7 @@ pub(crate) fn kernel_stack_top(id: usize) -> Option<u64> {
 
 /// Thread local storage base of `id`.
 pub(crate) fn fs_base(id: usize) -> Option<u64> {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the scheduler calls this with interrupts disabled and does not
     // keep the borrow.
     let slots = unsafe { table() };
@@ -387,6 +451,7 @@ pub(crate) fn fs_base(id: usize) -> Option<u64> {
 
 /// Set the thread local storage base of `id`.
 pub(crate) fn set_fs_base(id: usize, base: u64) {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the caller runs with interrupts disabled and does not keep the
     // borrow.
     let slots = unsafe { table() };
@@ -397,6 +462,7 @@ pub(crate) fn set_fs_base(id: usize, base: u64) {
 
 /// User address the kernel must clear when `id` exits.
 pub(crate) fn clear_child_tid(id: usize) -> u64 {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the caller runs with interrupts disabled and does not keep the
     // borrow.
     let slots = unsafe { table() };
@@ -408,6 +474,7 @@ pub(crate) fn clear_child_tid(id: usize) -> u64 {
 
 /// User stack pointer saved by the system call stub for `id`.
 pub(crate) fn user_stack(id: usize) -> u64 {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the caller runs with interrupts disabled and does not keep the
     // borrow.
     let slots = unsafe { table() };
@@ -419,6 +486,7 @@ pub(crate) fn user_stack(id: usize) -> u64 {
 
 /// Replace the saved user stack pointer of `id`.
 pub(crate) fn set_user_stack(id: usize, stack: u64) {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: the caller runs with interrupts disabled and does not keep the
     // borrow.
     let slots = unsafe { table() };
@@ -429,6 +497,7 @@ pub(crate) fn set_user_stack(id: usize, stack: u64) {
 
 /// Set the kernel stack top of the boot thread.
 pub(crate) fn set_kernel_stack_top(id: usize, top: u64) {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: called once during scheduler init with interrupts disabled.
     let slots = unsafe { table() };
     if let Some(thread) = slots.get_mut(id).and_then(Option::as_mut) {
@@ -438,6 +507,7 @@ pub(crate) fn set_kernel_stack_top(id: usize, top: u64) {
 
 /// Remove a thread that never entered the run queue.
 pub(crate) fn remove(id: usize) -> bool {
+    let _guard = TABLE_LOCK.lock();
     // SAFETY: spawn holds the interrupt critical section and the thread was
     // not published when this is used, so nobody else can observe the slot.
     let slots = unsafe { table() };
@@ -451,20 +521,57 @@ pub(crate) fn remove(id: usize) -> bool {
     }
 }
 
+/// Processor this thread belongs to for a wakeup.
+pub(crate) fn cpu(id: usize) -> Option<usize> {
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access.
+    let slots = unsafe { table() };
+    slots.get(id)?.as_ref().map(|thread| thread.cpu)
+}
+
+/// Move the wakeup target of `id` to `processor`.
+pub(crate) fn set_cpu(id: usize, processor: usize) {
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access.
+    let slots = unsafe { table() };
+    if let Some(thread) = slots.get_mut(id).and_then(Option::as_mut) {
+        thread.cpu = processor;
+    }
+}
+
+/// Processor that is running `id`, or `None`.
+pub(crate) fn on_cpu(id: usize) -> Option<usize> {
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access.
+    let slots = unsafe { table() };
+    slots.get(id)?.as_ref()?.on_cpu
+}
+
+/// Record that `processor` is running `id`, or that it stopped running it.
+pub(crate) fn set_on_cpu(id: usize, processor: Option<usize>) {
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access.
+    let slots = unsafe { table() };
+    if let Some(thread) = slots.get_mut(id).and_then(Option::as_mut) {
+        thread.on_cpu = processor;
+    }
+}
+
 /// Free the stacks of every finished thread and forget the slots.
 ///
-/// The boot thread calls this once every example thread has retired, so no
-/// thread can be running on a stack that is handed back to the heap.
+/// A slot is only reclaimed when no processor is running it, so a thread that
+/// has just marked itself finished cannot lose the stack it is still standing
+/// on. The caller runs on a different thread, so the boot path can wait for the
+/// counter to settle.
 pub(crate) fn reclaim_finished() -> usize {
-    let flags = crate::sync::interrupt_save_disable();
-    // SAFETY: interrupts are disabled for the whole mutation, so the timer
-    // handler cannot schedule a thread while the table is borrowed.
+    let _guard = TABLE_LOCK.lock();
+    // SAFETY: the lock excludes every other table access for the whole scan.
     let slots = unsafe { table() };
     let mut reclaimed = 0;
     for slot in slots.iter_mut() {
         if !slot
             .as_ref()
-            .is_some_and(|thread| thread.state == ThreadState::Finished)
+            .is_some_and(|thread| thread.state == ThreadState::Finished && thread.on_cpu.is_none())
         {
             continue;
         }
@@ -473,7 +580,6 @@ pub(crate) fn reclaim_finished() -> usize {
             reclaimed += 1;
         }
     }
-    crate::sync::interrupt_restore(flags);
     reclaimed
 }
 

@@ -11,7 +11,8 @@
  * user flags in R11 and interrupts masked by IA32_SFMASK. The stub:
  *   1. swaps to the kernel GS base and saves the user RSP in the per-CPU slot,
  *   2. loads the kernel stack pointer from TSS.rsp0 (the same stack the CPU
- *      installs for an interrupt from ring 3) through MADRUST_TSS_ADDRESS,
+ *      installs for an interrupt from ring 3) through GS:16, which holds the
+ *      address of the TSS of this processor,
  *   3. saves every general purpose register plus the user RIP and flags,
  *   4. calls the Rust dispatcher with the Linux argument order,
  *   5. restores the registers, reloads the user RSP and returns with sysretq.
@@ -115,7 +116,7 @@ madrust_syscall_entry:
     movq %rsp, %gs:0
 
     /* RSP := TSS.rsp0, the ring 0 stack for a transition from ring 3. */
-    movq MADRUST_TSS_ADDRESS(%rip), %rsp
+    movq %gs:16, %rsp
     movq 4(%rsp), %rsp
 
     cld

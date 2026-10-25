@@ -57,9 +57,6 @@ const MSR_LSTAR: u32 = 0xc000_0082;
 const MSR_SFMASK: u32 = 0xc000_0084;
 /// Model specific register with the user thread local storage base.
 const MSR_FS_BASE: u32 = 0xc000_0100;
-/// Model specific register with the kernel GS base `swapgs` selects.
-const MSR_KERNEL_GS_BASE: u32 = 0xc000_0102;
-
 /// `EFER.SCE`: enable the `SYSCALL` and `SYSRET` instructions.
 const EFER_SYSCALL_ENABLE: u64 = 1 << 0;
 /// `RFLAGS.IF`: mask interrupts while a system call runs.
@@ -256,34 +253,6 @@ const TIME_SIZE: usize = 16;
 /// Number of bytes `getrandom` writes per pseudo random draw.
 const RANDOM_CHUNK: usize = 16;
 
-/// Per-CPU data the system call stub reaches through `swapgs`.
-#[repr(C, align(16))]
-struct PerCpu {
-    /// User stack pointer saved by `madrust_syscall_entry`.
-    ///
-    /// Written and read by `syscall_entry.s` at `GS:0`; the kernel also saves
-    /// it into the thread control block and puts it back on a switch, because
-    /// the slot itself belongs to the CPU.
-    user_stack: u64,
-    /// Pointer to the register frame `madrust_syscall_entry` saved.
-    ///
-    /// Written by the stub at `GS:8` and read by `clone`, which needs the
-    /// parent's callee saved registers and its `syscall` return address.
-    user_frame: u64,
-}
-
-#[repr(transparent)]
-struct PerCpuCell(core::cell::UnsafeCell<PerCpu>);
-
-// SAFETY: the stub writes `user_stack` from ring 0 and the kernel only reads it
-// from the same path, always with interrupts masked during a system call.
-unsafe impl Sync for PerCpuCell {}
-
-static PER_CPU: PerCpuCell = PerCpuCell(core::cell::UnsafeCell::new(PerCpu {
-    user_stack: 0,
-    user_frame: 0,
-}));
-
 /// Counter that makes the random bytes differ between boots.
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x9e37_79b9_7f4a_7c15);
 
@@ -298,7 +267,6 @@ extern "C" {
 
 /// Enable `SYSCALL`/`SYSRET` and point the entry at the assembly stub.
 pub fn init() {
-    let per_cpu = core::ptr::addr_of!(PER_CPU) as u64;
     let entry = madrust_syscall_entry as *const () as u64;
 
     // STAR[47:32] is the kernel code selector and STAR[63:48] the base the
@@ -309,15 +277,14 @@ pub fn init() {
 
     let efer = cpu::read_msr(MSR_EFER);
     // SAFETY: EFER exists on every x86_64 CPU that has SYSCALL, and only the
-    // system call enable bit is added. STAR, LSTAR, SFMASK and KERNEL_GS_BASE
-    // exist on the same CPUs and receive values built from installed
-    // descriptors, the stub address and the per-CPU page.
+    // system call enable bit is added. STAR, LSTAR and SFMASK exist on the same
+    // CPUs and receive values built from installed descriptors and the stub
+    // address.
     unsafe {
         cpu::write_msr(MSR_EFER, efer | EFER_SYSCALL_ENABLE);
         cpu::write_msr(MSR_STAR, star);
         cpu::write_msr(MSR_LSTAR, entry);
         cpu::write_msr(MSR_SFMASK, RFLAGS_INTERRUPT_FLAG);
-        cpu::write_msr(MSR_KERNEL_GS_BASE, per_cpu);
     }
 
     // The boot thread starts without thread local storage; `arch_prctl` moves
@@ -327,25 +294,25 @@ pub fn init() {
 
 /// Address of the per-CPU block, for a new user thread's initial GS state.
 pub(crate) fn per_cpu_address() -> u64 {
-    core::ptr::addr_of!(PER_CPU) as u64
+    crate::percpu::this().base()
 }
 
 /// User stack pointer the stub stored at `GS:0` on entry.
 pub(crate) fn user_stack() -> u64 {
     // SAFETY: the stub is the only writer, it runs on this CPU with interrupts
     // masked, and the caller holds the same exclusion.
-    unsafe { (*PER_CPU.0.get()).user_stack }
+    unsafe { *crate::percpu::this().user_stack.get() }
 }
 
 /// Put a saved user stack pointer back into the `GS:0` slot.
 ///
 /// The scheduler calls this before switching to a thread that was inside a
-/// system call, because the slot itself is shared by every thread on the CPU.
+/// system call, because the slot belongs to the processor, not to the thread.
 pub(crate) fn install_user_stack(stack: u64) {
     // SAFETY: the caller runs with interrupts disabled, so no other thread can
     // enter a system call and race this write on the same CPU.
     unsafe {
-        (*PER_CPU.0.get()).user_stack = stack;
+        *crate::percpu::this().user_stack.get() = stack;
     }
 }
 
@@ -991,7 +958,10 @@ fn sys_clone(flags: u64, child_stack: u64, _parent_tid: u64, child_tid: u64, tls
 
 /// Thread identifier of the calling thread, one based like Linux.
 fn current_tid() -> i64 {
-    i64::try_from(crate::sched::current_token()).unwrap_or(i64::MAX)
+    match crate::sched::current_id() {
+        Some(id) => i64::try_from(id + 1).unwrap_or(i64::MAX),
+        None => 0,
+    }
 }
 
 /// Pointer to the register frame the system call stub saved.
@@ -1000,7 +970,7 @@ fn current_frame() -> *const u64 {
     // pointer before the dispatcher runs, interrupts are masked, and the frame
     // lives on the current kernel stack. No other path mutates the slot during
     // the call.
-    unsafe { (*PER_CPU.0.get()).user_frame as *const u64 }
+    unsafe { *crate::percpu::this().user_frame.get() as *const u64 }
 }
 
 /// `exit_group` and `exit`: leave the program and report the status.

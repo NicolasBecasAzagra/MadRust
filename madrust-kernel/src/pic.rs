@@ -64,6 +64,15 @@ pub fn init() {
     port::outb(MASTER_DATA, MASK_TIMER_ONLY);
 }
 
+/// Mask every line.
+///
+/// Used when the input output APIC takes over the devices: the 8259 must not
+/// deliver a second copy of the same timer interrupt.
+pub fn mask_all() {
+    port::outb(MASTER_DATA, MASK_ALL);
+    port::outb(SLAVE_DATA, MASK_ALL);
+}
+
 /// Acknowledge an interrupt.
 ///
 /// Any interrupt from the slave range is acknowledged on both controllers.

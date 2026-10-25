@@ -41,6 +41,8 @@ pub const SELF_TEST_BLOCKS: usize = 10_000;
 /// End of the reserved low memory: real-mode structures, firmware data and the
 /// PVH boot structures live below 1 MiB.
 const LOW_MEMORY_END: u64 = 0x10_0000;
+/// Physical load address of the kernel image, from the linker script.
+const KERNEL_PHYSICAL_BASE: u64 = 0x10_0000;
 
 /// Modules whose bytes are kept out of the frame allocator.
 ///
@@ -56,6 +58,8 @@ extern "C" {
     static __kernel_start__: u8;
     static __kernel_physical_start__: u8;
     static __kernel_physical_end__: u8;
+    static mm_pdpt_direct: u8;
+    static mm_pd_direct: u8;
 }
 
 /// The heap bookkeeping. It is a static so that the allocator never stores its
@@ -463,6 +467,34 @@ impl KernelLayout {
 /// Virtual address the kernel is linked at, as the linker script defines it.
 pub fn kernel_virtual_base() -> u64 {
     core::ptr::addr_of!(__kernel_start__) as u64
+}
+
+/// Map one 2 MiB window of physical memory into the direct map.
+///
+/// The boot trampoline maps the RAM the memory map describes, not the holes in
+/// the physical address space. The local APIC and the input output APIC live in
+/// such a hole, so their windows are installed here with the same large page
+/// the direct map uses for RAM.
+pub fn map_mmio(physical: u64) -> bool {
+    if physical >= DIRECT_MAP_SPAN {
+        return false;
+    }
+    let directory = ((physical >> 30) & 0x1ff) as usize;
+    let entry = ((physical >> 21) & 0x1ff) as usize;
+    let window = physical & !0x1f_ffff;
+    let pdpt = core::ptr::addr_of!(mm_pdpt_direct) as *mut u64;
+    let directories = core::ptr::addr_of!(mm_pd_direct) as *mut u64;
+    let page = directories.wrapping_add(directory * 512);
+    let page_physical = page as u64 - kernel_virtual_base() + KERNEL_PHYSICAL_BASE;
+    // SAFETY: `mm_pdpt_direct` and `mm_pd_direct` are the direct map tables the
+    // trampoline reserves in `.bss`; the memory manager reserves the image. The
+    // window is below the direct map span and aligned to the large page size.
+    unsafe {
+        pdpt.add(directory).write(page_physical | 0x3);
+        page.add(entry).write(window | 0x83);
+        madrust_arch::cpu::flush_tlb();
+    }
+    true
 }
 
 /// Check that one physical address reads the same through the direct map as it

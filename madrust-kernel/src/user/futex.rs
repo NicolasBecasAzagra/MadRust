@@ -20,6 +20,7 @@
 //! can expire.
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::Ordering;
 
 use madrust_arch::cpu;
 
@@ -83,11 +84,36 @@ unsafe fn table() -> &'static mut [Waiter; MAX_WAITERS] {
 /// `timeout` is an optional duration in nanoseconds, already converted from
 /// the `struct timespec` the program passed.
 pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i64 {
+    wait_inner(address, value, expected, timeout, None)
+}
+
+/// [`wait`] that records the time stamp of the successful wake.
+///
+/// The scheduler self test needs the time at which the waiter noticed the
+/// wakeup, before a pending timer interrupt can run, so the measured tail is
+/// the wakeup and not the interrupt that happened to arrive after it.
+pub fn wait_stamped(
+    address: u64,
+    value: u32,
+    expected: u32,
+    timeout: Option<u64>,
+    stamp: &core::sync::atomic::AtomicU64,
+) -> i64 {
+    wait_inner(address, value, expected, timeout, Some(stamp))
+}
+
+fn wait_inner(
+    address: u64,
+    value: u32,
+    expected: u32,
+    timeout: Option<u64>,
+    stamp: Option<&core::sync::atomic::AtomicU64>,
+) -> i64 {
     if value != expected {
         return EAGAIN;
     }
 
-    let flags = sync::interrupt_save_disable();
+    let caller_flags = sync::interrupt_save_disable();
 
     let thread = sched::current_token();
     let deadline = match timeout {
@@ -114,7 +140,7 @@ pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i6
         }
     };
     if slot.is_none() {
-        sync::interrupt_restore(flags);
+        sync::interrupt_restore(caller_flags);
         return EAGAIN;
     }
 
@@ -124,16 +150,14 @@ pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i6
     // queued, and a waker that blocks right after its `FUTEX_WAKE` should hand
     // the CPU to the waiter without a full time slice of delay.
     sched::yield_now();
-    sync::interrupt_restore(flags);
 
-    // A system call arrives with interrupts masked. The wait needs the timer,
-    // both to expire the timeout and to give the `hlt` below an exit, so the
-    // flag is set for the whole loop. The `sysretq` that ends the call restores
-    // the user's own flags.
-    cpu::enable_interrupts();
-
+    // `yield_now` returns with interrupts disabled, so the first check after a
+    // wakeup runs before a pending timer interrupt. The stamp the self test
+    // asks for is taken here, then the caller's own flag state is restored.
     loop {
-        let flags = sync::interrupt_save_disable();
+        // Interrupts stay disabled from the block path through this check, so a
+        // pending timer cannot postpone the wakeup stamp or the return.
+        let _flags = sync::interrupt_save_disable();
         // SAFETY: interrupts are disabled for the whole check.
         let waiters = unsafe { table() };
         let index = waiters
@@ -141,7 +165,10 @@ pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i6
             .position(|waiter| waiter.active && waiter.thread == thread);
         let Some(index) = index else {
             // `FUTEX_WAKE` removed the entry: the wakeup succeeded.
-            sync::interrupt_restore(flags);
+            if let Some(slot) = stamp {
+                slot.store(cpu::read_tsc(), Ordering::Release);
+            }
+            sync::interrupt_restore(caller_flags);
             return 0;
         };
         let expired = waiters[index].expired;
@@ -151,13 +178,16 @@ pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i6
         // never calls `FUTEX_WAKE` make progress.
         let changed = read_word(address) != expected;
         if expired || changed {
+            if let Some(slot) = stamp {
+                slot.store(cpu::read_tsc(), Ordering::Release);
+            }
             waiters[index] = EMPTY;
-            sync::interrupt_restore(flags);
+            sync::interrupt_restore(caller_flags);
             return if expired { ETIMEDOUT } else { 0 };
         }
-        sync::interrupt_restore(flags);
 
         // Sleep until the next timer tick or a wakeup; the loop rechecks.
+        cpu::enable_interrupts();
         cpu::hlt();
     }
 }
