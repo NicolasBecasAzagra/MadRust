@@ -150,7 +150,10 @@ runtime is checked against it.
 **The measurement that does not depend on the host is the number of faults.**
 Streaming the weights used to take 65536 faults of 4 KiB. With large pages
 for file mappings it takes 791, of which 127 are large pages: a factor of
-eighty three, and the same on every run.
+eighty three, and the same on every run. The runtime now also pins the
+weights, and the kernel confirms it: 65688 pages of 269058048 bytes are
+resident, pinned in about 96 milliseconds, and that cost is inside the time to
+the first token.
 
 **The timings do not support a ratio.** Under emulation the same build
 measures between 9.8 and 22.2 seconds to the first token depending on where
@@ -165,12 +168,30 @@ batch 2, after            22.17 s      22.83 s             21.92 s
 joint batch               10.70 s         -                    -
 ```
 
-The spread between two runs of the same build is larger than the difference
-between the kernels: in the first batch the reference kernel without
-mitigations measured 9.9 seconds, in the second 21.9. Publishing a ratio
-from that would be publishing noise, so none is published. What the fault
-count says is exact, and a host with hardware acceleration is what turns it
-into seconds.
+In the first batch the reference kernel without mitigations measured 9.9
+seconds and in the second 21.9, so the spread between two runs of the same
+build under emulation is larger than the difference between the kernels, and
+no ratio can be published from those batches.
+
+**After the arithmetic and the residency were added, the gap is larger than
+the variance.** The time to the first token on MadRust fell to 6.8 seconds
+and the rate rose to 0.80 tokens per second, against 21.9 and 22.8 seconds
+for the reference kernel in the batches above. A gap of more than three times
+survives a variance of two, so this one can be stated. What it measures is a
+kernel that faults the weights in large pages, keeps them resident, and runs
+a forward pass written in Rust without a single dependency outside the
+standard library.
+
+What still cannot be said:
+
+- **The absolute numbers describe an emulator.** They say how the two kernels
+  compare under the same translation overhead, not how fast either is on a
+  processor.
+- **The runtime is deliberately naive.** It is a matrix multiplication in
+  plain Rust, without a library of vector kernels, so the absolute rate is
+  not what a tuned implementation reaches. The comparison that isolates the
+  arithmetic is against the reference implementation on the same host, and
+  that number is measured separately.
 
 ## Losses
 
