@@ -186,7 +186,7 @@ echo "wrote $OUT"
 
 # A result with a missing number is worse than no result: a reader would take
 # it for a measurement. The script says which one is missing and fails.
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" <<'PYCHECK'
 import json
 import sys
 
@@ -204,4 +204,4 @@ if missing:
     print(f"native_comparison: incomplete result, missing: {', '.join(missing)}", file=sys.stderr)
     print("native_comparison: the log of the run has the reason", file=sys.stderr)
     sys.exit(1)
-PY
+PYCHECK
