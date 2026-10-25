@@ -1,0 +1,25 @@
+{
+  "source": "transcribed from the run on the Linux host of the author, see bench/native_comparison.sh",
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "revision": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+  "tokens": 32,
+  "madrust": {
+    "tokens_per_second": 23.577,
+    "time_to_first_token_ms": 285.593,
+    "pinned_bytes": 269058048,
+    "pin_ms": 71.977,
+    "tokens": [260, 3575, 282, 260, 1798, 30, 198, 198, 504, 3575, 282, 4649, 314, 260, 3575, 282, 260, 1798, 30, 198, 198, 504, 3575, 282, 4649, 314, 260, 3575, 282, 260, 1798, 30]
+  },
+  "pytorch": {
+    "tokens_per_second": 10.907146033442517,
+    "seconds": 2.933856382034719,
+    "tokens": [260, 3575, 282, 260, 1798, 30, 198, 198, 504, 3575, 282, 4649, 314, 260, 3575, 282, 260, 1798, 30, 198, 198, 504, 3575, 282, 4649, 314, 260, 3575, 282, 260, 1798, 30]
+  },
+  "notes": [
+    "Both programs run natively on the same host, with the same weights, and produce the same tokens, so the comparison is of the arithmetic and not of the model.",
+    "The reference is PyTorch in eager mode and float32. Its dispatcher and autograd are part of what it costs, and a compiled or quantized build would be a different comparison.",
+    "The number of tokens per second varies by around thirty per cent between runs on this host, so the figures are a sample and not a precise measurement.",
+    "The runtime pins the weights, and the pin costs about seventy milliseconds of the time to the first token.",
+    "The llama.cpp measurement is missing because the conversion of the checkpoint was not available; it is optional because a converted checkpoint is a different precision."
+  ]
+}

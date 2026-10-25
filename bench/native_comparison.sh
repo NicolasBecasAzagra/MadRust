@@ -205,10 +205,14 @@ import sys
 with open(sys.argv[1]) as handle:
     data = json.load(handle)
 
+# The llama.cpp measurement is optional: it needs a converted checkpoint, which
+# is a different precision. The two that are not optional are the runtime and
+# the reference.
+optional = {"llamacpp"}
 missing = [
     f"{name}.{field}"
     for name, values in data.items()
-    if isinstance(values, dict)
+    if isinstance(values, dict) and name not in optional
     for field, value in values.items()
     if value is None
 ]
