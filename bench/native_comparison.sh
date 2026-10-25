@@ -104,7 +104,14 @@ RUNTIME_LOG="$WORK/runtime.log"
 # guarantee, which the log says.
 ulimit -l unlimited 2>/dev/null || true
 MADRUST_INFER_ROOT="$MODEL_DIR" "$RUNTIME" "$TOKENS" > "$RUNTIME_LOG" 2>&1 || true
-grep -E '^INFER (tok_per_s|ttft_ms|tokens|pinned)' "$RUNTIME_LOG" || true
+if grep -qE '^INFER (tok_per_s|ttft_ms)' "$RUNTIME_LOG"; then
+    grep -E '^INFER (tok_per_s|ttft_ms|tokens|pinned)' "$RUNTIME_LOG"
+else
+    # The runtime said nothing: its own log has the reason and it is more
+    # useful than the absence of a number.
+    echo "native_comparison: the runtime produced no measurement, its log follows" >&2
+    cat "$RUNTIME_LOG" >&2 || true
+fi
 
 echo "== the reference in PyTorch, natively =="
 TORCH_LOG="$WORK/torch.log"
