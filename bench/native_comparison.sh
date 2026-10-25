@@ -67,6 +67,16 @@ if ! "$PYTHON" -c "import torch, transformers" >/dev/null 2>&1; then
 fi
 echo "native_comparison: using $PYTHON"
 
+# The tokenizer needs the vocabulary and the merges together, and the GGUF
+# converter needs them in the model directory. Say so before anything is
+# measured, because the failure otherwise appears as a null in the results.
+if [ ! -f "$MODEL_DIR/merges.txt" ]; then
+    echo "native_comparison: $MODEL_DIR/merges.txt is missing" >&2
+    echo "  the tokenizer needs it next to vocab.json, and so does the GGUF conversion:" >&2
+    echo "  curl -L --fail -o '$MODEL_DIR/merges.txt' \" >&2
+    echo "    'https://huggingface.co/HuggingFaceTB/SmolLM2-135M/resolve/93efa2f097d58c2a74874c7e644dbc9b0cee75a2/merges.txt'" >&2
+fi
+
 echo "== building llama.cpp =="
 if [ ! -d "$WORK/llama.cpp" ]; then
     git clone --depth=1 https://github.com/ggml-org/llama.cpp "$WORK/llama.cpp"
@@ -173,3 +183,25 @@ print(json.dumps(data, indent=2))
 PY
 
 echo "wrote $OUT"
+
+# A result with a missing number is worse than no result: a reader would take
+# it for a measurement. The script says which one is missing and fails.
+python3 - "$OUT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+
+missing = [
+    f"{name}.{field}"
+    for name, values in data.items()
+    if isinstance(values, dict)
+    for field, value in values.items()
+    if value is None
+]
+if missing:
+    print(f"native_comparison: incomplete result, missing: {', '.join(missing)}", file=sys.stderr)
+    print("native_comparison: the log of the run has the reason", file=sys.stderr)
+    sys.exit(1)
+PY

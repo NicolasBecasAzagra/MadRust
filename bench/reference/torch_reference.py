@@ -26,13 +26,25 @@ def main() -> int:
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--tokens", type=int, default=32)
+    parser.add_argument(
+        "--hub",
+        default="HuggingFaceTB/SmolLM2-135M",
+        help="where the tokenizer is taken from when the model directory is not enough",
+    )
     parser.add_argument("--out", default="")
     args = parser.parse_args()
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
+    # The tokenizer needs the vocabulary and the merges together. The model
+    # directory may not carry the merges, so the tokenizer is taken from the hub
+    # when the local directory is not enough, and the weights always come from
+    # the local directory.
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(args.hub)
     try:
         model = AutoModelForCausalLM.from_pretrained(args.model_dir, dtype=torch.float32)
     except TypeError:
