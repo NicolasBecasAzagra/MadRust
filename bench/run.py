@@ -151,6 +151,7 @@ def qemu_command(
     accel: str,
     append_extra: str = "",
     memory: str = "512M",
+    smp: str = "1",
 ) -> list[str]:
     kernel_args = "console=ttyS0"
     if append_extra:
@@ -165,6 +166,8 @@ def qemu_command(
         "1",
         "-m",
         memory,
+        "-smp",
+        smp,
         "-kernel",
         str(image),
         "-initrd",
@@ -222,9 +225,10 @@ def run_once(
     timeout: float,
     append_extra: str = "",
     memory: str = "512M",
+    smp: str = "1",
 ) -> tuple[list[str], str]:
     log = out_dir / f"{label}.log"
-    command = qemu_command(qemu, image, initramfs, log, accel, append_extra, memory)
+    command = qemu_command(qemu, image, initramfs, log, accel, append_extra, memory, smp)
     print(f"[rig] {label}: {' '.join(shlex.quote(part) for part in command)}", file=sys.stderr)
 
     with log.open("wb"):
@@ -484,6 +488,11 @@ def main() -> int:
         "--timeout", type=float, default=600.0, help="seconds per boot"
     )
     parser.add_argument(
+        "--smp",
+        default="1",
+        help="number of processors of the guest; both kernels get the same",
+    )
+    parser.add_argument(
         "--memory",
         default="512M",
         help="guest memory; the model needs at least 1024M",
@@ -574,6 +583,7 @@ def main() -> int:
             args.timeout,
             append_extra,
             args.memory,
+            args.smp,
         )
         metadata["commands"][label] = shlex.join(command)
         rows = parse_results(label, text, expected)
