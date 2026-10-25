@@ -38,24 +38,21 @@ make defconfig
 scripts/config --enable CONFIG_XEN=y
 scripts/config --enable CONFIG_XEN_PVH=y
 scripts/config --enable CONFIG_PVH=y
-# The configuration has to be resolved without questions: a new symbol in the
-# tree would otherwise stop the build waiting for an answer that never comes.
-make olddefconfig
-if ! grep -q "^CONFIG_PVH=y" .config; then
-    echo "prepare-mainline: WARNING: CONFIG_PVH is not set after the configuration" >&2
-    echo "prepare-mainline: the image will not boot under QEMU" >&2
-fi
 # The workload asks for large pages with madvise. A reference kernel without
 # transparent huge pages refuses the advice with EINVAL, and then the large
 # page regime cannot be compared at all.
 scripts/config --enable CONFIG_TRANSPARENT_HUGEPAGE
 scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_DEFAULT_ON
-# scripts/config only edits .config. The build then runs syncconfig, which
-# asks about every symbol that is new since the configuration was written,
-# and stops waiting for an answer that never comes. olddefconfig takes the
-# defaults for those new symbols without asking, so the build is not
-# interactive.
+
+# The configuration has to be resolved without questions: a new symbol in the
+# tree would otherwise stop the build waiting for an answer that never comes.
+# olddefconfig takes the defaults for those new symbols without asking, so the
+# build is not interactive.
 make olddefconfig
+if ! grep -q "^CONFIG_PVH=y" .config; then
+    echo "prepare-mainline: WARNING: CONFIG_PVH is not set after the configuration" >&2
+    echo "prepare-mainline: the image will not boot under QEMU" >&2
+fi
 make -j"$(nproc 2>/dev/null || echo 4)"
 
 cp vmlinux "$output/vmlinux"
