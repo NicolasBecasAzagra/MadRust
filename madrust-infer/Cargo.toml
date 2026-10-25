@@ -13,6 +13,11 @@ publish = false
 # with rust-lld and packs the static binary into the inference initramfs.
 [workspace]
 
+[features]
+# Build the microbenchmark with one allocation per shape instead of one per
+# decoder layer, so it fits a guest whose anonymous memory budget is small.
+small = []
+
 [lib]
 name = "madrust_infer"
 path = "src/lib.rs"
@@ -28,6 +33,12 @@ bench = false
 [[bin]]
 name = "madrust-infer-gen"
 path = "src/bin/gen.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "madrust-infer-matmul"
+path = "src/bin/matmul.rs"
 test = false
 bench = false
 

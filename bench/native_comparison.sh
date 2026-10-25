@@ -99,8 +99,12 @@ if [ ! -x "$RUNTIME" ]; then
     (cd "$REPO" && make infer)
 fi
 RUNTIME_LOG="$WORK/runtime.log"
+# The runtime pins the weights, so the limit of the process has to allow it.
+# Without the privilege the pin fails and the run continues without the
+# guarantee, which the log says.
+ulimit -l unlimited 2>/dev/null || true
 MADRUST_INFER_ROOT="$MODEL_DIR" "$RUNTIME" "$TOKENS" > "$RUNTIME_LOG" 2>&1 || true
-grep -E '^INFER (tok_per_s|ttft_ms|tokens)' "$RUNTIME_LOG" || true
+grep -E '^INFER (tok_per_s|ttft_ms|tokens|pinned)' "$RUNTIME_LOG" || true
 
 echo "== the reference in PyTorch, natively =="
 TORCH_LOG="$WORK/torch.log"

@@ -11,11 +11,23 @@
 //! `f32::from_bits((bits as u32) << 16)`. The conversion is exact: a `bfloat16`
 //! is the top half of an `f32`, so the shifted bits reproduce the original
 //! `f32` with the low sixteen bits zero and no rounding step.
+//!
+//! The matrix vector products go through [`crate::matvec`]. A tensor that lies
+//! inside the mapped prefix is handed to the blocked kernel as one contiguous
+//! `bfloat16` range; the last at most 4095 bytes of the file live in a small
+//! buffer instead of the mapping, so the few rows that reach into that tail
+//! still use the element accessor. No weight is copied. The conversion to
+//! `f32` happens in registers, which halves the weight traffic against a cached
+//! `f32` copy (269 MB against 538 MB for the reference model) at the cost of
+//! one shift and widening per weight, per token.
+
+use std::time::Instant;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::mapping::Mapping;
 use crate::math::{argmax, rms_norm, rope, silu, softmax};
+use crate::matvec;
 use crate::safetensors::{self, DType, TensorInfo};
 
 /// The dimensions the runtime read from the config and derived for the model.
@@ -112,6 +124,16 @@ impl ModelFile {
         self.mapping.huge_pages_requested()
     }
 
+    /// Ask the kernel to make the mapped weights resident and keep them there.
+    ///
+    /// Returns the number of pinned bytes on success. The final partial page
+    /// lives in a small buffer rather than the mapping, so it is not part of
+    /// this range; every mapped weight byte is.
+    pub fn pin(&self) -> core::result::Result<usize, i64> {
+        self.mapping.pin()?;
+        Ok(self.mapped_len())
+    }
+
     /// Borrow one tensor, validating its dtype, shape and byte range.
     fn tensor(&self, name: &str) -> Result<Tensor<'_>> {
         let info = self
@@ -186,6 +208,30 @@ impl<'a> Tensor<'a> {
             DType::F32 => f32::from_bits(self.mapping.u32_at(offset)),
             DType::Other => 0.0,
         }
+    }
+
+    /// The rows of a `bfloat16` matrix that are contiguous in the mapping.
+    ///
+    /// The returned bytes hold whole rows, so a caller can hand them to the
+    /// blocked kernel. `None` means the matrix is not `bfloat16` or starts
+    /// outside the mapping.
+    fn contiguous_bf16(&self) -> Option<(&[u8], usize)> {
+        if self.dtype() != DType::Bf16 || self.shape().len() != 2 {
+            return None;
+        }
+        let rows = self.shape()[0];
+        let columns = self.shape()[1];
+        let row_bytes = columns.checked_mul(2)?;
+        if row_bytes == 0 {
+            return None;
+        }
+        let available = self.mapping.bytes_from(self.file_offset);
+        let mapped_rows = (available.len() / row_bytes).min(rows);
+        if mapped_rows == 0 {
+            return None;
+        }
+        let length = mapped_rows.checked_mul(row_bytes)?;
+        Some((available.get(..length)?, mapped_rows))
     }
 
     /// Dot one row of a matrix with `vector`.
@@ -439,6 +485,8 @@ impl<'a> Model<'a> {
             up: vec![0.0f32; dims.ffn],
             scores: vec![0.0f32; capacity],
             logits: vec![0.0f32; dims.vocab],
+            matmul_macs: 0,
+            matmul_nanos: 0,
         })
     }
 }
@@ -466,9 +514,49 @@ pub struct Session<'a> {
     up: Vec<f32>,
     scores: Vec<f32>,
     logits: Vec<f32>,
+    matmul_macs: u64,
+    matmul_nanos: u128,
+}
+
+/// Time and count the matrix vector products of one forward pass.
+///
+/// The counters are plain fields because the runtime has one thread and one
+/// session. They measure only the multiply accumulates: the norms, the
+/// attention and the activation are outside the clock, so the reported rate can
+/// be compared with the isolated benchmark.
+struct MatmulClock {
+    macs: u64,
+    nanos: u128,
+}
+
+impl MatmulClock {
+    fn new() -> Self {
+        Self { macs: 0, nanos: 0 }
+    }
+
+    fn run<F>(&mut self, work: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<u64>,
+    {
+        let started = Instant::now();
+        let macs = work()?;
+        self.nanos = self.nanos.saturating_add(started.elapsed().as_nanos());
+        self.macs = self.macs.saturating_add(macs);
+        Ok(())
+    }
 }
 
 impl Session<'_> {
+    /// Multiply accumulates the forward passes performed.
+    pub fn matmul_macs(&self) -> u64 {
+        self.matmul_macs
+    }
+
+    /// Nanoseconds spent inside the matrix vector products.
+    pub fn matmul_nanos(&self) -> u128 {
+        self.matmul_nanos
+    }
+
     /// Run one token through the decoder and keep its logits.
     pub fn forward(&mut self, token: u32) -> Result<()> {
         let dims = self.model.dims;
@@ -488,13 +576,14 @@ impl Session<'_> {
         let cache_stride = self.capacity * kv_dim;
 
         self.model.embed.read_row(token as usize, &mut self.x)?;
+        let mut clock = MatmulClock::new();
 
         for (index, layer) in self.model.layers.iter().enumerate() {
             layer.input_norm.read_vector(&mut self.norm_weight)?;
             rms_norm(&self.x, &self.norm_weight, dims.eps, &mut self.norm)?;
-            project(&layer.q_proj, &self.norm, &mut self.q);
-            project(&layer.k_proj, &self.norm, &mut self.k);
-            project(&layer.v_proj, &self.norm, &mut self.v);
+            clock.run(|| project(&layer.q_proj, &self.norm, &mut self.q))?;
+            clock.run(|| project(&layer.k_proj, &self.norm, &mut self.k))?;
+            clock.run(|| project(&layer.v_proj, &self.norm, &mut self.v))?;
 
             for head in 0..dims.q_heads {
                 let start = head * dims.head_dim;
@@ -547,19 +636,19 @@ impl Session<'_> {
                 }
             }
 
-            project(&layer.o_proj, &self.attn, &mut self.projected);
+            clock.run(|| project(&layer.o_proj, &self.attn, &mut self.projected))?;
             for (slot, value) in self.x.iter_mut().zip(&self.projected) {
                 *slot += value;
             }
 
             layer.post_norm.read_vector(&mut self.norm_weight)?;
             rms_norm(&self.x, &self.norm_weight, dims.eps, &mut self.norm)?;
-            project(&layer.gate_proj, &self.norm, &mut self.gate);
-            project(&layer.up_proj, &self.norm, &mut self.up);
+            clock.run(|| project(&layer.gate_proj, &self.norm, &mut self.gate))?;
+            clock.run(|| project(&layer.up_proj, &self.norm, &mut self.up))?;
             for (gate, up) in self.gate.iter_mut().zip(&self.up) {
                 *gate = silu(*gate) * up;
             }
-            project(&layer.down_proj, &self.gate, &mut self.projected);
+            clock.run(|| project(&layer.down_proj, &self.gate, &mut self.projected))?;
             for (slot, value) in self.x.iter_mut().zip(&self.projected) {
                 *slot += value;
             }
@@ -567,7 +656,9 @@ impl Session<'_> {
 
         self.model.final_norm.read_vector(&mut self.norm_weight)?;
         rms_norm(&self.x, &self.norm_weight, dims.eps, &mut self.norm)?;
-        project(&self.model.output, &self.norm, &mut self.logits);
+        clock.run(|| project(&self.model.output, &self.norm, &mut self.logits))?;
+        self.matmul_macs = self.matmul_macs.saturating_add(clock.macs);
+        self.matmul_nanos = self.matmul_nanos.saturating_add(clock.nanos);
         self.position = positions;
         Ok(())
     }
@@ -579,12 +670,42 @@ impl Session<'_> {
     }
 }
 
-/// Multiply one matrix by a vector.
-fn project(matrix: &Tensor<'_>, input: &[f32], out: &mut [f32]) {
+/// Multiply one matrix by a vector and return the multiply accumulates.
+///
+/// A `bfloat16` matrix goes to the blocked kernel in one contiguous range per
+/// call. Only the rows that reach into the final partial page use the element
+/// accessor, because those bytes are not part of the mapping.
+fn project(matrix: &Tensor<'_>, input: &[f32], out: &mut [f32]) -> Result<u64> {
     let rows = matrix.shape().first().copied().unwrap_or(0);
-    for (row, slot) in out.iter_mut().take(rows).enumerate() {
+    let columns = matrix.shape().last().copied().unwrap_or(0);
+    if rows == 0 || columns == 0 || input.len() != columns || out.len() < rows {
+        return Err(Error::new(format!(
+            "model: projection of {} has a shape that disagrees with its buffers",
+            matrix.name
+        )));
+    }
+    let mut mapped_rows = 0;
+    if let Some((weights, rows_in_mapping)) = matrix.contiguous_bf16() {
+        let length = rows_in_mapping
+            .checked_mul(columns)
+            .and_then(|elements| elements.checked_mul(2))
+            .ok_or_else(|| Error::new("model: contiguous weight range overflow"))?;
+        let bytes = weights
+            .get(..length)
+            .ok_or_else(|| Error::new("model: contiguous weight range is short"))?;
+        matvec::matvec_bf16(
+            bytes,
+            rows_in_mapping,
+            columns,
+            input,
+            &mut out[..rows_in_mapping],
+        )?;
+        mapped_rows = rows_in_mapping;
+    }
+    for (row, slot) in out.iter_mut().enumerate().take(rows).skip(mapped_rows) {
         *slot = matrix.dot(row, input);
     }
+    Ok(matvec::macs(rows, columns))
 }
 
 /// Count the decoder layers by the highest `model.layers.N` in the directory.

@@ -18,15 +18,28 @@
 //!   the head count, the norm epsilon, the RoPE theta and the RoPE pair order.
 //! * [`math`] holds the pure kernels: RMSNorm, RoPE, softmax and greedy
 //!   argmax.
+//! * [`matvec`] is the blocked vector by matrix multiplication over
+//!   `bfloat16` weights, with an AVX2 and FMA path, a NEON path, and a scalar
+//!   path that all agree to floating point tolerance. It is host tested and
+//!   the `madrust-infer-matmul` binary measures it without a model.
+//! * [`cli`] parses the optional token count of the binary, eight by default.
+//! * [`paths`] resolves the model root: the initramfs root in the guest, or
+//!   `MADRUST_INFER_ROOT` when a native host process sets it.
+//! * [`reference`] is the published SmolLM2-135M run the runtime checks
+//!   itself against when it serves that checkpoint.
 //! * `mapping`, `model` and `runtime` need Linux `mmap` and are only built for
 //!   the Linux target. Everything above is host tested.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod cli;
 pub mod config;
 pub mod error;
 pub mod json;
 pub mod math;
+pub mod matvec;
+pub mod paths;
+pub mod reference;
 pub mod safetensors;
 pub mod vocab;
 

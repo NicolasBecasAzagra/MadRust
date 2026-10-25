@@ -13,6 +13,12 @@
 //! makes only the one copy of the final partial page. For a model that ends
 //! with a tensor, that tensor's final reads come from the buffer; the other
 //! weights are read through the mapping.
+//!
+//! [`Mapping::pin`] asks `mlock` for the mapped range after the model is
+//! mapped and before the first token. `mlock` faults every page in, so the
+//! weights become resident and pinned instead of merely mapped, and the cost
+//! of the guarantee lands in the first token. The final partial page is not
+//! part of the mapping and is not pinned.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -27,6 +33,7 @@ const SYS_OPENAT: u64 = 257;
 const SYS_MMAP: u64 = 9;
 const SYS_MUNMAP: u64 = 11;
 const SYS_MADVISE: u64 = 28;
+const SYS_MLOCK: u64 = 149;
 const AT_FDCWD: u64 = -100i64 as u64;
 const O_RDONLY: u64 = 0;
 const PROT_READ: u64 = 1;
@@ -172,6 +179,53 @@ impl Mapping {
         // SAFETY: `base` points at `mapped_len` bytes the kernel mapped read
         // only, the mapping lives as long as `self`, and the slice is shared.
         unsafe { core::slice::from_raw_parts(self.base, self.mapped_len) }
+    }
+
+    /// The mapped bytes from `offset` to the end of the mapping.
+    ///
+    /// The blocked matrix kernel needs a contiguous weight range. Everything
+    /// before the final partial page is contiguous in the mapping, so a caller
+    /// can take these bytes and fall back to the element accessors for the few
+    /// rows the tail still holds. An offset past the mapping yields an empty
+    /// slice.
+    pub fn bytes_from(&self, offset: usize) -> &[u8] {
+        if offset >= self.mapped_len {
+            return &[];
+        }
+        &self.prefix()[offset..]
+    }
+
+    /// Make every mapped page resident and pin it.
+    ///
+    /// `mlock` faults the range in and records a pin per page or per large
+    /// block, so the weights are no longer merely mapped: the kernel will not
+    /// reclaim them until the process exits or unlocks them. The address and
+    /// the length are page aligned by construction, which is what the call
+    /// requires. Returns the positive error number on failure.
+    pub fn pin(&self) -> core::result::Result<(), i64> {
+        if self.mapped_len == 0 {
+            return Ok(());
+        }
+        let result: i64;
+        // SAFETY: the range is the successful `mmap` result, it is page
+        // aligned and non-empty, and `mlock` only marks pages the process
+        // already mapped.
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") SYS_MLOCK as i64 => result,
+                in("rdi") self.base as u64,
+                in("rsi") self.mapped_len as u64,
+                lateout("rcx") _,
+                lateout("r11") _,
+                options(nostack),
+            );
+        }
+        if (-4095..0).contains(&result) {
+            Err(-result)
+        } else {
+            Ok(())
+        }
     }
 
     /// Read a byte range into a new buffer.
