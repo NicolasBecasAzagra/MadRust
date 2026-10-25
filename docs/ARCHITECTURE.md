@@ -227,6 +227,23 @@ crate with one function does not exist yet.
   change. The run queue is a fixed size array of eight slots, so the
   scheduling path never allocates. Each thread owns a page aligned 16 KiB
   stack from the kernel heap.
+- **Scheduling policy (E3a):** every thread carries a priority between zero
+  and fifteen, with eight for all of them, so the behaviour of the existing
+  workloads does not change. The highest priority that is runnable runs, and
+  inside a priority the order is first in first out.
+  - A thread that is made runnable and has priority at least as high as the
+    running one preempts it at that point, instead of waiting for the tick.
+    The wakeup path closes its borrow of the futex table before it touches the
+    scheduler, and no lock is held across the switch.
+  - The slice is two milliseconds. A hundred hertz cannot express that, so
+    the timer interrupt runs at a kilohertz and the slice counts those, while
+    the hundred hertz tick the rest of the kernel uses stays where it was.
+  - The kernel measures its own tail: it times how long a woken thread waits
+    before it runs, over a number of iterations, and reports the minimum, the
+    median and the maximum. The median went from 2189 microseconds to 2. The
+    self test fails the boot when the wakeup latency is over a millisecond,
+    so the claim is checked on every boot instead of when somebody reads the
+    log.
 - **Preemption (M3):** the timer handler calls the scheduler every tick, ten
   milliseconds at 100 Hz. The handler runs on the stack of the thread it
   interrupted, above that thread's interrupt frame, and the switch saves that
