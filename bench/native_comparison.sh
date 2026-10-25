@@ -37,8 +37,19 @@ REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$WORK"
 
 # Preflight: say what is missing instead of failing in the middle of a build.
+# The Python that has torch is often a virtual environment next to the model,
+# so it is looked for there before falling back to the system one.
+PYTHON=${PYTHON:-}
+if [ -z "$PYTHON" ]; then
+    if [ -x "$MODEL_DIR/v/bin/python" ]; then
+        PYTHON="$MODEL_DIR/v/bin/python"
+    else
+        PYTHON=python3
+    fi
+fi
+
 missing=""
-for tool in git cmake curl python3; do
+for tool in git cmake curl; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         missing="$missing $tool"
     fi
@@ -48,11 +59,13 @@ if [ -n "$missing" ]; then
     echo "  sudo apt update && sudo apt install -y cmake build-essential curl git python3-venv" >&2
     exit 1
 fi
-if ! python3 -c "import torch, transformers" >/dev/null 2>&1; then
+if ! "$PYTHON" -c "import torch, transformers" >/dev/null 2>&1; then
     echo "native_comparison: torch and transformers are needed for the reference" >&2
     echo "  python3 -m venv v && v/bin/pip install torch transformers" >&2
+    echo "  (the script looks for the environment in $MODEL_DIR/v)" >&2
     exit 1
 fi
+echo "native_comparison: using $PYTHON"
 
 echo "== building llama.cpp =="
 if [ ! -d "$WORK/llama.cpp" ]; then
@@ -81,7 +94,7 @@ grep -E '^INFER (tok_per_s|ttft_ms|tokens)' "$RUNTIME_LOG" || true
 
 echo "== the reference in PyTorch, natively =="
 TORCH_LOG="$WORK/torch.log"
-python3 "$REPO/bench/reference/torch_reference.py" --model-dir "$MODEL_DIR" \
+"$PYTHON" "$REPO/bench/reference/torch_reference.py" --model-dir "$MODEL_DIR" \
     --prompt "$PROMPT" --tokens "$TOKENS" --out "$WORK/torch.json" | tee "$TORCH_LOG"
 
 echo "== llama.cpp, natively, when its checkpoint can be converted =="
@@ -89,7 +102,7 @@ GGUF="$MODEL_DIR/smollm2-135m-f16.gguf"
 LLAMA_LOG="$WORK/llama.log"
 if [ ! -f "$GGUF" ] && [ -f "$WORK/llama.cpp/convert_hf_to_gguf.py" ]; then
     echo "converting the checkpoint, this takes a while"
-    (cd "$WORK" && python3 llama.cpp/convert_hf_to_gguf.py "$MODEL_DIR" \
+    (cd "$WORK" && "$PYTHON" llama.cpp/convert_hf_to_gguf.py "$MODEL_DIR" \
         --outfile "$GGUF" --outtype f16 >/dev/null 2>&1) || true
 fi
 if [ -f "$GGUF" ]; then
