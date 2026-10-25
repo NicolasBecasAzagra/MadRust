@@ -43,6 +43,7 @@ WEIGHTS_ITERATIONS = 5
 # A 2 MiB fault is rare, so the huge run takes more samples to keep the slowest
 # sample from being a single host preemption.
 INFER_ITERATIONS = 1
+BOOT_ITERATIONS = 1
 WEIGHTS_HUGE_ITERATIONS = 10
 
 # Every workload the binary prints, with its unit and the number of samples one
@@ -60,6 +61,8 @@ WORKLOADS = {
     "threads": ("ns/total", DEFAULT_ITERATIONS),
     "infer-ttft": ("ms", INFER_ITERATIONS),
     "infer-tps": ("tok/s", INFER_ITERATIONS),
+    "boot-seconds": ("s", BOOT_ITERATIONS),
+    "boot-rss-mb": ("MiB", BOOT_ITERATIONS),
 }
 
 # The inference measurements only exist when the initramfs carries the runtime,
@@ -192,6 +195,23 @@ def read_log(path: Path) -> str:
         return ""
 
 
+def peak_rss_kb(pid: int) -> int:
+    """Peak resident memory of a running process, in kilobytes.
+
+    The value comes from the kernel of the host, which keeps the high water
+    mark, so it is a peak and not a sample. It is what an operator sees on the
+    machine, and it is the same measurement for every kernel.
+    """
+    try:
+        with open(f"/proc/{pid}/status", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except (FileNotFoundError, ProcessLookupError, ValueError, IndexError):
+        return 0
+    return 0
+
+
 def run_once(
     label: str,
     image: Path,
@@ -215,7 +235,9 @@ def run_once(
         stderr=subprocess.DEVNULL,
     )
 
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    peak_rss = 0
+    deadline = started + timeout
     finished = False
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -226,7 +248,11 @@ def run_once(
             time.sleep(1.0)
             finished = True
             break
+        peak_rss = max(peak_rss, peak_rss_kb(process.pid))
         time.sleep(0.2)
+
+    elapsed = time.monotonic() - started
+    peak_rss = max(peak_rss, peak_rss_kb(process.pid))
 
     if process.poll() is None:
         process.terminate()
@@ -242,7 +268,7 @@ def run_once(
     for line in text.splitlines():
         if line.startswith("ADV "):
             print(f"[rig] {label}: {line}", file=sys.stderr)
-    return command, text
+    return command, text, elapsed, peak_rss
 
 
 def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[str, Any]]:
@@ -538,7 +564,7 @@ def main() -> int:
             "sha256": sha256(image),
             "kernel_args": append_extra or "console=ttyS0",
         }
-        command, text = run_once(
+        command, text, elapsed, peak_rss = run_once(
             label,
             image,
             initrd,
@@ -551,6 +577,30 @@ def main() -> int:
         )
         metadata["commands"][label] = shlex.join(command)
         rows = parse_results(label, text, expected)
+        # What a boot costs, measured from the outside: the wall clock of the
+        # whole run and the resident memory the process reached.
+        rows.append(
+            {
+                "kernel": label,
+                "workload": "boot-seconds",
+                "iteration": 0,
+                "value": f"{elapsed:.3f}",
+                "unit": "s",
+                "status": "ok",
+                "error": "",
+            }
+        )
+        rows.append(
+            {
+                "kernel": label,
+                "workload": "boot-rss-mb",
+                "iteration": 0,
+                "value": f"{peak_rss / 1024:.1f}",
+                "unit": "MiB",
+                "status": "ok",
+                "error": "",
+            }
+        )
         write_csv(out_dir / f"{label}.csv", rows)
         all_rows.extend(rows)
         ok = sum(1 for row in rows if row["status"] == "ok")
