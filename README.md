@@ -176,10 +176,11 @@ answer, and this repository is one answer to it.
 
 ## Documentation
 
+- **[REPORT.md](REPORT.md)** - the measurements, the findings, the losses and the threats to validity.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - crates, design decisions, milestone ladder, risks, stop rules.
 - [docs/BOOT.md](docs/BOOT.md) - PVH boot protocol, trampoline, memory map, debugging.
+- [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - the method, and the raw numbers with their caveats.
 - [docs/LEARNING.md](docs/LEARNING.md) - how to read the kernel, experiments to run, sources to read next.
-- [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - how comparisons against mainline are run and published.
 - [docs/VM-SETUP.md](docs/VM-SETUP.md) - the Linux build host: mainline Linux, rootfs, and the artifact handoff.
 
 ## Contributing
