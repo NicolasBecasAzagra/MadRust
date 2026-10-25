@@ -56,6 +56,12 @@ echo "== the MadRust runtime, natively =="
 # The runtime is built for the Linux musl target and runs on any Linux host.
 RUNTIME="$REPO/madrust-infer/madrust-infer.elf"
 if [ ! -x "$RUNTIME" ]; then
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "native_comparison: cargo is needed to build the runtime" >&2
+        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal" >&2
+        echo "  then run 'make infer' in $REPO" >&2
+        exit 1
+    fi
     (cd "$REPO" && make infer)
 fi
 RUNTIME_LOG="$WORK/runtime.log"
