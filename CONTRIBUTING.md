@@ -49,6 +49,27 @@ The nightly is pinned in `rust-toolchain.toml`. Nightly is required because the
 kernel builds `core` and `compiler_builtins` from source with `-Z build-std`.
 Bump the pin in a dedicated commit, never mixed with feature work.
 
+## Scripts
+
+Every script under `bench/` and `scripts/` is committed with the executable
+bit set, and a clone has to be able to run it.
+
+The working copy of this repository can live on a file system that does not
+keep that bit, in which case a script added there is recorded as one that
+cannot be run. When that happens, set the mode in the index instead of on
+disk:
+
+```sh
+git update-index --chmod=+x bench/native_comparison.sh
+```
+
+Scripts are also written to run through the interpreter, so they keep working
+either way:
+
+```sh
+sh bench/native_comparison.sh
+```
+
 ## Style
 
 `cargo fmt` defaults, plus `clippy::all` as an error. Keep hardware access
