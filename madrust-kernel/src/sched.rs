@@ -1,11 +1,33 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Preemptive round-robin scheduler (milestone M3).
+//! Preemptive priority scheduler (milestone E3a).
 //!
 //! One CPU, one address space: threads differ only in their kernel stack, so a
 //! switch is a register exchange and a stack pointer change. The run queue and
 //! the current thread live in statics that are only touched with interrupts
 //! disabled; there is no scheduler lock, because a lock held across a switch
 //! would never be released by the thread that went to sleep.
+//!
+//! ## Policy
+//!
+//! Every thread carries a [`Priority`]. The scheduler runs the highest
+//! priority that is runnable, and a lower priority never displaces a higher
+//! one. All threads start at [`Priority::DEFAULT`], so the existing workloads
+//! keep the round-robin behaviour they had. Two threads of the same priority
+//! take turns: a switch pushes the thread that leaves the CPU to the back of
+//! its priority group, and the queue keeps arrival order inside the group.
+//!
+//! A thread keeps the CPU for at most [`SLICE_TICKS`] timer interrupts. The
+//! accounting tick stays at [`crate::pit::TICK_HZ`] (100 Hz), but the timer
+//! interrupts ten times per tick, so a slice of two timer interrupts is two
+//! milliseconds. The counter restarts whenever a thread is scheduled in.
+//!
+//! ## Wakeups
+//!
+//! A thread that makes another thread runnable preempts itself when the woken
+//! thread has at least the priority of the running one ([`wake_thread`]). That
+//! is what keeps the wakeup tail short: a futex wakeup does not wait for the
+//! next tick. The check runs with interrupts disabled and the queue borrow has
+//! already ended, because no lock and no borrow may survive the switch.
 //!
 //! Preemption reuses the interrupt frame instead of copying it. When the timer
 //! handler calls [`schedule`] it is running on the stack of the thread it
@@ -20,18 +42,19 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use madrust_arch::cpu;
-use madrust_sched::{Context, RunQueue, ThreadState};
+use madrust_sched::{Context, Priority, RunQueue, Slice, ThreadState};
 
 use crate::sync;
 use crate::thread;
 use crate::thread::Start;
 
-/// Number of timer ticks between two preemptions.
+/// Length of one time slice in timer interrupts.
 ///
-/// The PIT runs at 100 Hz, so one tick is a 10 ms time slice. One tick keeps
-/// the example threads in step: each thread prints one line per slice, which
-/// makes the interleaving of the serial log deterministic.
-pub const PREEMPT_INTERVAL_TICKS: u64 = 1;
+/// The PIT raises an interrupt every millisecond ([`crate::pit::IRQ_HZ`]), so
+/// two interrupts are two milliseconds. A thread that never blocks keeps the
+/// processor for at most this long; a shorter slice bounds the tail of a thread
+/// that becomes runnable behind it.
+pub const SLICE_TICKS: u64 = 2;
 
 /// Sentinel stored in [`CURRENT`] before [`init`] runs.
 const NO_THREAD: usize = usize::MAX;
@@ -53,6 +76,14 @@ unsafe impl Sync for QueueCell {}
 
 static QUEUE: QueueCell = QueueCell(UnsafeCell::new(RunQueue::new()));
 
+struct SliceCell(UnsafeCell<Slice>);
+
+// SAFETY: the slice counter is only accessed with interrupts disabled, from the
+// timer handler and from `schedule`, so the two cannot overlap.
+unsafe impl Sync for SliceCell {}
+
+static SLICE: SliceCell = SliceCell(UnsafeCell::new(Slice::new(SLICE_TICKS)));
+
 extern "C" {
     /// Save the first context into RDI and load the second from RSI.
     fn madrust_context_switch(current: *mut Context, next: *const Context);
@@ -69,27 +100,43 @@ pub fn init() {
     CURRENT.store(0, Ordering::Release);
 }
 
-/// Create a thread and put it at the back of the run queue.
+/// Create a thread at [`Priority::DEFAULT`] and queue it.
 ///
 /// Called from the boot thread. Interrupts are disabled for the whole call so
 /// that no timer tick can observe a half installed thread.
 pub fn spawn(name: &'static str, entry: thread::EntryFn) -> Result<usize, thread::SpawnError> {
+    spawn_with_priority(name, entry, Priority::DEFAULT)
+}
+
+/// Create a thread at an explicit priority and queue it.
+///
+/// The priority only changes the selection order; a new thread does not
+/// preempt the caller, it runs at the next schedule.
+pub fn spawn_with_priority(
+    name: &'static str,
+    entry: thread::EntryFn,
+    priority: Priority,
+) -> Result<usize, thread::SpawnError> {
     let flags = sync::interrupt_save_disable();
-    let result = spawn_locked(name, entry);
+    let result = spawn_locked(name, entry, priority);
     sync::interrupt_restore(flags);
     result
 }
 
-fn spawn_locked(name: &'static str, entry: thread::EntryFn) -> Result<usize, thread::SpawnError> {
+fn spawn_locked(
+    name: &'static str,
+    entry: thread::EntryFn,
+    priority: Priority,
+) -> Result<usize, thread::SpawnError> {
     // A finished thread owns no stack that is still in use, so its slot can be
     // recycled before a new thread claims it.
     thread::reclaim_finished();
-    let id = thread::spawn(name, entry)?;
+    let id = thread::spawn(name, entry, priority)?;
 
     // SAFETY: interrupts are disabled by `spawn`, so this is the only access
     // to the queue.
     let queue = unsafe { &mut *QUEUE.0.get() };
-    if queue.push(id).is_err() {
+    if queue.push(id, priority).is_err() {
         thread::remove(id);
         return Err(thread::SpawnError::NoFreeSlot);
     }
@@ -114,7 +161,7 @@ pub fn spawn_user(
     // SAFETY: interrupts are masked for the whole system call, so this is the
     // only access to the queue.
     let queue = unsafe { &mut *QUEUE.0.get() };
-    if queue.push(id).is_err() {
+    if queue.push(id, Priority::DEFAULT).is_err() {
         thread::remove(id);
         return Err(thread::SpawnError::NoFreeSlot);
     }
@@ -180,9 +227,13 @@ pub fn block_current() {
 /// Make a blocked thread runnable again.
 ///
 /// `token` is the value [`current_token`] returned to the waiter, that is the
-/// thread identifier plus one. The woken thread goes back to the run queue and
-/// is picked up by the next schedule, including the boot thread: it also blocks
-/// and is switched out while a user thread waits on a futex.
+/// thread identifier plus one. The woken thread goes back to the run queue at
+/// its own priority. When it is at least as important as the running thread,
+/// the caller gives up the CPU immediately instead of waiting for the next
+/// tick: that is the short wakeup tail this milestone measures.
+///
+/// The queue borrow and every other borrow end before [`schedule`] runs, and
+/// interrupts stay disabled across the switch; no lock is held.
 pub fn wake_thread(token: u64) {
     let Some(id) = token.checked_sub(1) else {
         return;
@@ -191,53 +242,92 @@ pub fn wake_thread(token: u64) {
         return;
     };
     let flags = sync::interrupt_save_disable();
-    if thread::state(id) == Some(ThreadState::Blocked) {
-        thread::set_state(id, ThreadState::Runnable);
-        // SAFETY: interrupts are disabled, so this is the only access to the
-        // queue and the borrow ends before interrupts are restored.
-        let _ = unsafe { &mut *QUEUE.0.get() }.push(id);
+    let mut woken = None;
+    {
+        let priority = thread::priority(id).unwrap_or(Priority::DEFAULT);
+        if thread::state(id) == Some(ThreadState::Blocked) {
+            thread::set_state(id, ThreadState::Runnable);
+            // SAFETY: interrupts are disabled, so this is the only access to
+            // the queue and the borrow ends before any switch could run.
+            let queue = unsafe { &mut *QUEUE.0.get() };
+            if queue.push(id, priority).is_ok() {
+                woken = Some(priority);
+            }
+        }
+    }
+    if woken.is_some_and(preempts_current) {
+        schedule();
     }
     sync::interrupt_restore(flags);
 }
 
-/// Timer hook: preempt the running thread every [`PREEMPT_INTERVAL_TICKS`].
+/// `true` when a woken thread at `priority` must displace the running thread.
+fn preempts_current(priority: Priority) -> bool {
+    let Some(current) = current_id() else {
+        return false;
+    };
+    if !thread::state(current).is_some_and(ThreadState::is_runnable) {
+        return false;
+    }
+    priority >= thread::priority(current).unwrap_or(Priority::DEFAULT)
+}
+
+/// Timer hook: preempt the running thread when its slice has expired.
 ///
 /// Runs inside the timer interrupt handler, after the EOI, with interrupts
 /// disabled.
 pub fn on_tick() {
+    // SAFETY: the timer handler runs with interrupts disabled, so this is the
+    // only access to the slice counter; the borrow ends before `user::on_tick`
+    // and `schedule`, both of which may switch threads.
+    let expired = unsafe { (*SLICE.0.get()).tick() };
     // Expired futex waiters become runnable before the next pick, so a thread
     // that timed out is not left waiting for a wakeup that will never come.
     crate::user::on_tick();
-    if crate::pit::ticks().is_multiple_of(PREEMPT_INTERVAL_TICKS) {
+    if expired {
         schedule();
     }
 }
 
 /// Pick the next thread and switch to it.
 ///
-/// Must run with interrupts disabled. If no other thread is runnable, the
-/// current thread keeps the CPU; a finished thread with nobody left to run
-/// stops the CPU instead of spinning in a stale context.
+/// Must run with interrupts disabled. If no thread can displace the running
+/// one, it keeps the CPU; a finished thread with nobody left to run stops the
+/// CPU instead of spinning in a stale context.
 pub fn schedule() {
     let Some(current) = current_id() else {
         return;
+    };
+    let current_state = thread::state(current);
+    // A thread that can run again is only displaced by an entry of at least its
+    // own priority. A blocked or finished thread lets any priority run.
+    let current_slot = if current_state.is_some_and(ThreadState::is_runnable) {
+        Some((
+            current,
+            thread::priority(current).unwrap_or(Priority::DEFAULT),
+        ))
+    } else {
+        None
     };
 
     let next = {
         // SAFETY: interrupts are disabled, so this is the only access to the
         // queue for the duration of the block.
         let queue = unsafe { &mut *QUEUE.0.get() };
-        match queue.pick_next(Some(current)) {
+        match queue.pick_next(current_slot) {
             Some(next) if next != current => {
-                // The thread that leaves the CPU goes to the back of the queue
-                // unless it cannot run again.
-                if thread::state(current).is_some_and(ThreadState::is_runnable) {
+                // The thread that leaves the CPU goes to the back of its
+                // priority group unless it cannot run again.
+                if let Some((_, priority)) = current_slot {
                     thread::set_state(current, ThreadState::Runnable);
-                    let _ = queue.push(current);
+                    let _ = queue.push(current, priority);
                 }
                 queue.remove(next);
                 thread::set_state(next, ThreadState::Running);
                 CURRENT.store(next, Ordering::Release);
+                // SAFETY: interrupts are disabled and the counter is not
+                // borrowed anywhere, so this is the only access.
+                unsafe { (*SLICE.0.get()).reset() };
                 Some(next)
             }
             _ => None,

@@ -29,7 +29,7 @@
 
 mod errno;
 mod fd;
-mod futex;
+pub(crate) mod futex;
 mod loader;
 mod mappings;
 mod paging;

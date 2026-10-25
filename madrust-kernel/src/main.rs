@@ -10,9 +10,12 @@
 //!
 //! The kernel then builds a physical frame allocator and a kernel heap from the
 //! PVH memory map, installs a GDT with a TSS, an IDT with recoverable exception
-//! stubs, remaps the 8259 PIC and programs the PIT to run at 100 Hz. Finally it
-//! spawns three kernel threads, lets the timer preempt them round robin, waits
-//! for them to finish and only then runs the exception and tick checks.
+//! stubs, remaps the 8259 PIC and programs the PIT to interrupt every
+//! millisecond while the accounting tick stays at 100 Hz. Finally it spawns
+//! three kernel threads, lets the timer preempt them round robin, waits for
+//! them to finish and only then runs the exception and tick checks. Before the
+//! user program starts, the scheduler self test measures the wakeup latency and
+//! the slice tail on the target.
 //!
 //! After the thread demonstration the kernel loads the embedded user program
 //! into the user half of the same page tables, enters ring 3 with `iretq`,
@@ -35,6 +38,7 @@ mod memory;
 mod pic;
 mod pit;
 mod sched;
+mod sched_test;
 mod sync;
 mod thread;
 mod user;
@@ -292,7 +296,11 @@ unsafe extern "C" fn _start(
     pic::init();
     kprintln!("[irq] PIC remapped, IRQ0 unmasked");
     pit::init();
-    kprintln!("[irq] PIT programmed at {} Hz", pit::TICK_HZ);
+    kprintln!(
+        "[irq] PIT programmed at {} Hz ({} Hz accounting tick)",
+        pit::IRQ_HZ,
+        pit::TICK_HZ
+    );
     let tsc_hz = clock::init();
     kprintln!("[time] TSC {} MHz", tsc_hz / 1_000_000);
 
@@ -331,6 +339,15 @@ unsafe extern "C" fn _start(
 
     if thread::reclaim_finished() != DEMO_THREADS {
         kprintln!("MadRust: boot FAILED: scheduler lost a thread");
+        uart.flush();
+        debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
+    }
+
+    // Measure the scheduler on the target before the program takes over: a
+    // wakeup that waits for the tick would show up here as a tail of a full
+    // slice, and the test stops the boot instead of reporting a healthy run.
+    if !sched_test::run() {
+        kprintln!("MadRust: boot FAILED: scheduler self test");
         uart.flush();
         debug_exit::exit(debug_exit::EXIT_SCHEDULER_FAILED);
     }

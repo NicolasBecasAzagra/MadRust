@@ -1,21 +1,119 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Thread state, saved context and run queue for MadRust (milestone M3).
+//! Thread state, saved context and run queue for MadRust (milestone E3a).
 //!
 //! This crate holds the parts of the scheduler that do not touch hardware, so
 //! the ordering rules run as host unit tests. The kernel keeps the assembly
 //! context switch, the timer hook and the thread control blocks that own a
 //! stack in `madrust-kernel`.
 //!
-//! The run queue is a fixed size array of thread identifiers. It holds the
-//! threads that may run, never the thread that is currently running: the
-//! scheduler removes the next thread from the queue and pushes the thread it
-//! left behind to the back, which is what makes the policy round robin.
+//! ## Policy
+//!
+//! Every thread carries a [`Priority`]. The scheduler runs the highest
+//! priority that is runnable; a lower priority never displaces a higher one.
+//! The run queue is a fixed size array of thread identifiers ordered by
+//! arrival. It holds the threads that may run, and normally never the thread
+//! that is currently running.
+//!
+//! Two threads of the same priority run round robin. A switch removes the
+//! next thread from the queue and pushes the thread it left behind to the
+//! back, so the queue position inside one priority is the round-robin order.
+//!
+//! A [`Slice`] counts the timer ticks a thread may keep the CPU before the
+//! timer preempts it. The slice is reset when a thread is scheduled in.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 /// Maximum number of threads the kernel can hold at once.
 pub const MAX_THREADS: usize = 8;
+
+/// Scheduling priority of one thread.
+///
+/// A larger value runs first. The range is deliberately small: the policy is a
+/// strict priority with round robin inside one level, not a weight. The kernel
+/// gives every thread [`Priority::DEFAULT`] unless it asks for another value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Priority(u8);
+
+impl Priority {
+    /// Lowest priority allowed.
+    pub const LOWEST: Self = Self(0);
+    /// Priority every thread starts with.
+    pub const DEFAULT: Self = Self(8);
+    /// Highest priority allowed.
+    pub const HIGHEST: Self = Self(15);
+
+    /// Clamp `value` into the supported range.
+    pub const fn new(value: u8) -> Self {
+        if value > Self::HIGHEST.0 {
+            Self::HIGHEST
+        } else {
+            Self(value)
+        }
+    }
+
+    /// Numeric value of this priority.
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Timer ticks a thread may run before the scheduler preempts it.
+///
+/// The value is a count of ticks, not milliseconds: the kernel turns its timer
+/// period into a slice by choosing a number here. A zero is treated as one so a
+/// misconfigured slice cannot spin the timer without progress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slice {
+    ticks: u64,
+    left: u64,
+}
+
+impl Slice {
+    /// A slice of `ticks` timer ticks.
+    pub const fn new(ticks: u64) -> Self {
+        let ticks = if ticks == 0 { 1 } else { ticks };
+        Self { ticks, left: ticks }
+    }
+
+    /// Configured length in ticks.
+    pub const fn ticks(self) -> u64 {
+        self.ticks
+    }
+
+    /// Ticks left before the slice expires.
+    pub const fn remaining(self) -> u64 {
+        self.left
+    }
+
+    /// Give the thread a fresh slice after it was scheduled in.
+    pub fn reset(&mut self) {
+        self.left = self.ticks;
+    }
+
+    /// Count one timer tick.
+    ///
+    /// Returns `true` when the slice has just expired; the counter restarts in
+    /// that case, so the caller can preempt and keep counting for the thread it
+    /// switches to.
+    pub fn tick(&mut self) -> bool {
+        if self.left > 0 {
+            self.left -= 1;
+        }
+        if self.left == 0 {
+            self.left = self.ticks;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 /// Saved machine state of one thread.
 ///
@@ -128,15 +226,28 @@ pub enum QueueError {
     AlreadyQueued,
 }
 
-/// Fixed size round-robin run queue.
+/// One queued thread with the priority it runs at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Entry {
+    id: usize,
+    priority: Priority,
+}
+
+const EMPTY_ENTRY: Entry = Entry {
+    id: 0,
+    priority: Priority::LOWEST,
+};
+
+/// Fixed size priority run queue.
 ///
 /// An array avoids an allocation on the scheduling path, which matters because
 /// the timer handler may schedule while the heap lock is unavailable. The
 /// identifiers are indices into the kernel thread table; the queue owns no
-/// thread state.
+/// thread state. Entries keep their insertion order, which is the round-robin
+/// order inside one priority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunQueue {
-    ids: [usize; MAX_THREADS],
+    entries: [Entry; MAX_THREADS],
     len: usize,
 }
 
@@ -150,7 +261,7 @@ impl RunQueue {
     /// Empty queue.
     pub const fn new() -> Self {
         Self {
-            ids: [0; MAX_THREADS],
+            entries: [EMPTY_ENTRY; MAX_THREADS],
             len: 0,
         }
     }
@@ -167,18 +278,18 @@ impl RunQueue {
 
     /// `true` when `id` is queued.
     pub fn contains(&self, id: usize) -> bool {
-        self.ids[..self.len].contains(&id)
+        self.entries[..self.len].iter().any(|entry| entry.id == id)
     }
 
-    /// Append `id` to the back of the queue.
-    pub fn push(&mut self, id: usize) -> Result<(), QueueError> {
+    /// Append `id` at `priority` to the back of its priority group.
+    pub fn push(&mut self, id: usize, priority: Priority) -> Result<(), QueueError> {
         if self.contains(id) {
             return Err(QueueError::AlreadyQueued);
         }
         if self.len == MAX_THREADS {
             return Err(QueueError::Full);
         }
-        self.ids[self.len] = id;
+        self.entries[self.len] = Entry { id, priority };
         self.len += 1;
         Ok(())
     }
@@ -187,23 +298,41 @@ impl RunQueue {
     ///
     /// Returns `false` when the identifier was not queued.
     pub fn remove(&mut self, id: usize) -> bool {
-        let Some(position) = self.ids[..self.len].iter().position(|&queued| queued == id) else {
+        let Some(position) = self.entries[..self.len]
+            .iter()
+            .position(|entry| entry.id == id)
+        else {
             return false;
         };
-        self.ids.copy_within(position + 1..self.len, position);
+        self.entries.copy_within(position + 1..self.len, position);
         self.len -= 1;
         true
     }
 
-    /// First queued identifier that is not `current`.
+    /// Highest priority queued identifier that is not `current`.
     ///
-    /// This is the whole selection policy: the caller removes the returned
-    /// thread and pushes the thread it left behind to the back.
-    pub fn pick_next(&self, current: Option<usize>) -> Option<usize> {
-        self.ids[..self.len]
-            .iter()
-            .copied()
-            .find(|&id| Some(id) != current)
+    /// `current` carries the identifier and priority of the running thread, or
+    /// `None` when the caller is not runnable and may hand the CPU to any
+    /// priority. A runnable current thread is only displaced by an entry of at
+    /// least its own priority; round robin inside that priority then picks the
+    /// entry that has waited longest.
+    pub fn pick_next(&self, current: Option<(usize, Priority)>) -> Option<usize> {
+        let current_id = current.map(|(id, _)| id);
+        let mut best: Option<Entry> = None;
+        for entry in &self.entries[..self.len] {
+            if Some(entry.id) == current_id {
+                continue;
+            }
+            let replaces = best.is_none_or(|queued| entry.priority > queued.priority);
+            if replaces {
+                best = Some(*entry);
+            }
+        }
+        let best = best?;
+        if current.is_some_and(|(_, priority)| best.priority < priority) {
+            return None;
+        }
+        Some(best.id)
     }
 }
 
@@ -231,28 +360,34 @@ mod tests {
     #[test]
     fn queue_rejects_duplicates_and_overflow() {
         let mut queue = RunQueue::new();
-        assert_eq!(queue.push(1), Ok(()));
-        assert_eq!(queue.push(1), Err(QueueError::AlreadyQueued));
+        assert_eq!(queue.push(1, Priority::DEFAULT), Ok(()));
+        assert_eq!(
+            queue.push(1, Priority::DEFAULT),
+            Err(QueueError::AlreadyQueued)
+        );
         for id in 2..MAX_THREADS {
-            assert_eq!(queue.push(id), Ok(()));
+            assert_eq!(queue.push(id, Priority::DEFAULT), Ok(()));
         }
         assert_eq!(queue.len(), MAX_THREADS - 1);
-        assert_eq!(queue.push(0), Ok(()));
+        assert_eq!(queue.push(0, Priority::DEFAULT), Ok(()));
         assert_eq!(queue.len(), MAX_THREADS);
-        assert_eq!(queue.push(MAX_THREADS), Err(QueueError::Full));
+        assert_eq!(
+            queue.push(MAX_THREADS, Priority::DEFAULT),
+            Err(QueueError::Full)
+        );
     }
 
     #[test]
     fn queue_removes_in_order() {
         let mut queue = RunQueue::new();
         for id in 0..4 {
-            assert_eq!(queue.push(id), Ok(()));
+            assert_eq!(queue.push(id, Priority::DEFAULT), Ok(()));
         }
         assert!(queue.remove(1));
         assert_eq!(queue.len(), 3);
         assert!(!queue.remove(1));
         assert_eq!(queue.pick_next(None), Some(0));
-        assert_eq!(queue.pick_next(Some(0)), Some(2));
+        assert_eq!(queue.pick_next(Some((0, Priority::DEFAULT))), Some(2));
     }
 
     #[test]
@@ -260,16 +395,16 @@ mod tests {
         // Ready queue never holds the running thread: start with 1 and 2,
         // boot thread 0 running.
         let mut queue = RunQueue::new();
-        queue.push(1).unwrap();
-        queue.push(2).unwrap();
+        queue.push(1, Priority::DEFAULT).unwrap();
+        queue.push(2, Priority::DEFAULT).unwrap();
 
         let mut current = 0;
         let mut order = [0usize; 6];
         for slot in &mut order {
-            let next = queue.pick_next(Some(current)).unwrap();
+            let next = queue.pick_next(Some((current, Priority::DEFAULT))).unwrap();
             assert_ne!(next, current);
             queue.remove(next);
-            queue.push(current).unwrap();
+            queue.push(current, Priority::DEFAULT).unwrap();
             *slot = next;
             current = next;
         }
@@ -281,11 +416,67 @@ mod tests {
     fn skips_the_running_thread_wherever_it_is_queued() {
         let mut queue = RunQueue::new();
         for id in [3, 1, 2] {
-            queue.push(id).unwrap();
+            queue.push(id, Priority::DEFAULT).unwrap();
         }
-        assert_eq!(queue.pick_next(Some(1)), Some(3));
-        assert_eq!(queue.pick_next(Some(3)), Some(1));
+        assert_eq!(queue.pick_next(Some((1, Priority::DEFAULT))), Some(3));
+        assert_eq!(queue.pick_next(Some((3, Priority::DEFAULT))), Some(1));
         assert_eq!(queue.pick_next(None), Some(3));
+    }
+
+    #[test]
+    fn higher_priority_wins_regardless_of_arrival_order() {
+        let mut queue = RunQueue::new();
+        let high = Priority::new(12);
+        let low = Priority::new(2);
+        queue.push(1, low).unwrap();
+        queue.push(2, high).unwrap();
+        queue.push(3, Priority::DEFAULT).unwrap();
+        assert_eq!(queue.pick_next(None), Some(2));
+
+        // The same priority class keeps its insertion order.
+        assert!(queue.remove(2));
+        assert_eq!(queue.pick_next(None), Some(3));
+        assert!(queue.remove(3));
+        assert_eq!(queue.pick_next(None), Some(1));
+    }
+
+    #[test]
+    fn a_lower_priority_does_not_displace_a_running_thread() {
+        let mut queue = RunQueue::new();
+        queue.push(1, Priority::new(2)).unwrap();
+        assert_eq!(
+            queue.pick_next(Some((0, Priority::DEFAULT))),
+            None,
+            "a runnable higher priority thread keeps the CPU"
+        );
+        // A blocked or finished current thread lets the lower priority run.
+        assert_eq!(queue.pick_next(None), Some(1));
+        // An equal priority thread does displace it, which is the round robin.
+        assert_eq!(
+            queue.pick_next(Some((0, Priority::new(2)))),
+            Some(1),
+            "same priority round robins"
+        );
+    }
+
+    #[test]
+    fn equal_priorities_take_turns() {
+        let mut queue = RunQueue::new();
+        let priority = Priority::DEFAULT;
+        queue.push(1, priority).unwrap();
+        queue.push(2, priority).unwrap();
+        queue.push(3, priority).unwrap();
+
+        let mut current = 0;
+        let mut order = [0usize; 6];
+        for slot in &mut order {
+            let next = queue.pick_next(Some((current, priority))).unwrap();
+            queue.remove(next);
+            queue.push(current, priority).unwrap();
+            *slot = next;
+            current = next;
+        }
+        assert_eq!(order, [1, 2, 3, 0, 1, 2]);
     }
 
     #[test]
@@ -293,7 +484,37 @@ mod tests {
         let queue = RunQueue::new();
         assert!(queue.is_empty());
         assert_eq!(queue.pick_next(None), None);
-        assert_eq!(queue.pick_next(Some(0)), None);
+        assert_eq!(queue.pick_next(Some((0, Priority::DEFAULT))), None);
+    }
+
+    #[test]
+    fn slice_expires_after_its_ticks_and_restarts() {
+        let mut slice = Slice::new(2);
+        assert_eq!(slice.ticks(), 2);
+        assert_eq!(slice.remaining(), 2);
+        assert!(!slice.tick());
+        assert_eq!(slice.remaining(), 1);
+        assert!(slice.tick(), "the second tick ends a two tick slice");
+        assert_eq!(slice.remaining(), 2);
+        assert!(!slice.tick());
+        slice.reset();
+        assert_eq!(slice.remaining(), 2);
+    }
+
+    #[test]
+    fn a_zero_slice_still_counts_one_tick() {
+        let mut slice = Slice::new(0);
+        assert_eq!(slice.ticks(), 1);
+        assert!(slice.tick());
+    }
+
+    #[test]
+    fn priorities_clamp_to_the_supported_range() {
+        assert_eq!(Priority::new(0), Priority::LOWEST);
+        assert_eq!(Priority::new(200), Priority::HIGHEST);
+        assert_eq!(Priority::default(), Priority::DEFAULT);
+        assert!(Priority::HIGHEST > Priority::DEFAULT);
+        assert_eq!(Priority::DEFAULT.value(), 8);
     }
 
     #[test]

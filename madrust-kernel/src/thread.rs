@@ -12,7 +12,7 @@
 use core::cell::UnsafeCell;
 use core::ptr::{addr_of, NonNull};
 
-use madrust_sched::{Context, ThreadState, MAX_THREADS};
+use madrust_sched::{Context, Priority, ThreadState, MAX_THREADS};
 
 use crate::memory;
 
@@ -125,6 +125,8 @@ pub struct Thread {
     pub name: &'static str,
     /// Current life cycle state.
     pub state: ThreadState,
+    /// Priority the scheduler runs this thread at.
+    pub priority: Priority,
     /// Saved machine state; filled on the first switch away.
     pub context: Context,
     /// Entry function, absent for the boot thread and for user threads.
@@ -187,6 +189,7 @@ pub(crate) fn install_boot() {
         id: 0,
         name: "boot",
         state: ThreadState::Running,
+        priority: Priority::DEFAULT,
         context: Context::ZERO,
         entry: None,
         user: None,
@@ -202,8 +205,12 @@ pub(crate) fn install_boot() {
 ///
 /// The stack is prepared so that the trampoline can call `entry` and return to
 /// [`madrust_thread_completed`] when it returns.
-pub(crate) fn spawn(name: &'static str, entry: EntryFn) -> Result<usize, SpawnError> {
-    spawn_thread(name, Some(entry), None, 0, 0, 0)
+pub(crate) fn spawn(
+    name: &'static str,
+    entry: EntryFn,
+    priority: Priority,
+) -> Result<usize, SpawnError> {
+    spawn_thread(name, Some(entry), None, 0, 0, 0, priority)
 }
 
 /// Create a runnable thread that enters ring 3 with `start`.
@@ -221,6 +228,7 @@ pub(crate) fn spawn_user(
         fs_base,
         clear_child_tid,
         kernel_gs_base,
+        Priority::DEFAULT,
     )
 }
 
@@ -232,6 +240,7 @@ fn spawn_thread(
     fs_base: u64,
     clear_child_tid: u64,
     kernel_gs_base: u64,
+    priority: Priority,
 ) -> Result<usize, SpawnError> {
     let id = {
         // SAFETY: the scheduler disables interrupts around every spawn.
@@ -276,6 +285,7 @@ fn spawn_thread(
         id,
         name,
         state: ThreadState::Runnable,
+        priority,
         context,
         entry,
         user,
@@ -294,6 +304,14 @@ pub(crate) fn state(id: usize) -> Option<ThreadState> {
     // hold the borrow afterwards.
     let slots = unsafe { table() };
     slots.get(id)?.as_ref().map(|thread| thread.state)
+}
+
+/// Priority of one thread.
+pub(crate) fn priority(id: usize) -> Option<Priority> {
+    // SAFETY: the scheduler calls this with interrupts disabled and does not
+    // hold the borrow afterwards.
+    let slots = unsafe { table() };
+    slots.get(id)?.as_ref().map(|thread| thread.priority)
 }
 
 /// Write the state of one thread.

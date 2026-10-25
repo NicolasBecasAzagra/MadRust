@@ -54,6 +54,25 @@ pub fn init() -> u64 {
     hertz
 }
 
+/// Calibrated time stamp counter rate in hertz, zero when unusable.
+pub fn tsc_hz() -> u64 {
+    TSC_HZ.load(Ordering::Acquire)
+}
+
+/// Convert a distance in time stamp counter cycles to microseconds.
+///
+/// The scheduler self test measures its own latency with this, so it shares the
+/// calibration the clock system calls use. Cycles from a counter that was not
+/// calibrated read as zero.
+pub fn microseconds(cycles: u64) -> u64 {
+    let hertz = tsc_hz();
+    if hertz == 0 {
+        return 0;
+    }
+    let microseconds = u128::from(cycles) * 1_000_000 / u128::from(hertz);
+    u64::try_from(microseconds).unwrap_or(u64::MAX)
+}
+
 /// Seconds and nanoseconds since the clock base.
 ///
 /// Falls back to the PIT tick count when the counter was not calibrated, so

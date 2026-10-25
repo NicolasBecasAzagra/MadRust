@@ -170,18 +170,27 @@ pub fn wait(address: u64, value: u32, expected: u32, timeout: Option<u64>) -> i6
 /// `ETIMEDOUT` when it runs again.
 pub fn on_tick() {
     let flags = sync::interrupt_save_disable();
-    // SAFETY: interrupts are disabled for the whole scan, so this is the only
-    // access to the table and the borrow ends before the flags are restored.
-    let waiters = unsafe { table() };
-    for waiter in waiters.iter_mut() {
-        if waiter.active
-            && !waiter.expired
-            && waiter.deadline != 0
-            && pit::ticks() >= waiter.deadline
-        {
-            waiter.expired = true;
-            sched::wake_thread(waiter.thread);
+    let mut tokens = [0u64; MAX_WAITERS];
+    let mut expired = 0;
+    {
+        // SAFETY: interrupts are disabled for the whole scan, so this is the
+        // only access to the table and the borrow ends before a woken thread
+        // runs or the timer preempts.
+        let waiters = unsafe { table() };
+        for waiter in waiters.iter_mut() {
+            if waiter.active
+                && !waiter.expired
+                && waiter.deadline != 0
+                && pit::ticks() >= waiter.deadline
+            {
+                waiter.expired = true;
+                tokens[expired] = waiter.thread;
+                expired += 1;
+            }
         }
+    }
+    for token in tokens[..expired].iter().copied() {
+        sched::wake_thread(token);
     }
     sync::interrupt_restore(flags);
 }
@@ -191,22 +200,31 @@ pub fn on_tick() {
 /// Returns the number of threads that were woken.
 pub fn wake(address: u64, count: u64) -> i64 {
     let flags = sync::interrupt_save_disable();
-    let mut woken = 0u64;
-
-    // SAFETY: interrupts are disabled for the whole mutation and the borrow
-    // ends before the loop returns.
-    let waiters = unsafe { table() };
-    for waiter in waiters.iter_mut() {
-        if woken >= count {
-            break;
+    let mut tokens = [0u64; MAX_WAITERS];
+    let mut woken = 0usize;
+    {
+        // SAFETY: interrupts are disabled for the whole mutation, so this is
+        // the only access to the table. The borrow ends before a woken thread
+        // runs: `wake_thread` may preempt the caller, and the woken thread may
+        // enter this table on its own wait path.
+        let waiters = unsafe { table() };
+        for waiter in waiters.iter_mut() {
+            if woken >= MAX_WAITERS {
+                break;
+            }
+            if woken as u64 >= count {
+                break;
+            }
+            if !waiter.active || waiter.address != address {
+                continue;
+            }
+            tokens[woken] = waiter.thread;
+            woken += 1;
+            *waiter = EMPTY;
         }
-        if !waiter.active || waiter.address != address {
-            continue;
-        }
-        let thread = waiter.thread;
-        *waiter = EMPTY;
-        sched::wake_thread(thread);
-        woken += 1;
+    }
+    for token in tokens[..woken].iter().copied() {
+        sched::wake_thread(token);
     }
 
     sync::interrupt_restore(flags);
