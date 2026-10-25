@@ -258,36 +258,40 @@ The rig also measures the runtime: it boots the initramfs that carries the
 model, and records the time to the first token and the tokens per second for
 every kernel, with the same binary and the same flags.
 
+The measurement that does not depend on the host is the number of page
+faults. Streaming 269 megabytes of weights used to take 65536 faults of 4 KiB;
+with large pages for file mappings it takes 791, of which 127 are large pages.
+That is the work the kernel does, and it is the same on every run.
+
+The timings are a different matter. Under emulation the same build measures
+between 9.8 and 22.2 seconds to the first token depending on where the
+threads land, so the numbers describe the emulator and the host, not the
+kernel. Three batches of the same measurement:
+
 ```text
-                        MadRust      mainline    mainline (mitigations=off)
-time to first token      21.20 s      23.34 s            9.96 s
-tokens per second           0.24         0.22                0.51
+                         MadRust    mainline    mainline (mitigations=off)
+batch 1, before           21.20 s      23.34 s              9.96 s
+batch 2, after            22.17 s      22.83 s             21.92 s
+joint batch               10.70 s         -                    -
 ```
 
-**MadRust loses this one, and the reason is specific.** With the mitigations
-disabled on both sides, the reference kernel is about twice as fast, and the
-difference is not the arithmetic: it is the same binary, doing the same
-134 million multiply accumulates per token.
+What can be said, and what cannot:
 
-The difference is the mapping of the weights. The reference kernel backs a
-file mapping with 2 MiB pages, so streaming 269 MB of weights takes 134
-faults. MadRust maps a file with 4 KiB pages, so the same stream takes 65536
-faults. Under emulation a fault costs about 0.32 milliseconds, which is
-roughly eleven seconds of the twenty one that the first token takes.
+- **The fault count is the claim.** 65536 faults against 791 is a factor of
+  eighty three, and it does not move between runs. On a host where a fault
+  has a fixed price, that is time.
+- **No ratio can be published for the timings.** The spread between two runs
+  of the same build under emulation is larger than the difference between
+  the kernels, and the third batch shows it: there, the reference kernel
+  without mitigations measured 21.9 seconds and in the first batch 9.9.
+  Reading a ratio out of that would be reading noise.
+- **The comparison needs a host with hardware acceleration**, where a fault
+  costs a predictable amount and the measurement can be repeated. Until then,
+  the inference numbers are published as a range with the caveat attached,
+  and the fault count carries the argument.
 
-The arithmetic of the measurement matches that explanation: the compute is
-about ten seconds on both kernels, because the binary is the same, and the
-remaining eleven seconds are faults that only MadRust pays. With the default
-mitigations of the reference kernel enabled, its faults also reload CR3, and
-the two kernels end up within two per cent of each other.
-
-So the work this measurement asks for is large pages for file mappings, the
-same thing the kernel already does for anonymous mappings. Until that
-exists, this is a loss, and it is published as a loss.
-
-The numbers above are single samples of a measurement that takes a minute of
-emulated time, and under emulation the absolute values describe the
-emulator. The raw rows are in `bench/results/inference/`.
+The raw rows of the three batches are in `bench/results/inference/`,
+`bench/results/inference-before/` and `bench/results/inference-joint/`.
 
 ### What the numbers mean
 

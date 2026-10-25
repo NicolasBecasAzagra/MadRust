@@ -11,13 +11,13 @@
       "python": "3.15.0"
     },
     "initrd": {
-      "path": "/private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real.cpio",
-      "sha256": "5e30a1fc38b6227cd9dda35b53905303b6a2fbcb8a630bbd496575fd1508a710"
+      "path": "/private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real2.cpio",
+      "sha256": "8005afc7bb2accdf94342b14cfcee1a3c067bba17b298e63027f17089d5e5510"
     },
     "kernels": {
       "madrust": {
         "path": "/Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel",
-        "sha256": "6c6abc41e915b0155bf8ccbb873d24211b38d3806851c4708827635398436b6d",
+        "sha256": "3e5965306b1f087b540657a11e6e60b12bee55df6294bb2ea6a069f979aab543",
         "kernel_args": "console=ttyS0"
       },
       "mainline": {
@@ -32,23 +32,15 @@
       }
     },
     "commands": {
-      "madrust": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 1024M -kernel /Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel -initrd /private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/full/madrust.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
-      "mainline": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 1024M -kernel /Users/nicolasbecasazagra/madrust/artifacts/vmlinux -initrd /private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/full/mainline.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
-      "mainline-nomitig": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 1024M -kernel /Users/nicolasbecasazagra/madrust/artifacts/vmlinux -initrd /private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real.cpio -append 'console=ttyS0 mitigations=off' -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/full/mainline-nomitig.log -device isa-debug-exit,iobase=0xf4,iosize=0x04"
+      "madrust": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 1024M -kernel /Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel -initrd /private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real2.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/inference/madrust.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
+      "mainline": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 1024M -kernel /Users/nicolasbecasazagra/madrust/artifacts/vmlinux -initrd /private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real2.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/inference/mainline.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
+      "mainline-nomitig": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 1 -m 1024M -kernel /Users/nicolasbecasazagra/madrust/artifacts/vmlinux -initrd /private/var/folders/n3/rrkl2dkn4xx292ym7g7rvqqc0000gn/T/opencode/real2.cpio -append 'console=ttyS0 mitigations=off' -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/inference/mainline-nomitig.log -device isa-debug-exit,iobase=0xf4,iosize=0x04"
     },
     "iterations_expected": {
-      "syscall": 30,
-      "mmap": 30,
-      "weights": 5,
-      "weights-tail": 5,
-      "weights-huge": 10,
-      "weights-huge-tail": 10,
-      "futex": 30,
-      "threads": 30,
       "infer-ttft": 1,
       "infer-tps": 1
     },
-    "started": "2026-10-24T22:38:03Z"
+    "started": "2026-10-25T00:37:29Z"
   },
   "summary": [
     {
@@ -57,7 +49,7 @@
       "unit": "ns/op",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -68,7 +60,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -79,7 +71,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 5,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -90,7 +82,7 @@
       "unit": "ns/page",
       "samples": 0,
       "errors": 0,
-      "missing": 5,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -101,7 +93,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 10,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -112,7 +104,7 @@
       "unit": "ns/page",
       "samples": 0,
       "errors": 0,
-      "missing": 10,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -123,7 +115,7 @@
       "unit": "ns/roundtrip",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -134,7 +126,7 @@
       "unit": "ns/total",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -146,8 +138,8 @@
       "samples": 1,
       "errors": 0,
       "missing": 0,
-      "median": 21198.842,
-      "p99": 21198.842,
+      "median": 22166.722,
+      "p99": 22166.722,
       "stddev": null
     },
     {
@@ -157,8 +149,8 @@
       "samples": 1,
       "errors": 0,
       "missing": 0,
-      "median": 0.237,
-      "p99": 0.237,
+      "median": 0.24,
+      "p99": 0.24,
       "stddev": null
     },
     {
@@ -167,7 +159,7 @@
       "unit": "ns/op",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -178,7 +170,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -189,7 +181,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 5,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -200,7 +192,7 @@
       "unit": "ns/page",
       "samples": 0,
       "errors": 0,
-      "missing": 5,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -211,7 +203,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 10,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -222,7 +214,7 @@
       "unit": "ns/page",
       "samples": 0,
       "errors": 0,
-      "missing": 10,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -233,7 +225,7 @@
       "unit": "ns/roundtrip",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -244,7 +236,7 @@
       "unit": "ns/total",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -256,8 +248,8 @@
       "samples": 1,
       "errors": 0,
       "missing": 0,
-      "median": 23343.305,
-      "p99": 23343.305,
+      "median": 22834.232,
+      "p99": 22834.232,
       "stddev": null
     },
     {
@@ -267,8 +259,8 @@
       "samples": 1,
       "errors": 0,
       "missing": 0,
-      "median": 0.217,
-      "p99": 0.217,
+      "median": 0.22,
+      "p99": 0.22,
       "stddev": null
     },
     {
@@ -277,7 +269,7 @@
       "unit": "ns/op",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -288,7 +280,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -299,7 +291,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 5,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -310,7 +302,7 @@
       "unit": "ns/page",
       "samples": 0,
       "errors": 0,
-      "missing": 5,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -321,7 +313,7 @@
       "unit": "ns/MiB",
       "samples": 0,
       "errors": 0,
-      "missing": 10,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -332,7 +324,7 @@
       "unit": "ns/page",
       "samples": 0,
       "errors": 0,
-      "missing": 10,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -343,7 +335,7 @@
       "unit": "ns/roundtrip",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -354,7 +346,7 @@
       "unit": "ns/total",
       "samples": 0,
       "errors": 0,
-      "missing": 30,
+      "missing": 0,
       "median": null,
       "p99": null,
       "stddev": null
@@ -366,8 +358,8 @@
       "samples": 1,
       "errors": 0,
       "missing": 0,
-      "median": 9960.785,
-      "p99": 9960.785,
+      "median": 21920.003,
+      "p99": 21920.003,
       "stddev": null
     },
     {
@@ -377,8 +369,8 @@
       "samples": 1,
       "errors": 0,
       "missing": 0,
-      "median": 0.505,
-      "p99": 0.505,
+      "median": 0.227,
+      "p99": 0.227,
       "stddev": null
     }
   ]
