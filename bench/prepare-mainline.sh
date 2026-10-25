@@ -52,20 +52,34 @@ make kernelversion > "$output/kernel-version.txt"
 # kernel through that path. Without the note it refuses the image with
 # "Error loading uncompressed kernel without PVH ELF Note", which is a long
 # build to find out.
+# The configuration is the source of truth: the note is generated from it.
+if grep -q "^CONFIG_PVH=y" .config 2>/dev/null; then
+    echo "prepare-mainline: the configuration has CONFIG_PVH=y"
+else
+    echo "prepare-mainline: WARNING: CONFIG_PVH is not set in the configuration" >&2
+    echo "prepare-mainline: QEMU will refuse to boot the image without the note" >&2
+fi
+
+# And the note itself, read with whatever the host has. The formats of the
+# tools differ, so the owner and the type are matched separately and the
+# leading zeros are optional.
 note_found=0
 for reader in llvm-readelf readelf llvm-readobj; do
-    if command -v "$reader" >/dev/null 2>&1; then
-        if "$reader" -n "$output/vmlinux" 2>/dev/null | grep -q "0x00000012"; then
-            note_found=1
-            echo "prepare-mainline: the PVH note is present in the image"
-        fi
-        break
+    command -v "$reader" >/dev/null 2>&1 || continue
+    notes="$("$reader" -n "$output/vmlinux" 2>/dev/null)"
+    if printf '%s' "$notes" | grep -q "Xen" && printf '%s' "$notes" | grep -Eq "0x0*12"; then
+        note_found=1
+        echo "prepare-mainline: the PVH note is present in the image"
+    else
+        echo "prepare-mainline: the note was not found with $reader" >&2
     fi
+    break
 done
 if [ "$note_found" -eq 0 ]; then
-    echo "prepare-mainline: WARNING: the PVH note was not found in the image" >&2
+    echo "prepare-mainline: WARNING: the PVH note was not confirmed in the image" >&2
     echo "prepare-mainline: QEMU will refuse to boot it" >&2
-    echo "prepare-mainline: check that CONFIG_PVH is enabled" >&2
+    echo "prepare-mainline: check that CONFIG_PVH is enabled and that the build" >&2
+    echo "prepare-mainline: used that configuration" >&2
 fi
 
 echo "prepare-mainline: wrote $output/vmlinux and $output/kernel-version.txt"

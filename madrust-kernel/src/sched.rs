@@ -484,17 +484,15 @@ pub fn schedule() {
         // return address of this call and continues in this function.
         unsafe {
             (*old_context).rip = madrust_context_resume as *const () as usize as u64;
-            processor.last_out.store(current, Ordering::Release);
+            processor.record_departure(current);
             madrust_context_switch(old_context, new_context);
         }
 
         // Control returns here only when another thread switches back to this
-        // one. The thread that brought it back has left the processor, so its
-        // stack is no longer in use and the slot may be reclaimed.
-        let out = processor.last_out.swap(NO_THREAD, Ordering::AcqRel);
-        if out != NO_THREAD {
-            thread::set_on_cpu(out, None);
-        }
+        // one. Every thread that left this processor while it was away is no
+        // longer on it, so its slot may be reclaimed. There can be more than
+        // one, which is why the departures are kept in a ring.
+        processor.take_departures(|out| thread::set_on_cpu(out, None));
     } else if thread::state(current) == Some(ThreadState::Finished) {
         // The last thread retired. There is nothing left to schedule.
         cpu::enable_interrupts();

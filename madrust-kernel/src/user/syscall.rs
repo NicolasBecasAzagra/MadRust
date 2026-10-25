@@ -952,7 +952,12 @@ fn sys_clone(flags: u64, child_stack: u64, _parent_tid: u64, child_tid: u64, tls
 
     match crate::sched::spawn_user("user", start, fs_base, clear_child_tid, per_cpu_address()) {
         Ok(id) => i64::try_from(id + 1).unwrap_or(i64::MAX),
-        Err(_) => EAGAIN,
+        Err(error) => {
+            // The reason belongs in the log: a bare EAGAIN sends the reader
+            // looking for the problem in the program instead of in the kernel.
+            crate::kprintln!("[user] clone refused: {error:?}");
+            EAGAIN
+        }
     }
 }
 

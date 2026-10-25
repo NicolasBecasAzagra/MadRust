@@ -65,6 +65,13 @@ const MSR_GS_BASE: u32 = 0xc000_0101;
 const MSR_KERNEL_GS_BASE: u32 = 0xc000_0102;
 
 /// State that belongs to exactly one processor.
+/// Number of departed threads a processor can remember.
+///
+/// A processor has one runnable thread at a time, so the number of threads
+/// that can be waiting to come back is the number of runnable threads, which
+/// the queue bounds.
+pub const DEPARTED_SLOTS: usize = 8;
+
 #[repr(C, align(64))]
 pub struct PerCpu {
     /// User stack pointer saved by the system call stub at `GS:0`.
@@ -91,8 +98,17 @@ pub struct PerCpu {
     pub finished: AtomicUsize,
     /// Thread table slot of the idle thread of this processor.
     pub idle_thread: AtomicUsize,
-    /// Thread the switch left behind, cleared when it resumes.
-    pub last_out: AtomicUsize,
+    /// Threads the switch left behind, cleared when they resume.
+    ///
+    /// A ring, not a single slot: two threads can leave this processor
+    /// before either comes back, and with a single slot the first one would
+    /// keep its `on_cpu` for ever, which stops the thread table from being
+    /// reclaimed.
+    pub departed: [AtomicUsize; DEPARTED_SLOTS],
+    /// Index of the next slot to write.
+    pub depart_head: AtomicUsize,
+    /// Index of the next slot to read.
+    pub depart_tail: AtomicUsize,
     /// Serialises the run queue of this processor only.
     queue_lock: IrqSpinLock,
     /// Threads that may run on this processor.
@@ -108,6 +124,33 @@ pub struct PerCpu {
 unsafe impl Sync for PerCpu {}
 
 impl PerCpu {
+    /// Record that a thread left this processor.
+    ///
+    /// The slot is written before the index is published, so a reader that
+    /// sees the index also sees the thread.
+    pub fn record_departure(&self, thread: usize) {
+        let head = self.depart_head.load(Ordering::Relaxed);
+        self.departed[head % DEPARTED_SLOTS].store(thread, Ordering::Release);
+        self.depart_head.store(head + 1, Ordering::Release);
+    }
+
+    /// The threads that left this processor and have not come back yet.
+    ///
+    /// They are handed to a callback instead of a vector: the kernel does not
+    /// allocate to report a list.
+    pub fn take_departures(&self, mut visit: impl FnMut(usize)) {
+        loop {
+            let tail = self.depart_tail.load(Ordering::Acquire);
+            let thread = self.departed[tail % DEPARTED_SLOTS].load(Ordering::Acquire);
+            if thread == NO_THREAD {
+                break;
+            }
+            self.departed[tail % DEPARTED_SLOTS].store(NO_THREAD, Ordering::Release);
+            self.depart_tail.store(tail + 1, Ordering::Release);
+            visit(thread);
+        }
+    }
+
     /// Empty block for one processor.
     pub const fn new(index: usize) -> Self {
         Self {
@@ -122,7 +165,9 @@ impl PerCpu {
             current: AtomicUsize::new(NO_THREAD),
             finished: AtomicUsize::new(0),
             idle_thread: AtomicUsize::new(NO_THREAD),
-            last_out: AtomicUsize::new(NO_THREAD),
+            departed: [const { AtomicUsize::new(NO_THREAD) }; DEPARTED_SLOTS],
+            depart_head: AtomicUsize::new(0),
+            depart_tail: AtomicUsize::new(0),
             queue_lock: IrqSpinLock::new("run queue"),
             queue: UnsafeCell::new(RunQueue::new()),
             slice: UnsafeCell::new(Slice::new(crate::sched::SLICE_TICKS)),
