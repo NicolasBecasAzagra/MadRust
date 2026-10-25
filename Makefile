@@ -77,7 +77,15 @@ all: build
 # The kernel embeds the user program, so it is always built first. The copy
 # into the repository is what the kernel embeds: the linker writes through
 # mmap, which is not reliable on every file system, while a plain copy is.
-userland:
+# The user programs are standard library programs for Linux musl, so the
+# precompiled standard library of that target has to exist for the pinned
+# toolchain. Installing it here means a fresh machine builds without a manual
+# step.
+musl-std:
+	@rustup target list --installed --toolchain $(TOOLCHAIN) | grep -qx $(USER_TARGET) || \
+		rustup target add --toolchain $(TOOLCHAIN) $(USER_TARGET)
+
+userland: musl-std
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(USERLAND_FLAGS)
 	cp $(TARGET_DIR)/userland/$(USER_TARGET)/release/madrust-userland $(USERLAND_ELF)
 
@@ -92,7 +100,7 @@ bench:
 
 # The inference runtime, built with the same rust-lld recipe as the workload so
 # the same bytes can run on MadRust and on mainline Linux.
-infer:
+infer: musl-std
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(INFER_FLAGS)
 	cp $(INFER_TARGET_DIR)/$(USER_TARGET)/release/madrust-infer $(INFER_ELF)
 
