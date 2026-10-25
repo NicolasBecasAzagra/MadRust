@@ -93,6 +93,22 @@ jobs:
           grep -q "DIV0" serial.log
           grep -q "TICKS 100" serial.log
 
+      - name: Boot kernel with four processors
+        run: |
+          # The multiprocessor path has its own race, so it is a gate of its
+          # own and not a variation of the single processor boot.
+          timeout 120 qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 4 -m 512M \
+            -kernel "$(make -s print-kernel-path)" \
+            -display none -monitor none -no-reboot \
+            -serial file:smp.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          status=$?
+          echo "QEMU exit status: $status"
+          cat smp.log
+          test "$status" -eq 33
+          grep -q "SMP processors=4" smp.log
+          grep -q "SMP OK cpus=4" smp.log
+
       - name: Boot kernel with the initramfs
         run: |
           # The weights workload touches the whole region it measures, so the

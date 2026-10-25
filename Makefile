@@ -60,13 +60,15 @@ INFER_MODEL_DIR := $(TARGET_DIR)/infer-model
 INFER_INITRAMFS := $(INFER_DIR)/initramfs.cpio
 
 QEMU ?= qemu-system-x86_64
+# Number of processors for the multiprocessor boot.
+SMP ?= 4
 QEMU_FLAGS := -M q35 -m 512M \
 	-kernel $(KERNEL) \
 	-display none -monitor none -no-reboot \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path infer infer-model infer-initramfs run-infer
+.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path infer infer-model infer-initramfs run-infer
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -131,6 +133,20 @@ run-infer: infer-initramfs build
 
 build: userland infer
 	$(CARGO) build --release $(KERNEL_FLAGS)
+
+# The multiprocessor boot. The kernel finds the processors in the ACPI table
+# and starts them, so this is the only way to exercise that path.
+run-smp: build
+	@$(QEMU) -M q35 -cpu Skylake-Client -smp $(SMP) -m 512M \
+		-kernel $(KERNEL) \
+		-display none -monitor none -no-reboot \
+		-serial stdio \
+		-device isa-debug-exit,iobase=0xf4,iosize=0x04; status=$$?; \
+	if [ $$status -eq 33 ]; then \
+		echo "boot OK with $(SMP) processors (QEMU exit status 33)"; \
+	else \
+		echo "unexpected QEMU exit status $$status"; exit $$status; \
+	fi
 
 run: build
 	@$(QEMU) $(QEMU_FLAGS); status=$$?; \
