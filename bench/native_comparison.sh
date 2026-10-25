@@ -89,15 +89,16 @@ LLAMA="$WORK/llama.cpp/build/bin/llama-cli"
 
 echo "== the MadRust runtime, natively =="
 RUNTIME="$REPO/madrust-infer/madrust-infer.elf"
-if [ ! -x "$RUNTIME" ]; then
-    if ! command -v cargo >/dev/null 2>&1; then
-        echo "native_comparison: cargo is needed to build the runtime" >&2
-        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal" >&2
-        echo "  then run 'make infer' in $REPO" >&2
-        exit 1
-    fi
-    (cd "$REPO" && make infer)
+# The runtime is always rebuilt: a checkout that was updated has a binary that
+# is older than the source, and a stale binary measures the wrong thing
+# without saying so.
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "native_comparison: cargo is needed to build the runtime" >&2
+    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal" >&2
+    echo "  then run 'make infer' in $REPO" >&2
+    exit 1
 fi
+(cd "$REPO" && make infer)
 RUNTIME_LOG="$WORK/runtime.log"
 # The runtime pins the weights, so the limit of the process has to allow it.
 # Without the privilege the pin fails and the run continues without the
