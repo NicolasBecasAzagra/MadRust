@@ -25,12 +25,14 @@ pub const PROT_WRITE: u64 = 1 << 1;
 pub enum MappingKind {
     /// Private anonymous memory, faulted in one page at a time.
     Anonymous,
-    /// Read only memory borrowed from a file of the initramfs.
+    /// Read only memory backed by a file of the initramfs.
     ///
     /// `physical` is the physical address of the first byte of the file data
     /// and `offset` is the file offset the mapping starts at. Both are needed
-    /// because the archive lives in reserved physical memory and a fault maps
-    /// the page that already holds the bytes.
+    /// because the archive lives in reserved physical memory and a 4 KiB fault
+    /// maps the page that already holds the bytes. A 2 MiB fault copies the
+    /// range into an aligned block first, because the archive is not aligned to
+    /// a large page.
     File { physical: u64, offset: u64 },
 }
 
@@ -48,7 +50,9 @@ pub struct Mapping {
     /// `true` when the range asked for 2 MiB pages with `madvise`.
     ///
     /// It is a hint: the fault handler still falls back to a 4 KiB page when
-    /// the address is not aligned or when the block cannot be allocated.
+    /// the address is not aligned or when the block cannot be allocated. For a
+    /// file mapping the block holds a copy of the file data, because the
+    /// archive is not aligned to 2 MiB.
     pub huge: bool,
 }
 

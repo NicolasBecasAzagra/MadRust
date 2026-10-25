@@ -157,5 +157,10 @@ pub fn run(program: &Program) -> u64 {
     let (used, capacity) = vm::mapping_usage();
     crate::kprintln!("[user] mappings: {} of {} slots in use", used, capacity);
     crate::kprintln!("[user] large pages mapped: {}", vm::large_pages());
+    crate::kprintln!(
+        "[user] file page faults: {} ({} large pages)",
+        vm::file_page_faults(),
+        vm::file_large_pages()
+    );
     status
 }

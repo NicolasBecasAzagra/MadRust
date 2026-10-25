@@ -155,6 +155,11 @@ fn generate_with_prompt(
         model.weight_dtype(),
         model.tensor_count()
     );
+    println!(
+        "INFER map huge={} bytes={}",
+        file.huge_pages_requested(),
+        file.mapped_len()
+    );
     println!("INFER source {}", config.provenance());
     println!(
         "INFER dims hidden={} layers={} q_heads={} kv_heads={} head_dim={} ffn={} vocab={} eps={} rope_theta={} rope={} tie={} eos={}",

@@ -232,6 +232,18 @@ pub fn map_page(address: u64, physical: u64, writable: bool) -> Option<()> {
     Some(())
 }
 
+/// `true` when a 2 MiB leaf can still be installed at `address`.
+///
+/// The page directory entry must be empty: a present entry is either an
+/// existing 2 MiB leaf or a page table that holds 4 KiB leaves, and neither can
+/// be replaced by a large page without losing mappings.
+pub fn large_page_slot_free(address: u64) -> bool {
+    match directory_entry(address) {
+        Some(directory) => read_entry(directory, 0) & paging::PRESENT == 0,
+        None => true,
+    }
+}
+
 /// Map one 2 MiB user page at `address`.
 ///
 /// The page directory entry must still be empty, so a range that already

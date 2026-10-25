@@ -2,16 +2,17 @@
 //! A read only file mapping over the initramfs file descriptor.
 //!
 //! The model is opened once, mapped with `mmap(PROT_READ, MAP_PRIVATE)` and
-//! never copied: a tensor read goes straight to the page the initramfs already
-//! holds. The mapping covers every whole page of the file. The final partial
-//! page cannot be mapped on MadRust, whose file mappings must end inside the
-//! file, so those last at most 4095 bytes are read once into a small buffer and
-//! the accessors fall back to it. No tensor is duplicated and the weights stay
-//! in the archive's physical pages.
+//! marked with `madvise(MADV_HUGEPAGE)`. The mapping covers every whole page of
+//! the file. The final partial page cannot be mapped on MadRust, whose file
+//! mappings must end inside the file, so those last at most 4095 bytes are read
+//! once into a small buffer and the accessors fall back to it.
 //!
-//! The last partial page is the only copy this module makes. For a model that
-//! ends with a tensor, that tensor's final reads come from the buffer; the
-//! other weights are read through the mapping.
+//! On a kernel with large file pages, the first access to each aligned 2 MiB
+//! chunk copies the file data into an aligned block and maps that block read
+//! only. The copy is the kernel's price for the alignment; the runtime still
+//! makes only the one copy of the final partial page. For a model that ends
+//! with a tensor, that tensor's final reads come from the buffer; the other
+//! weights are read through the mapping.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -25,10 +26,12 @@ const PAGE_SIZE: usize = 4096;
 const SYS_OPENAT: u64 = 257;
 const SYS_MMAP: u64 = 9;
 const SYS_MUNMAP: u64 = 11;
+const SYS_MADVISE: u64 = 28;
 const AT_FDCWD: u64 = -100i64 as u64;
 const O_RDONLY: u64 = 0;
 const PROT_READ: u64 = 1;
 const MAP_PRIVATE: u64 = 2;
+const MADV_HUGEPAGE: u64 = 14;
 
 /// Open a path from the initramfs read only.
 ///
@@ -105,6 +108,7 @@ pub struct Mapping {
     base: *mut u8,
     mapped_len: usize,
     file_len: usize,
+    huge: bool,
     tail: Vec<u8>,
 }
 
@@ -116,13 +120,17 @@ impl Mapping {
             .map_err(|_| Error::new("mapping: file is too large for this target"))?;
         let mapped_len = file_len / PAGE_SIZE * PAGE_SIZE;
 
-        let base = if mapped_len == 0 {
-            core::ptr::null_mut()
+        let (base, huge) = if mapped_len == 0 {
+            (core::ptr::null_mut(), false)
         } else {
             // SAFETY: `file` is open read only for the duration of the call and
             // the kernel validates the descriptor and the length. The flags
             // ask for a private, read only mapping of whole pages.
-            unsafe { map_read(file.as_raw_fd(), mapped_len)? }
+            let base = unsafe { map_read(file.as_raw_fd(), mapped_len)? };
+            // The advice is a hint, not a requirement: a kernel that does not
+            // implement file large pages reports a failure and the mapping
+            // stays correct at 4 KiB.
+            (base, request_huge_pages(base, mapped_len))
         };
 
         let mut tail = Vec::new();
@@ -136,6 +144,7 @@ impl Mapping {
             base,
             mapped_len,
             file_len,
+            huge,
             tail,
         })
     }
@@ -148,6 +157,11 @@ impl Mapping {
     /// Bytes that are mapped, always a multiple of the page size.
     pub fn mapped_len(&self) -> usize {
         self.mapped_len
+    }
+
+    /// `true` when the kernel accepted `madvise(MADV_HUGEPAGE)` for the range.
+    pub fn huge_pages_requested(&self) -> bool {
+        self.huge
     }
 
     /// The mapped prefix.
@@ -279,6 +293,29 @@ unsafe fn map_read(descriptor: i32, length: usize) -> Result<*mut u8> {
     } else {
         Ok(address as *mut u8)
     }
+}
+
+/// Ask the kernel to back `[base, base + length)` with 2 MiB pages.
+///
+/// Returns `true` when the kernel accepted the advice. The mapping is already
+/// valid without it, so a refusal only means the range stays on 4 KiB pages.
+fn request_huge_pages(base: *mut u8, length: usize) -> bool {
+    let result: i64;
+    // SAFETY: `base` and `length` are the values a successful `mmap` returned,
+    // and `madvise` only marks the range; the kernel validates the whole range.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") SYS_MADVISE as i64 => result,
+            in("rdi") base as u64,
+            in("rsi") length as u64,
+            in("rdx") MADV_HUGEPAGE,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    result == 0
 }
 
 /// Remove a mapping.

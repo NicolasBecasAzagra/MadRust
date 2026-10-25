@@ -406,6 +406,16 @@ def write_summary(out_dir: Path, table: list[dict[str, Any]], metadata: dict[str
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--madrust", help="MadRust kernel image")
+    parser.add_argument(
+        "--madrust-variant",
+        action="append",
+        metavar="NAME=IMAGE",
+        help=(
+            "another MadRust kernel image to measure beside the current one, "
+            "repeatable. The label is 'madrust-NAME', so an older build can be "
+            "compared with the new one in a single run."
+        ),
+    )
     parser.add_argument("--mainline", help="mainline Linux kernel image")
     parser.add_argument(
         "--mainline-variant",
@@ -457,6 +467,15 @@ def main() -> int:
         raise SystemExit(f"MadRust image not found: {madrust_image}")
 
     kernels: list[tuple[str, Path, str]] = [("madrust", madrust_image, "")]
+    for variant in args.madrust_variant or []:
+        name, _, image = variant.partition("=")
+        name = name.strip()
+        if not name or not image:
+            raise SystemExit(f"invalid --madrust-variant: {variant}")
+        variant_image = Path(image).resolve()
+        if not variant_image.is_file():
+            raise SystemExit(f"MadRust variant image not found: {variant_image}")
+        kernels.append((f"madrust-{name}", variant_image, ""))
     if not args.madrust_only:
         if not args.mainline:
             raise SystemExit("--mainline is required unless --madrust-only is set")

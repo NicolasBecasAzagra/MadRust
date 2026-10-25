@@ -102,6 +102,16 @@ impl ModelFile {
         self.header.tensors().len()
     }
 
+    /// Bytes of the model that are mapped, always a multiple of the page size.
+    pub fn mapped_len(&self) -> usize {
+        self.mapping.mapped_len()
+    }
+
+    /// `true` when the kernel accepted the large page advice on the mapping.
+    pub fn huge_pages_requested(&self) -> bool {
+        self.mapping.huge_pages_requested()
+    }
+
     /// Borrow one tensor, validating its dtype, shape and byte range.
     fn tensor(&self, name: &str) -> Result<Tensor<'_>> {
         let info = self
