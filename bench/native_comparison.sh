@@ -73,7 +73,7 @@ echo "native_comparison: using $PYTHON"
 if [ ! -f "$MODEL_DIR/merges.txt" ]; then
     echo "native_comparison: $MODEL_DIR/merges.txt is missing" >&2
     echo "  the tokenizer needs it next to vocab.json, and so does the GGUF conversion:" >&2
-    echo "  curl -L --fail -o '$MODEL_DIR/merges.txt' \" >&2
+    echo "  curl -L --fail -o '$MODEL_DIR/merges.txt' \\" >&2
     echo "    'https://huggingface.co/HuggingFaceTB/SmolLM2-135M/resolve/93efa2f097d58c2a74874c7e644dbc9b0cee75a2/merges.txt'" >&2
 fi
 
