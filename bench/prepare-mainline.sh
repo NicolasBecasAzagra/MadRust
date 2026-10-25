@@ -35,9 +35,13 @@ make defconfig
 # whether the note is generated depends on them. Enabling only the general
 # one is not enough: syncconfig turns it off again when the dependency is
 # not set.
-scripts/config --enable CONFIG_XEN=y
-scripts/config --enable CONFIG_XEN_PVH=y
-scripts/config --enable CONFIG_PVH=y
+# The value is written in capitals on purpose. These three symbols live in a
+# choice, and a choice only accepts "Y"; the lower case value that --enable
+# writes is rejected, the override is dropped, and the option ends up off
+# again when the configuration is resolved.
+scripts/config --set-val CONFIG_XEN Y
+scripts/config --set-val CONFIG_XEN_PVH Y
+scripts/config --set-val CONFIG_PVH Y
 # The workload asks for large pages with madvise. A reference kernel without
 # transparent huge pages refuses the advice with EINVAL, and then the large
 # page regime cannot be compared at all.
