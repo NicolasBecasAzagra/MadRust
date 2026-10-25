@@ -1,11 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
 #
-# Compare the MadRust runtime against the reference implementation of local
-# inference, natively, on the same machine, with the same model.
+# Compare the MadRust runtime against the reference implementations of local
+# inference, natively, on the same machine, with the same weights.
 #
 # This is the comparison a user would make: not our kernel against another
-# kernel, but our program against the program people actually run. Both run
+# kernel, but our program against the programs people actually run. Both run
 # natively here, so the numbers describe the arithmetic and not an emulator.
 #
 # The kernel part of the story is measured separately, by the rig in
@@ -16,9 +16,14 @@
 # The model directory has to hold the files the runtime opens:
 #   model.safetensors  vocab.json  config.json
 #
-# Needs a Linux host with cmake, a C++ compiler and curl. It builds
-# llama.cpp from source, downloads the GGUF checkpoint of the same model and
-# runs both programs with the same prompt.
+# Needs a Linux host with cmake, a C++ compiler, curl, git and a Python
+# environment with torch and transformers. The reference in PyTorch is always
+# measured; llama.cpp is measured too when its GGUF conversion of the same
+# checkpoint can be built, which needs the converter that comes with it.
+#
+# The GGUF is optional on purpose: it is a conversion of the same weights,
+# and a quantized one would not be the same arithmetic. The comparison that
+# isolates the arithmetic is against the reference in float32.
 
 set -eu
 
@@ -29,23 +34,23 @@ PROMPT="The capital of France is"
 TOKENS=${TOKENS:-32}
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
-# The same checkpoint the runtime reads, in the format llama.cpp reads.
-MODEL_REPO=${MODEL_REPO:-HuggingFaceTB/SmolLM2-135M}
-MODEL_REV=${MODEL_REV:-93efa2f097d58c2a74874c7e644dbc9b0cee75a2}
-GGUF=${GGUF:-model-f16.gguf}
-
 mkdir -p "$WORK"
 
 # Preflight: say what is missing instead of failing in the middle of a build.
 missing=""
-for tool in git cmake curl cc c++; do
+for tool in git cmake curl python3; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         missing="$missing $tool"
     fi
 done
 if [ -n "$missing" ]; then
     echo "native_comparison: missing tools:$missing" >&2
-    echo "  sudo apt update && sudo apt install -y cmake build-essential curl git" >&2
+    echo "  sudo apt update && sudo apt install -y cmake build-essential curl git python3-venv" >&2
+    exit 1
+fi
+if ! python3 -c "import torch, transformers" >/dev/null 2>&1; then
+    echo "native_comparison: torch and transformers are needed for the reference" >&2
+    echo "  python3 -m venv v && v/bin/pip install torch transformers" >&2
     exit 1
 fi
 
@@ -59,14 +64,7 @@ cmake --build "$WORK/llama.cpp/build" --config Release -j "$(nproc 2>/dev/null |
     --target llama-cli >/dev/null
 LLAMA="$WORK/llama.cpp/build/bin/llama-cli"
 
-echo "== fetching the checkpoint in the format llama.cpp reads =="
-if [ ! -f "$MODEL_DIR/$GGUF" ]; then
-    curl -L --fail -o "$MODEL_DIR/$GGUF" \
-        "https://huggingface.co/$MODEL_REPO/resolve/$MODEL_REV/$GGUF"
-fi
-
 echo "== the MadRust runtime, natively =="
-# The runtime is built for the Linux musl target and runs on any Linux host.
 RUNTIME="$REPO/madrust-infer/madrust-infer.elf"
 if [ ! -x "$RUNTIME" ]; then
     if ! command -v cargo >/dev/null 2>&1; then
@@ -81,20 +79,35 @@ RUNTIME_LOG="$WORK/runtime.log"
 MADRUST_INFER_ROOT="$MODEL_DIR" "$RUNTIME" "$TOKENS" > "$RUNTIME_LOG" 2>&1 || true
 grep -E '^INFER (tok_per_s|ttft_ms|tokens)' "$RUNTIME_LOG" || true
 
-echo "== llama.cpp, natively =="
+echo "== the reference in PyTorch, natively =="
+TORCH_LOG="$WORK/torch.log"
+python3 "$REPO/bench/reference/torch_reference.py" --model-dir "$MODEL_DIR" \
+    --prompt "$PROMPT" --tokens "$TOKENS" --out "$WORK/torch.json" | tee "$TORCH_LOG"
+
+echo "== llama.cpp, natively, when its checkpoint can be converted =="
+GGUF="$MODEL_DIR/smollm2-135m-f16.gguf"
 LLAMA_LOG="$WORK/llama.log"
-"$LLAMA" -m "$MODEL_DIR/$GGUF" -p "$PROMPT" -n "$TOKENS" --temp 0 \
-    --no-display-prompt -no-cnv --seed 0 > "$LLAMA_LOG" 2>&1 || true
-grep -E 'eval time|tokens per second' "$LLAMA_LOG" || tail -5 "$LLAMA_LOG"
+if [ ! -f "$GGUF" ] && [ -f "$WORK/llama.cpp/convert_hf_to_gguf.py" ]; then
+    echo "converting the checkpoint, this takes a while"
+    (cd "$WORK" && python3 llama.cpp/convert_hf_to_gguf.py "$MODEL_DIR" \
+        --outfile "$GGUF" --outtype f16 >/dev/null 2>&1) || true
+fi
+if [ -f "$GGUF" ]; then
+    "$LLAMA" -m "$GGUF" -p "$PROMPT" -n "$TOKENS" --temp 0 \
+        --no-display-prompt -no-cnv --seed 0 > "$LLAMA_LOG" 2>&1 || true
+    grep -E 'tokens per second|eval time' "$LLAMA_LOG" || tail -3 "$LLAMA_LOG"
+else
+    echo "no GGUF available, llama.cpp is not measured"
+    : > "$LLAMA_LOG"
+fi
 
 echo "== writing $OUT =="
-MADRUST_INFER_ROOT="$MODEL_DIR" "$RUNTIME" "$TOKENS" > "$WORK/runtime.json.log" 2>&1 || true
-python3 - "$RUNTIME_LOG" "$LLAMA_LOG" "$OUT" "$MODEL_DIR" "$TOKENS" <<'PY'
+python3 - "$RUNTIME_LOG" "$WORK/torch.json" "$LLAMA_LOG" "$OUT" "$TOKENS" <<'PY'
 import json
 import re
 import sys
 
-runtime_log, llama_log, out, model_dir, tokens = sys.argv[1:6]
+runtime_log, torch_json, llama_log, out, tokens = sys.argv[1:6]
 
 
 def read(path):
@@ -113,21 +126,31 @@ def one(pattern, text, cast=float):
     return cast(found.group(1)) if found else None
 
 
+try:
+    torch = json.load(open(torch_json))
+except Exception:
+    torch = {}
+
 data = {
-    "model": "HuggingFaceTB/SmolLM2-135M",
     "tokens": int(tokens),
     "madrust": {
         "tokens_per_second": one(r"INFER tok_per_s ([0-9.]+)", runtime),
         "time_to_first_token_ms": one(r"INFER ttft_ms ([0-9.]+)", runtime),
+    },
+    "pytorch": {
+        "tokens_per_second": torch.get("tokens_per_second"),
+        "seconds": torch.get("seconds"),
+        "new_tokens": torch.get("new_tokens"),
     },
     "llamacpp": {
         "tokens_per_second": one(r"([0-9.]+) tokens per second", llama),
         "time_to_first_token_ms": one(r"eval time = ([0-9.]+) ms", llama),
     },
     "notes": [
-        "Both programs run natively on the same host with the same checkpoint.",
-        "The llama.cpp number is its own evaluation rate, reported by the program.",
-        "The MadRust number is the rate of the same forward pass written in Rust.",
+        "Every program runs natively on this host, with the same weights.",
+        "The PyTorch number is the reference in float32, which is the same arithmetic the Rust runtime does.",
+        "The llama.cpp number is optional and is a converted checkpoint, so it is a different precision.",
+        "The kernel part of the story is measured by bench/run.py, which boots both kernels.",
     ],
 }
 with open(out, "w") as handle:
