@@ -137,6 +137,31 @@ memory, so the kernel copies it into a large page once, the way the read only
 huge pages of a file system do. That doubles the memory a mapped file
 occupies, and the cost is in the report.
 
+## Results: the arithmetic, measured against the reference
+
+The kernel part of the story is measured by the rig, which boots two kernels.
+The arithmetic part is measured separately, natively, because that is the
+comparison a user makes: not our kernel against another kernel, but our
+program against the programs people run. Both programs run natively on the
+same host, with the same weights, and they produce **the same thirty two
+tokens**, so what is compared is the arithmetic.
+
+| Natively, one host, one checkpoint | tokens per second | time to the first token |
+|---|---|---|
+| MadRust runtime, Rust, no dispatcher and no autograd | **23.6** | **286 ms** |
+| Reference implementation, eager, float32 | 10.9 | (2.93 s for 32 tokens) |
+
+A specialised forward pass written in Rust, with blocked matrix multiplication
+and the vector instructions of the host, is 2.2 times faster than the eager
+path of the reference implementation on this model, and it pins the weights in
+about seventy milliseconds, which is inside the time to the first token.
+
+The claim is narrow on purpose. The reference runs in eager mode, so its
+dispatcher and its autograd are part of what it costs; a compiled or quantized
+reference would be a different comparison. The host varies by around thirty
+per cent between runs, so this is a sample and not a precise measurement. The
+raw values are in `bench/results/native/`.
+
 ## Results: serving a model
 
 The runtime serves SmolLM2-135M, revision
