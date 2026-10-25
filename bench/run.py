@@ -163,12 +163,8 @@ def qemu_command(
         "q35",
         "-cpu",
         "Skylake-Client",
-        "-smp",
-        "1",
         "-m",
         memory,
-        "-smp",
-        smp,
         "-kernel",
         str(image),
         "-initrd",
@@ -185,6 +181,10 @@ def qemu_command(
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
+    # The number of processors is only given when it is not the default, so
+    # the command line that the report shows has no repeated argument.
+    if smp != "1":
+        command[5:5] = ["-smp", smp]
     if accel == "kvm":
         command.insert(1, "-enable-kvm")
     elif accel == "hvf":
