@@ -28,6 +28,7 @@ import platform
 import re
 import shlex
 import statistics
+import shutil
 import subprocess
 import sys
 import time
@@ -196,6 +197,11 @@ def read_log(path: Path) -> str:
         return path.read_text(errors="replace")
     except FileNotFoundError:
         return ""
+
+
+def command_available(tool: str) -> bool:
+    """Whether a tool is on the path."""
+    return shutil.which(tool) is not None
 
 
 def peak_rss_kb(pid: int) -> int:
@@ -522,7 +528,24 @@ def main() -> int:
     root = repo_root()
     madrust_image = Path(args.madrust or default_madrust_image()).resolve()
     if not madrust_image.is_file():
+        # The kernel is built here when it is missing, so a host that has only
+        # cloned the repository can measure. A checkout that was updated and
+        # keeps an old image would measure the wrong kernel, so the build is
+        # always run.
+        print("[rig] building the MadRust kernel", file=sys.stderr)
+        if not command_available("cargo"):
+            raise SystemExit(
+                "cargo is needed to build the kernel: "
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs "
+                "| sh -s -- -y --profile minimal"
+            )
+        subprocess.run(["make", "build"], cwd=repo_root(), check=True)
+        madrust_image = Path(args.madrust or default_madrust_image()).resolve()
+    if not madrust_image.is_file():
         raise SystemExit(f"MadRust image not found: {madrust_image}")
+    else:
+        # Always rebuild, for the same reason as the runtime.
+        subprocess.run(["make", "build"], cwd=repo_root(), check=True)
 
     kernels: list[tuple[str, Path, str]] = [("madrust", madrust_image, "")]
     for variant in args.madrust_variant or []:
