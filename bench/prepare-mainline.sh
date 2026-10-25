@@ -31,7 +31,20 @@ fi
 
 cd "$repo/artifacts/linux"
 make defconfig
+# The Xen guest support and its PVH part, because the option that decides
+# whether the note is generated depends on them. Enabling only the general
+# one is not enough: syncconfig turns it off again when the dependency is
+# not set.
+scripts/config --enable CONFIG_XEN=y
+scripts/config --enable CONFIG_XEN_PVH=y
 scripts/config --enable CONFIG_PVH=y
+# The configuration has to be resolved without questions: a new symbol in the
+# tree would otherwise stop the build waiting for an answer that never comes.
+make olddefconfig
+if ! grep -q "^CONFIG_PVH=y" .config; then
+    echo "prepare-mainline: WARNING: CONFIG_PVH is not set after the configuration" >&2
+    echo "prepare-mainline: the image will not boot under QEMU" >&2
+fi
 # The workload asks for large pages with madvise. A reference kernel without
 # transparent huge pages refuses the advice with EINVAL, and then the large
 # page regime cannot be compared at all.
