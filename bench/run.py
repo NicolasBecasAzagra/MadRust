@@ -562,7 +562,11 @@ def main() -> int:
             raise SystemExit("--mainline is required unless --madrust-only is set")
         mainline_image = Path(args.mainline).resolve()
         if not mainline_image.is_file():
-            raise SystemExit(f"mainline image not found: {mainline_image}")
+            raise SystemExit(
+                f"mainline image not found: {mainline_image}\n"
+                "  the reference kernel is built with bench/prepare-mainline.sh, "
+                "or any Linux kernel with a PVH note works"
+            )
         kernels.append(("mainline", mainline_image, ""))
         for variant in args.mainline_variant or []:
             name, _, extra = variant.partition("=")
