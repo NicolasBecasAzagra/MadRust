@@ -35,13 +35,15 @@ make defconfig
 # whether the note is generated depends on them. Enabling only the general
 # one is not enough: syncconfig turns it off again when the dependency is
 # not set.
-# The value is written in capitals on purpose. These three symbols live in a
-# choice, and a choice only accepts "Y"; the lower case value that --enable
-# writes is rejected, the override is dropped, and the option ends up off
-# again when the configuration is resolved.
-scripts/config --set-val CONFIG_XEN Y
-scripts/config --set-val CONFIG_XEN_PVH Y
-scripts/config --set-val CONFIG_PVH Y
+# The syntax is the name of the symbol and nothing else: scripts/config adds
+# the value itself, in lower case, which is what a boolean accepts. Writing
+# "=y" after the name makes the value part of the name and the option is
+# rejected.
+#
+# XEN_PVH is the option that selects PVH, which is the one that makes the
+# kernel emit the note QEMU needs.
+scripts/config --enable XEN
+scripts/config --enable XEN_PVH
 # The workload asks for large pages with madvise. A reference kernel without
 # transparent huge pages refuses the advice with EINVAL, and then the large
 # page regime cannot be compared at all.
