@@ -48,5 +48,26 @@ make -j"$(nproc 2>/dev/null || echo 4)"
 cp vmlinux "$output/vmlinux"
 make kernelversion > "$output/kernel-version.txt"
 
+# The image has to carry the Xen PVH note, because QEMU loads a 64-bit ELF
+# kernel through that path. Without the note it refuses the image with
+# "Error loading uncompressed kernel without PVH ELF Note", which is a long
+# build to find out.
+note_found=0
+for reader in llvm-readelf readelf llvm-readobj; do
+    if command -v "$reader" >/dev/null 2>&1; then
+        if "$reader" -n "$output/vmlinux" 2>/dev/null | grep -q "0x00000012"; then
+            note_found=1
+            echo "prepare-mainline: the PVH note is present in the image"
+        fi
+        break
+    fi
+done
+if [ "$note_found" -eq 0 ]; then
+    echo "prepare-mainline: WARNING: the PVH note was not found in the image" >&2
+    echo "prepare-mainline: QEMU will refuse to boot it" >&2
+    echo "prepare-mainline: check that CONFIG_PVH is enabled" >&2
+fi
+
 echo "prepare-mainline: wrote $output/vmlinux and $output/kernel-version.txt"
 echo "prepare-mainline: kernel $(cat "$output/kernel-version.txt")"
+echo "prepare-mainline: now run the rig with --mainline $output/vmlinux"
