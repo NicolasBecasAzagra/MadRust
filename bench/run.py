@@ -312,7 +312,7 @@ def parse_results(label: str, text: str, expected: dict[str, int]) -> list[dict[
     for workload, (unit, _) in WORKLOADS.items():
         if workload in OPTIONAL_WORKLOADS and seen[workload] == 0:
             continue
-        for iteration in range(seen[workload], expected[workload]):
+        for iteration in range(seen[workload], expected.get(workload, 0)):
             rows.append(
                 {
                     "kernel": label,
@@ -445,6 +445,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--only",
+        default="",
+        help=(
+            "comma separated list of the workloads this run measures. The rest "
+            "are not expected and are not reported as missing, which is what a "
+            "run with an initramfs that carries only the inference runtime "
+            "needs."
+        ),
+    )
+    parser.add_argument(
         "--timeout", type=float, default=600.0, help="seconds per boot"
     )
     parser.add_argument(
@@ -502,6 +512,13 @@ def main() -> int:
         name: args.iterations if args.iterations is not None else samples
         for name, (_, samples) in WORKLOADS.items()
     }
+
+    only = {name.strip() for name in args.only.split(",") if name.strip()}
+    if only:
+        unknown = only - set(WORKLOADS)
+        if unknown:
+            raise SystemExit(f"unknown workloads: {', '.join(sorted(unknown))}")
+        expected = {name: count for name, count in expected.items() if name in only}
 
     metadata: dict[str, Any] = {
         "qemu": qemu_version(args.qemu),
