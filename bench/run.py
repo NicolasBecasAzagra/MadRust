@@ -690,7 +690,11 @@ def main() -> int:
             f"[rig] {label}: {ok} samples, {errors} errors, {len(rows)} rows recorded",
             file=sys.stderr,
         )
-        if "BENCH DONE" not in text:
+        # The marker belongs to the benchmark workload. A run that measures the
+        # inference runtime does not print it, and its absence is not a fault.
+        if "BENCH DONE" not in text and any(
+            name in expected for name in WORKLOADS if name not in OPTIONAL_WORKLOADS
+        ):
             print(f"[rig] {label}: serial log does not contain BENCH DONE", file=sys.stderr)
         if outcome["reason"]:
             # The reason the run failed belongs in the report, and the output
