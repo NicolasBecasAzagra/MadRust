@@ -167,13 +167,62 @@ def default_madrust_image() -> str:
 
 
 def ensure_initramfs(path: Path) -> None:
-    if path.is_file() and path.stat().st_size > 0:
-        return
+    """Build the initramfs and check that it holds what a guest needs.
+
+    The archive is always rebuilt, like the kernel and the runtime: a run
+    that measures a stale archive measures a program that is not the one in
+    the tree. The archive also carries the device nodes the guest needs, and
+    a console that is not a character device takes the output of the
+    program to a file instead of the serial port, which is a run with no
+    output at all and no explanation.
+    """
     script = repo_root() / "bench" / "mkinitramfs.sh"
     print(f"[rig] building initramfs {path}", file=sys.stderr)
     result = subprocess.run([str(script), str(path)], check=False)
     if result.returncode != 0 or not path.is_file():
         raise SystemExit("cannot build the initramfs")
+    check_initramfs(path)
+
+
+def check_initramfs(path: Path) -> None:
+    """Refuse an archive that cannot carry the output of the program.
+
+    The console has to be a character device with the numbers of the console
+    (5:1). Anything else and the program writes into a file that nobody
+    reads.
+    """
+    data = path.read_bytes()
+    console = None
+    offset = 0
+    while offset + 110 <= len(data):
+        magic = bytes(data[offset : offset + 6])
+        if magic not in (b"070701", b"070702"):
+            break
+        fields = [
+            int(data[offset + 6 + 8 * i : offset + 6 + 8 * (i + 1)], 16)
+            for i in range(13)
+        ]
+        name_size = fields[11]
+        file_size = fields[6]
+        name_start = offset + 110
+        name = bytes(data[name_start : name_start + name_size - 1])
+        if name in (b"./dev/console", b"dev/console"):
+            console = (fields[1], fields[9], fields[10])
+        data_start = (name_start + name_size + 3) & ~3
+        if name == b"TRAILER!!!":
+            break
+        offset = (data_start + file_size + 3) & ~3
+    if console is None:
+        raise SystemExit(
+            f"the initramfs {path} has no /dev/console: the program would run "
+            "without a console and its output would go nowhere"
+        )
+    mode, major, minor = console
+    if mode & 0o170000 != 0o020000 or major != 5 or minor != 1:
+        raise SystemExit(
+            f"the initramfs {path} has a /dev/console that is not the console "
+            f"device: mode={mode & 0o170000:o} major={major} minor={minor}"
+        )
 
 
 def qemu_command(
