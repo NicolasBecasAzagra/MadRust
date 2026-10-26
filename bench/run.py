@@ -184,12 +184,16 @@ def ensure_initramfs(path: Path) -> None:
     check_initramfs(path)
 
 
-def check_initramfs(path: Path) -> None:
-    """Refuse an archive that cannot carry the output of the program.
+def check_initramfs(path: Path, strict: bool = True) -> None:
+    """Check that the archive can carry the output of the program.
 
     The console has to be a character device with the numbers of the console
     (5:1). Anything else and the program writes into a file that nobody
-    reads.
+    reads, and the run looks like a guest that says nothing.
+
+    An archive the rig built has to pass the check. An archive the caller
+    brought is only reported: the rig does not know how that guest gets its
+    console, and it refuses to guess.
     """
     data = path.read_bytes()
     console = None
@@ -212,17 +216,28 @@ def check_initramfs(path: Path) -> None:
         if name == b"TRAILER!!!":
             break
         offset = (data_start + file_size + 3) & ~3
+    problem = ""
     if console is None:
+        problem = "has no /dev/console"
+    else:
+        mode, major, minor = console
+        if mode & 0o170000 != 0o020000 or major != 5 or minor != 1:
+            problem = (
+                f"has a /dev/console that is not the console device: "
+                f"mode={mode & 0o170000:o} major={major} minor={minor}"
+            )
+    if not problem:
+        return
+    if strict:
         raise SystemExit(
-            f"the initramfs {path} has no /dev/console: the program would run "
-            "without a console and its output would go nowhere"
+            f"the initramfs {path} {problem}: the program would run without a "
+            "console and its output would go nowhere"
         )
-    mode, major, minor = console
-    if mode & 0o170000 != 0o020000 or major != 5 or minor != 1:
-        raise SystemExit(
-            f"the initramfs {path} has a /dev/console that is not the console "
-            f"device: mode={mode & 0o170000:o} major={major} minor={minor}"
-        )
+    print(
+        f"[rig] WARNING: the initramfs {path} {problem}: if the program writes "
+        "to the console, its output will not reach the serial port",
+        file=sys.stderr,
+    )
 
 
 def qemu_command(
@@ -726,8 +741,23 @@ def main() -> int:
                 raise SystemExit(f"invalid --mainline-variant: {variant}")
             kernels.append((f"mainline-{name}", mainline_image, extra.strip()))
 
-    initrd = Path(args.initrd).resolve() if args.initrd else root / "bench" / "initramfs.cpio"
-    ensure_initramfs(initrd)
+    if args.initrd:
+        # The caller brought its own archive: it is the one that carries the
+        # checkpoint or the agent, and the rig does not touch it. Rebuilding
+        # it would replace it with the benchmark workload, and the run would
+        # measure something else than what was asked for.
+        initrd = Path(args.initrd).resolve()
+        if not initrd.is_file():
+            raise SystemExit(f"the initramfs {initrd} does not exist")
+        check_initramfs(initrd, strict=False)
+        print(
+            f"[rig] using the initramfs {initrd} "
+            f"({initrd.stat().st_size} bytes), as it was given",
+            file=sys.stderr,
+        )
+    else:
+        initrd = root / "bench" / "initramfs.cpio"
+        ensure_initramfs(initrd)
 
     out_dir = Path(args.out)
     if not out_dir.is_absolute():
