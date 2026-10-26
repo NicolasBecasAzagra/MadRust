@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-agent"
+description = "A tool calling agent over the madrust-infer runtime"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+publish = false
+
+# A separate workspace, exactly like the inference runtime and the benchmark
+# workload: this is a normal Rust program for the Linux musl target, so it
+# shares neither the kernel target nor the kernel rustflags. The Makefile
+# builds it with rust-lld and packs the static binary into an initramfs.
+[workspace]
+
+[dependencies]
+madrust-infer = { path = "../madrust-infer" }
+
+[[bin]]
+name = "madrust-agent"
+path = "src/main.rs"
+test = true
+bench = false
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false

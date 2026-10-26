@@ -59,6 +59,16 @@ INFER_FLAGS := --manifest-path $(INFER_DIR)/Cargo.toml \
 INFER_MODEL_DIR := $(TARGET_DIR)/infer-model
 INFER_INITRAMFS := $(INFER_DIR)/initramfs.cpio
 
+# The agent is a fourth standard library program, built like the runtime and
+# packed with the same model so the rig runs the same bytes on both kernels.
+AGENT_DIR := madrust-agent
+AGENT_ELF := $(AGENT_DIR)/madrust-agent.elf
+AGENT_TARGET_DIR := $(TARGET_DIR)/agent
+AGENT_FLAGS := --manifest-path $(AGENT_DIR)/Cargo.toml \
+	--target $(USER_TARGET) \
+	--target-dir $(AGENT_TARGET_DIR)
+AGENT_INITRAMFS := $(AGENT_DIR)/initramfs.cpio
+
 QEMU ?= qemu-system-x86_64
 # Number of processors for the multiprocessor boot.
 SMP ?= 4
@@ -68,7 +78,7 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path infer infer-model infer-initramfs run-infer
+.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path infer infer-model infer-initramfs agent agent-initramfs run-infer
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -118,6 +128,16 @@ infer-model:
 infer-initramfs: infer infer-model
 	EXTRA_DIR=$(INFER_MODEL_DIR) bench/mkinitramfs.sh $(INFER_INITRAMFS) $(INFER_ELF)
 
+# The tool calling agent over the runtime, built with the same rust-lld recipe
+# and packed with the same model. The default task reads /vocab.json from the
+# initramfs, so the archive carries the runtime files unchanged.
+agent: musl-std
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(AGENT_FLAGS)
+	cp $(AGENT_TARGET_DIR)/$(USER_TARGET)/release/madrust-agent $(AGENT_ELF)
+
+agent-initramfs: agent infer-model
+	EXTRA_DIR=$(INFER_MODEL_DIR) bench/mkinitramfs.sh $(AGENT_INITRAMFS) $(AGENT_ELF)
+
 run-infer: infer-initramfs build
 	@$(QEMU) -M q35 -m 512M \
 		-kernel $(KERNEL) -initrd $(INFER_INITRAMFS) \
@@ -160,6 +180,8 @@ test:
 	$(CARGO) test --workspace --target $(HOST_TARGET) --target-dir $(TARGET_DIR) $(HOST_ONLY)
 	$(CARGO) test --manifest-path $(INFER_DIR)/Cargo.toml --lib \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host
+	$(CARGO) test --manifest-path $(AGENT_DIR)/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host
 
 fmt:
 	$(CARGO) fmt --all
@@ -186,6 +208,8 @@ clippy-host:
 		--target-dir $(TARGET_DIR) $(HOST_ONLY) -- -D warnings
 	$(CARGO) clippy --manifest-path $(INFER_DIR)/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host -- -D warnings
+	$(CARGO) clippy --manifest-path $(AGENT_DIR)/Cargo.toml --all-targets \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host -- -D warnings
 
 check: userland
 	$(CARGO) check --workspace --bins --lib $(KERNEL_FLAGS)
