@@ -86,6 +86,15 @@ chmod 666 "$work/dev/null"
 python3 - "$output" <<'PY'
 import sys
 
+# The name of an entry, without the leading "./" that some cpio builds keep
+# and others drop. The archive is read with a plain loop below, and the
+# names are compared against what the archive should hold, so the difference
+# between the two spellings must not matter.
+def normalised(name):
+    while name.startswith(b"./"):
+        name = name[2:]
+    return name
+
 # Rewrite the archive so the data of every regular file starts on a page
 # boundary. MadRust maps a file without copying it, so the page table entry has
 # to point at the page that already holds the bytes; a `newc` archive only
@@ -95,6 +104,7 @@ import sys
 path = sys.argv[1]
 data = bytearray(open(path, "rb").read())
 entries = []
+found_console = False
 offset = 0
 while offset + 110 <= len(data):
     magic = bytes(data[offset : offset + 6])
@@ -110,11 +120,13 @@ while offset + 110 <= len(data):
     name = bytes(data[name_start : name_start + name_size - 1])
     data_start = (name_start + name_size + 3) & ~3
     body = bytes(data[data_start : data_start + file_size])
-    if name == b"./dev/console":
+    plain = normalised(name)
+    if plain == b"dev/console":
         fields[1] = 0o20600  # S_IFCHR | 0600
         fields[9] = 5  # major
         fields[10] = 1  # minor
-    elif name == b"./dev/null":
+        found_console = True
+    elif plain == b"dev/null":
         fields[1] = 0o20666  # S_IFCHR | 0666
         fields[9] = 1  # major
         fields[10] = 3  # minor
@@ -124,6 +136,12 @@ while offset + 110 <= len(data):
     offset = (data_start + file_size + 3) & ~3
 else:
     raise SystemExit("mkinitramfs: no cpio trailer")
+
+if not found_console:
+    # The console node is the only way the program of the guest reaches the
+    # serial port. Without it the output of the run goes to a file that
+    # nobody reads, and the run looks like a guest that says nothing.
+    raise SystemExit("mkinitramfs: the archive has no /dev/console entry")
 
 
 def align4(value):
