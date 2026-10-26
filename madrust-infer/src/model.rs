@@ -668,6 +668,15 @@ impl Session<'_> {
         let index = argmax(&self.logits).ok_or_else(|| Error::new("model: no logits to sample"))?;
         u32::try_from(index).map_err(|_| Error::new("model: sampled token does not fit u32"))
     }
+
+    /// The logits of the last forward pass, indexed by token id.
+    ///
+    /// The masked sampler in the runtime reads them to pick the largest value
+    /// among the tokens a grammar allows; the plain sampler keeps using
+    /// [`Self::sample`].
+    pub fn logits(&self) -> &[f32] {
+        &self.logits
+    }
 }
 
 /// Multiply one matrix by a vector and return the multiply accumulates.

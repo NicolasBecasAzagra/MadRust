@@ -78,6 +78,31 @@ impl Vocab {
         Ok(Self { text, tokens })
     }
 
+    /// Number of ids the map covers, including a gap for a missing id.
+    ///
+    /// A complete vocabulary has this equal to the model vocabulary size; an
+    /// id at or above it has no token string.
+    pub fn token_count(&self) -> usize {
+        self.tokens.len()
+    }
+
+    /// The id of an exact token string, if the map holds it.
+    ///
+    /// The vocabulary is stored in the other direction, so this is a linear
+    /// scan. It exists for the chat markers, which are a few fixed strings and
+    /// are checked once per run.
+    pub fn find_token(&self, token: &str) -> Option<u32> {
+        for (id, slot) in self.tokens.iter().enumerate() {
+            let Some((start, end)) = *slot else {
+                continue;
+            };
+            if self.text.get(start..end) == Some(token) {
+                return u32::try_from(id).ok();
+            }
+        }
+        None
+    }
+
     /// `true` when every id in `0..size` has a token string.
     ///
     /// The inverse map must be complete for the model vocabulary: a missing id
@@ -106,7 +131,7 @@ impl Vocab {
                 .token(id)
                 .ok_or_else(|| Error::new(format!("vocab: unknown token id {id}")))?;
             for character in token.chars() {
-                match unicode_to_byte(character) {
+                match character_to_byte(character) {
                     Some(byte) => bytes.push(byte),
                     None => {
                         outside_alphabet += 1;
@@ -120,6 +145,41 @@ impl Vocab {
             bytes,
             outside_alphabet,
         })
+    }
+
+    /// The original bytes of one token id.
+    ///
+    /// The GPT-2 style byte level alphabet writes one character per byte, so
+    /// every character of the token string maps back to its byte. `None` means
+    /// the id has no token string or the string has a character outside that
+    /// alphabet (a special token, for example), which a byte grammar cannot
+    /// consume.
+    pub fn token_bytes(&self, id: u32) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.token_bytes_into(id, &mut bytes).then_some(bytes)
+    }
+
+    /// Write the original bytes of one token id into `out`.
+    ///
+    /// `out` is cleared first. Returns `false` when the id has no token string
+    /// or a character outside the byte level alphabet. The buffer form exists
+    /// for [`crate::grammar::Grammar::allowed_tokens`], which tests every token
+    /// of a vocabulary against one state.
+    pub fn token_bytes_into(&self, id: u32, out: &mut Vec<u8>) -> bool {
+        out.clear();
+        let Some(token) = self.token(id) else {
+            return false;
+        };
+        for character in token.chars() {
+            match character_to_byte(character) {
+                Some(byte) => out.push(byte),
+                None => {
+                    out.clear();
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -159,7 +219,11 @@ pub fn token_for_byte(byte: u8) -> String {
 }
 
 /// The byte a character of the GPT-2 table stands for.
-fn unicode_to_byte(character: char) -> Option<u8> {
+///
+/// This is the inverse of [`byte_to_character`]: every byte has exactly one
+/// character and every character produced by the table maps back to that byte.
+/// `None` means the character is not part of the byte level alphabet.
+pub fn character_to_byte(character: char) -> Option<u8> {
     let code = character as u32;
     if let Ok(byte) = u8::try_from(code) {
         if is_direct(byte) {
@@ -184,7 +248,59 @@ fn unicode_to_byte(character: char) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{byte_to_character, token_for_byte, Vocab};
+    use super::{byte_to_character, character_to_byte, token_for_byte, Vocab};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_inverse_table_round_trips_every_byte() {
+        for byte in 0..=255u8 {
+            assert_eq!(character_to_byte(byte_to_character(byte)), Some(byte));
+        }
+        assert_eq!(character_to_byte('\u{0144}'), None);
+    }
+
+    #[test]
+    fn the_inverse_map_reproduces_a_host_vocabulary() {
+        let Some(path) = host_vocab() else {
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("the host vocabulary is readable");
+        let vocab = Vocab::parse(&bytes).expect("the host vocabulary parses");
+        let mut raw = Vec::new();
+        let mut checked = 0usize;
+        for index in 0..vocab.token_count() {
+            let Ok(id) = u32::try_from(index) else {
+                break;
+            };
+            let Some(token) = vocab.token(id) else {
+                continue;
+            };
+            if !vocab.token_bytes_into(id, &mut raw) {
+                continue;
+            }
+            let rebuilt: String = raw.iter().map(|&byte| byte_to_character(byte)).collect();
+            assert_eq!(rebuilt, token, "token {id} does not round trip");
+            checked += 1;
+        }
+        assert!(checked > 1000, "only {checked} tokens round tripped");
+    }
+
+    /// The vocabulary the native comparison uses, when this host has it.
+    fn host_vocab() -> Option<PathBuf> {
+        if let Ok(root) = std::env::var("MADRUST_INFER_ROOT") {
+            let path = Path::new(&root).join("vocab.json");
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        let home = std::env::var_os("HOME")?;
+        let path = Path::new(&home)
+            .join("madrust")
+            .join("artifacts")
+            .join("model")
+            .join("vocab.json");
+        path.is_file().then_some(path)
+    }
 
     #[test]
     fn every_byte_round_trips_through_the_table() {
