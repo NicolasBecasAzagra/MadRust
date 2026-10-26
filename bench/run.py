@@ -232,36 +232,46 @@ def run_once(
     append_extra: str = "",
     memory: str = "512M",
     smp: str = "1",
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, float, int, dict[str, Any]]:
     log = out_dir / f"{label}.log"
+    # The output of QEMU itself is kept in a file of its own. When the guest
+    # does not boot, the reason is in that stream and not in the serial log of
+    # the guest, so throwing it away hides the only explanation there is.
+    qemu_log = out_dir / f"{label}.qemu.log"
     command = qemu_command(qemu, image, initramfs, log, accel, append_extra, memory, smp)
     print(f"[rig] {label}: {' '.join(shlex.quote(part) for part in command)}", file=sys.stderr)
 
     with log.open("wb"):
         pass
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    with qemu_log.open("wb") as handle:
+        process = subprocess.Popen(
+            command,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
 
     started = time.monotonic()
     peak_rss = 0
     deadline = started + timeout
-    finished = False
+    outcome = "timeout"
+    finished_at = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            finished = True
+            outcome = "exited"
+            finished_at = time.monotonic()
             break
         if "BENCH DONE" in read_log(log):
+            # The last line is already in the file. The time of that line is
+            # the time of the run, so it is taken before the guest is stopped.
+            finished_at = time.monotonic()
+            outcome = "finished"
             # Let the serial line flush the last line, then stop the guest.
             time.sleep(1.0)
-            finished = True
             break
         peak_rss = max(peak_rss, peak_rss_kb(process.pid))
         time.sleep(0.2)
 
-    elapsed = time.monotonic() - started
+    elapsed = (finished_at if finished_at is not None else time.monotonic()) - started
     peak_rss = max(peak_rss, peak_rss_kb(process.pid))
 
     if process.poll() is None:
@@ -271,14 +281,27 @@ def run_once(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-    elif not finished:
+    else:
         process.wait()
 
     text = read_log(log)
     for line in text.splitlines():
         if line.startswith("ADV "):
             print(f"[rig] {label}: {line}", file=sys.stderr)
-    return command, text, elapsed, peak_rss
+
+    reason = ""
+    if outcome == "timeout":
+        reason = f"the guest did not finish in {timeout:.0f} s"
+    elif "BENCH DONE" not in text:
+        reason = (
+            f"the guest stopped before the end of the run "
+            f"(qemu exit status {process.returncode})"
+        )
+    return command, text, elapsed, peak_rss, {
+        "outcome": outcome,
+        "reason": reason,
+        "qemu": read_log(qemu_log),
+    }
 
 
 def parse_results(
@@ -286,6 +309,7 @@ def parse_results(
     text: str,
     expected: dict[str, int],
     boot_rows: list[dict[str, Any]] | None = None,
+    failure_reason: str = "",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen = {name: 0 for name in WORKLOADS}
@@ -354,7 +378,11 @@ def parse_results(
     # and say why: the guest never reached the end, or the workload stopped
     # early.
     guest_finished = "BENCH DONE" in text
-    reason = "" if guest_finished else "the guest did not reach the end of the run"
+    reason = (
+        ""
+        if guest_finished
+        else failure_reason or "the guest did not reach the end of the run"
+    )
     for workload, (unit, _) in WORKLOADS.items():
         if workload in OPTIONAL_WORKLOADS and seen[workload] == 0:
             continue
@@ -613,7 +641,7 @@ def main() -> int:
             "sha256": sha256(image),
             "kernel_args": append_extra or "console=ttyS0",
         }
-        command, text, elapsed, peak_rss = run_once(
+        command, text, elapsed, peak_rss, outcome = run_once(
             label,
             image,
             initrd,
@@ -627,16 +655,19 @@ def main() -> int:
         )
         metadata["commands"][label] = shlex.join(command)
         # What a boot costs, measured from the outside: the wall clock of the
-        # whole run and the resident memory the process reached.
+        # whole run and the resident memory the process reached. The time is
+        # only a measurement when the run reached its end; a run that ran into
+        # the timeout says nothing about the cost of a boot.
+        measured = outcome["outcome"] != "timeout"
         boot_rows = [
             {
                 "kernel": label,
                 "workload": "boot-seconds",
                 "iteration": 0,
-                "value": f"{elapsed:.3f}",
+                "value": f"{elapsed:.3f}" if measured else "",
                 "unit": "s",
-                "status": "ok",
-                "error": "",
+                "status": "ok" if measured else "error",
+                "error": "" if measured else outcome["reason"],
             },
             {
                 "kernel": label,
@@ -650,7 +681,7 @@ def main() -> int:
                 else "this host has no /proc, so the memory is not measured",
             },
         ]
-        rows = parse_results(label, text, expected, boot_rows)
+        rows = parse_results(label, text, expected, boot_rows, outcome["reason"])
         write_csv(out_dir / f"{label}.csv", rows)
         all_rows.extend(rows)
         ok = sum(1 for row in rows if row["status"] == "ok")
@@ -661,6 +692,12 @@ def main() -> int:
         )
         if "BENCH DONE" not in text:
             print(f"[rig] {label}: serial log does not contain BENCH DONE", file=sys.stderr)
+        if outcome["reason"]:
+            # The reason the run failed belongs in the report, and the output
+            # of QEMU is where the reason usually is.
+            print(f"[rig] {label}: {outcome['reason']}", file=sys.stderr)
+            for line in outcome["qemu"].splitlines()[-20:]:
+                print(f"[rig] {label}: qemu: {line}", file=sys.stderr)
 
     table = summarise(all_rows)
     write_summary(out_dir, table, metadata)
