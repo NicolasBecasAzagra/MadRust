@@ -131,6 +131,14 @@ five, because every sample faults 65536 pages.
   deviation for every workload and every kernel, plus the metadata: the QEMU
   version, the host, the SHA-256 of both kernel images and the exact command
   line that produced the run.
+- The time of a boot is the moment of the last line of the workload, not the
+  moment the emulator process ends. A run that reaches the timeout reports an
+  error instead of a number: the timeout is not a measurement of a boot, and
+  publishing it as one would turn a failure into a result.
+- The output of the emulator itself is kept in a file of its own
+  (`<kernel>.qemu.log`) and printed when a run fails. When a guest does not
+  boot, the reason is in that stream and not in the serial log of the guest,
+  so discarding it hides the only explanation there is.
 - The clock inside the guest is the time stamp counter, calibrated against
   the timer interrupt. The timer alone ticks at 100 Hz, which would quantise
   every measurement to 10 ms and make the results meaningless.
