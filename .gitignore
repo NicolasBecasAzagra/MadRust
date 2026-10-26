@@ -10,6 +10,8 @@ madrust-userland/madrust-userland.elf
 madrust-bench/madrust-bench.elf
 madrust-infer/madrust-infer.elf
 madrust-infer/initramfs.cpio
+madrust-agent/madrust-agent.elf
+madrust-agent/initramfs.cpio
 bench/initramfs.cpio
 artifacts/
 __pycache__/
