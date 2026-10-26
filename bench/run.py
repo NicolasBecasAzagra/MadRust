@@ -45,6 +45,9 @@ WEIGHTS_ITERATIONS = 5
 # sample from being a single host preemption.
 INFER_ITERATIONS = 1
 BOOT_ITERATIONS = 1
+# The agent loop answers once per run: the model decides how many steps it
+# needs, and every run of the same task decides the same.
+AGENT_ITERATIONS = 1
 WEIGHTS_HUGE_ITERATIONS = 10
 
 # Every workload the binary prints, with its unit and the number of samples one
@@ -62,16 +65,35 @@ WORKLOADS = {
     "threads": ("ns/total", DEFAULT_ITERATIONS),
     "infer-ttft": ("ms", INFER_ITERATIONS),
     "infer-tps": ("tok/s", INFER_ITERATIONS),
+    "agent-steps": ("steps", AGENT_ITERATIONS),
+    "agent-tokens": ("tokens", AGENT_ITERATIONS),
+    "agent-seconds": ("s", AGENT_ITERATIONS),
+    "agent-step-ms": ("ms/step", AGENT_ITERATIONS),
     "boot-seconds": ("s", BOOT_ITERATIONS),
     "boot-rss-mb": ("MiB", BOOT_ITERATIONS),
 }
 
 # The inference measurements only exist when the initramfs carries the runtime,
 # so a run without it must not report them as missing.
-OPTIONAL_WORKLOADS = {"infer-ttft", "infer-tps"}
+OPTIONAL_WORKLOADS = {
+    "infer-ttft",
+    "infer-tps",
+    "agent-steps",
+    "agent-tokens",
+    "agent-seconds",
+    "agent-step-ms",
+}
 
 INFER_RE = re.compile(
     r"^INFER\s+(?P<workload>ttft_ms|tok_per_s)\s+(?P<value>-?\d+(?:\.\d+)?)\s*$"
+)
+
+# The agent loop reports the whole run on one line: how many steps it took, how
+# many tokens the model generated, how long it ran and how many tool calls it
+# made. The rig turns that into four measurements.
+AGENT_RE = re.compile(
+    r"^AGENT\s+steps=(?P<steps>\d+)\s+tokens=(?P<tokens>\d+)\s+"
+    r"seconds=(?P<seconds>-?\d+(?:\.\d+)?)\s+tool_calls=(?P<tool_calls>\d+)\s*$"
 )
 
 RESULT_RE = re.compile(
@@ -367,6 +389,32 @@ def parse_results(
                 "error": "",
             }
         )
+
+    # The agent loop reports the whole run on one line.
+    for raw_line in text.splitlines():
+        match = AGENT_RE.match(KERNEL_LOG_RE.sub("", raw_line.strip()))
+        if not match:
+            continue
+        steps = int(match.group("steps"))
+        seconds = float(match.group("seconds"))
+        values = {
+            "agent-steps": steps,
+            "agent-tokens": int(match.group("tokens")),
+            "agent-seconds": seconds,
+            "agent-step-ms": (seconds * 1000.0 / steps) if steps else 0.0,
+        }
+        for name, value in values.items():
+            rows.append(
+                {
+                    "kernel": label,
+                    "workload": name,
+                    "iteration": 0,
+                    "value": f"{value:.3f}" if isinstance(value, float) else str(value),
+                    "unit": WORKLOADS[name][0],
+                    "status": "ok",
+                    "error": "",
+                }
+            )
 
     # The measurements the rig takes itself are samples of their workload.
     for row in boot_rows or []:
