@@ -135,6 +135,33 @@ serial log. The log is the instrument.
 - The Rust for Linux project, for how Rust is being brought into mainline:
   <https://rust-for-linux.com/>
 
+## How to read the userland
+
+The kernel is the older half of the project and the easier one to read. The
+userland is where the purpose of the kernel shows: a model is served from an
+initramfs by a program that was not written for this kernel, and an agent
+asks that model what to do.
+
+1. `madrust-infer/src/safetensors.rs` - the reader of the weight file. It is
+   a parser for a fixed shape, written without a dependency, and it is the
+   model to follow for anything that can be modelled as data.
+2. `madrust-infer/src/matvec.rs` - the arithmetic: a blocked matrix by
+   vector product over bfloat16 weights, with an AVX2 and FMA path, a NEON
+   path and a scalar path that all agree to a tolerance.
+3. `madrust-infer/src/model.rs` - the decoder: RMSNorm, rotary embeddings,
+   grouped query attention, the gated feed forward block and the key value
+   cache. The dimensions come from the config, not from the code.
+4. `madrust-infer/src/runtime.rs` - the generation loop, and the `Server`
+   that keeps the weights mapped and pinned between the calls of an agent.
+5. `madrust-infer/src/grammar.rs` - the byte level automaton that decides
+   which tokens may follow, so the answer of the model is always a well
+   formed tool call.
+6. `madrust-infer/src/bpe.rs` - the byte pair merge encoder, written from
+   scratch: the pre-tokenizer of GPT-2 and the merges of the checkpoint, in
+   one flat buffer, because the guest gives the program a small heap.
+7. `madrust-agent/src/main.rs` - the loop: prompt, tool call, tool, result,
+   prompt. Five tools, and the model chooses which one to call.
+
 ## What to read next in this repository
 
 The roadmap issues track the remaining milestones. In order:
@@ -146,4 +173,5 @@ The roadmap issues track the remaining milestones. In order:
 
 M4 is the milestone where the project stops being a kernel that boots and
 becomes a kernel that runs other people's software. Everything before it is
-the preparation for that.
+the preparation for that, and everything after it (the runtime, the agent)
+is the reason for it.

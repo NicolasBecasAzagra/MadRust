@@ -78,7 +78,7 @@ jobs:
           # behind a line of the kernel. The prefix of the kernel is cut
           # before the exact matches, so the gate does not depend on where
           # the two streams meet.
-          tr -d '\r' < serial.log | sed -E 's/^\[[^]]*\][[:space:]]*//' > serial-clean.log
+          tr -d '\r' < serial.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > serial-clean.log
           grep -q "MadRust: boot OK" serial-clean.log
           # The kernel must run from the higher half and reach physical memory
           # through the direct map only.
@@ -144,7 +144,7 @@ jobs:
           # Normalise the CRLF of the kernel lines and cut the prefix of the
           # kernel log: the workload and the kernel share the serial port and
           # their lines can meet.
-          tr -d '\r' < initramfs.log | sed -E 's/^\[[^]]*\][[:space:]]*//' > initramfs-boot.log
+          tr -d '\r' < initramfs.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > initramfs-boot.log
           # One module, and as many files and entries as the archive holds: the
           # count changes when the archive gains alignment files.
           grep -qE "^\[user\] initramfs: 1 module, [0-9]+ files, [0-9]+ entries$" initramfs-boot.log
@@ -195,7 +195,7 @@ jobs:
           set -e
           cat agent.log
           test "$status" -eq 33
-          tr -d '\r' < agent.log | sed -E 's/^\[[^]]*\][[:space:]]*//' > agent-boot.log
+          tr -d '\r' < agent.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > agent-boot.log
           # Every step of the loop reports its tool and its result, and the
           # run ends with the summary the rig reads.
           grep -q "^AGENT step=1 tool=" agent-boot.log
