@@ -106,6 +106,16 @@ measurement. It runs on both kernels without modification.
 | `threads` | Wall clock time of several threads doing a fixed amount of work |
 | `weights` | Cost of faulting in a 256 MiB region, per MiB |
 | `weights-tail` | The slowest single page fault of that region, in nanoseconds |
+| `weights-huge` | The same region, asked for 2 MiB pages with `madvise`, per MiB |
+| `weights-huge-tail` | The slowest single page fault of that region, in nanoseconds |
+| `infer-ttft` | Time to the first token of the runtime, with the real checkpoint |
+| `infer-tps` | Tokens per second of the runtime, after the first one |
+| `agent-steps` | Steps the agent loop took |
+| `agent-tokens` | Tokens the model generated in the whole agent run |
+| `agent-seconds` | Wall clock time of the agent run |
+| `agent-step-ms` | Milliseconds of one step of the agent loop |
+| `boot-seconds` | Wall clock time from the start of the emulator to the last line |
+| `boot-rss-mb` | Resident memory the emulator reached |
 
 The binary prints one `RESULT <workload> <value> <unit>` line per
 measurement, and `BENCH DONE` at the end. A measurement that the kernel
