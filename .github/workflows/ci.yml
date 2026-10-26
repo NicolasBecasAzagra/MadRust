@@ -162,3 +162,28 @@ jobs:
           test "$total" -eq "$(grep -c '^RESULT ' initramfs-boot.log)"
           grep -qxF "USER OK exit=0" initramfs-boot.log
           grep -qxF "MadRust: boot OK" initramfs-boot.log
+
+      - name: Run the agent loop in the guest
+        run: |
+          # The agent is the fourth program: it asks the model for a tool
+          # call, runs the tool and goes on. The gate is that the loop runs
+          # and reports, not that the model decides well: the model of this
+          # run is the synthetic one, whose answers are arbitrary.
+          make agent agent-initramfs
+          set +e
+          timeout 600 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 1024M \
+            -kernel "$(make -s print-kernel-path)" \
+            -initrd madrust-agent/initramfs.cpio \
+            -display none -monitor none -no-reboot \
+            -serial file:agent.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          status=$?
+          echo "QEMU exit status: $status"
+          set -e
+          cat agent.log
+          test "$status" -eq 33
+          # Every step of the loop reports its tool and its result, and the
+          # run ends with the summary the rig reads.
+          grep -q "^AGENT step=1 tool=" agent.log
+          grep -qE "^AGENT steps=[0-9]+ tokens=[0-9]+ seconds=[0-9.]+ tool_calls=[0-9]+$" agent.log
+          grep -qxF "MadRust: boot OK" agent.log
