@@ -104,6 +104,16 @@ RESULT_RE = re.compile(
 # sample. The tail is not part of the sample, so cut it before matching.
 KERNEL_LOG_RE = re.compile(r"\s*\[[^\]]*\].*$")
 
+# The same kernel log line can land in front of the sample instead of behind
+# it: the kernel writes to the same port as the program, and the two
+# interleave at the byte level. A sample that arrives with the kernel prefix
+# in front of it is still a sample, so the prefix is cut too.
+LEADING_KERNEL_LOG_RE = re.compile(r"^\[[^\]]*\]\s*")
+
+# The marker that says the run reached its end, with or without a kernel
+# prefix in front of it.
+BENCH_DONE_RE = re.compile(r"^\[[^\]]*\]\s*BENCH DONE\s*$")
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -214,6 +224,19 @@ def qemu_command(
     return command
 
 
+def bench_done(text: str) -> bool:
+    """Whether the log says the workload reached the end of the run.
+
+    The marker can arrive with a kernel log line in front of it, because the
+    kernel and the program write to the same serial port.
+    """
+    for raw_line in text.splitlines():
+        line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
+        if BENCH_DONE_RE.match(line) or line == "BENCH DONE":
+            return True
+    return False
+
+
 def read_log(path: Path) -> str:
     try:
         return path.read_text(errors="replace")
@@ -282,7 +305,7 @@ def run_once(
             outcome = "exited"
             finished_at = time.monotonic()
             break
-        if "BENCH DONE" in read_log(log):
+        if bench_done(read_log(log)):
             # The last line is already in the file. The time of that line is
             # the time of the run, so it is taken before the guest is stopped.
             finished_at = time.monotonic()
@@ -314,7 +337,7 @@ def run_once(
     reason = ""
     if outcome == "timeout":
         reason = f"the guest did not finish in {timeout:.0f} s"
-    elif "BENCH DONE" not in text:
+    elif not bench_done(text):
         reason = (
             f"the guest stopped before the end of the run "
             f"(qemu exit status {process.returncode})"
@@ -337,7 +360,8 @@ def parse_results(
     seen = {name: 0 for name in WORKLOADS}
 
     for raw_line in text.splitlines():
-        match = RESULT_RE.match(KERNEL_LOG_RE.sub("", raw_line.strip()))
+        line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
+        match = RESULT_RE.match(KERNEL_LOG_RE.sub("", line))
         if not match:
             continue
         workload = match.group("workload")
@@ -374,7 +398,8 @@ def parse_results(
 
     # The inference runtime prints its measurements with its own prefix.
     for raw_line in text.splitlines():
-        match = INFER_RE.match(raw_line.strip())
+        line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
+        match = INFER_RE.match(KERNEL_LOG_RE.sub("", line))
         if not match:
             continue
         name = "infer-ttft" if match.group("workload") == "ttft_ms" else "infer-tps"
@@ -392,7 +417,8 @@ def parse_results(
 
     # The agent loop reports the whole run on one line.
     for raw_line in text.splitlines():
-        match = AGENT_RE.match(KERNEL_LOG_RE.sub("", raw_line.strip()))
+        line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
+        match = AGENT_RE.match(KERNEL_LOG_RE.sub("", line))
         if not match:
             continue
         steps = int(match.group("steps"))
@@ -425,7 +451,7 @@ def parse_results(
     # finish. Record the missing samples instead of silently shrinking the set,
     # and say why: the guest never reached the end, or the workload stopped
     # early.
-    guest_finished = "BENCH DONE" in text
+    guest_finished = bench_done(text)
     reason = (
         ""
         if guest_finished
@@ -740,7 +766,7 @@ def main() -> int:
         )
         # The marker belongs to the benchmark workload. A run that measures the
         # inference runtime does not print it, and its absence is not a fault.
-        if "BENCH DONE" not in text and any(
+        if not bench_done(text) and any(
             name in expected for name in WORKLOADS if name not in OPTIONAL_WORKLOADS
         ):
             print(f"[rig] {label}: serial log does not contain BENCH DONE", file=sys.stderr)
