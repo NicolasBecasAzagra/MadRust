@@ -48,10 +48,18 @@ publish the losses as carefully as the wins. Three findings came out of it:
   maps it through the initramfs without copying it, and generates tokens with
   a Llama-style forward pass: RMSNorm, rotary embeddings, grouped query
   attention, the gated feed forward block, a key value cache and greedy
-  sampling. No dependency outside the Rust standard library.
+  sampling. It also holds a byte pair merge encoder, written from scratch, so
+  a prompt built at run time reaches the model as the token ids it was
+  trained with, and a byte level grammar that forces the answer to be a well
+  formed tool call. No dependency outside the Rust standard library.
+- **An agent** (`madrust-agent`): a loop of model, tool call, tool result and
+  model, over five tools (`read_file`, `list_dir`, `write_file`, `compute` and
+  `done`). The model chooses the tool and the arguments, the kernel decides
+  how much of that costs.
 - **A rig** (`bench/`): boots a kernel image with a fixed configuration,
   hands it the same initramfs, and records every sample, including the ones
-  that failed.
+  that failed. It rebuilds the kernel, the runtime and the initramfs on every
+  run, and it refuses to report a measurement it could not take.
 
 ## Method
 
@@ -80,8 +88,30 @@ is the most important limitation of everything below.
 
 ## Results: the cost of an operation
 
-Medians, in the unit of the workload. The full table with the 99th percentile
-and the standard deviation is in `bench/results/summary.csv`.
+Two datasets, measured with the same rig and the same rules.
+
+The **primary** one is a native x86_64 host: an Ubuntu server with six
+cores, QEMU 8.2.2, and the reference kernel built from the mainline tree
+by `bench/prepare-mainline.sh`. The **cross check** is the same rig on a
+different host, an arm64 laptop with QEMU 11.1.2, where both kernels run
+under emulation.
+
+Medians, in the unit of the workload, on the native host:
+
+| Workload | MadRust | mainline | mainline, mitigations off | MadRust against mainline with mitigations off |
+|---|---|---|---|---|
+| system call | 376.5 ns | 29.35 us | 1.04 us | **2.8x cheaper** |
+| map and touch memory | 6.83 ms/MiB | 25.80 ms/MiB | 8.69 ms/MiB | **1.3x cheaper** |
+| fault in memory, 4 KiB pages | 2.01 ms/MiB | 44.55 ms/MiB | 13.73 ms/MiB | **6.8x cheaper** |
+| slowest single fault, 4 KiB | 1.74 ms | 42.60 ms | 38.89 ms | **22x cheaper** |
+| fault in memory, 2 MiB pages | 824.8 us/MiB | 44.89 ms/MiB | 12.98 ms/MiB | **15.7x cheaper** |
+| slowest single fault, 2 MiB | 189.1 us | 68.32 ms | 23.33 ms | **123x cheaper** |
+| futex round trip | 6.53 us | 407.4 us | 97.71 us | **15x cheaper** |
+| four threads, spawn to join | 619.5 us | 7.73 ms | 4.59 ms | **7.4x faster** |
+| boot to the first result | 12.87 s | 206.29 s | 63.80 s | **5x faster** |
+| resident memory of the guest | 319 MB | 476 MB | 483 MB | **1.5x less** |
+
+The same rig on the cross check host:
 
 | Workload | MadRust | mainline | mainline, mitigations off | MadRust against mainline with mitigations off |
 |---|---|---|---|---|
@@ -94,9 +124,17 @@ and the standard deviation is in `bench/results/summary.csv`.
 | futex round trip | 3.70 us | 136.7 us | 27.7 us | **7.5x cheaper** |
 | four threads, spawn to join | 228.0 us | 1536.0 us | 970.0 us | **4.3x faster** |
 
+The two hosts agree on the order of the effect and disagree on its size,
+which is what a measurement under emulation does. The fault rows move the
+most: a fault costs the emulator, and the emulator pays more for the work
+mainline does per fault. The full tables with the 99th percentile and the
+standard deviation are in `bench/results/summary.csv` and in
+`bench/results/vps-1cpu/`.
+
 Against the default reference configuration, which pays for page table
-isolation on every system call, the system call row is 41x. That number is
-published but it is not a kernel comparison, and the report says so.
+isolation on every system call, the system call row is 78x on the native
+host. That number is published but it is not a kernel comparison, and the
+report says so.
 
 Where the difference comes from, in the order the size of the effect:
 
@@ -114,6 +152,17 @@ Where the difference comes from, in the order the size of the effect:
   copy documented.
 
 ## Results: large pages
+
+On the native host:
+
+| | 4 KiB pages | 2 MiB pages |
+|---|---|---|
+| MadRust, cost per MiB | 2.01 ms | 824.8 us |
+| MadRust, slowest fault | 1.74 ms | 189.1 us |
+| mainline with mitigations off, cost per MiB | 13.73 ms | 12.98 ms |
+| mainline with mitigations off, slowest fault | 38.89 ms | 23.33 ms |
+
+And on the cross check host:
 
 | | 4 KiB pages | 2 MiB pages |
 |---|---|---|
@@ -271,6 +320,20 @@ python3 bench/run.py \
     --mainline ~/madrust/artifacts/vmlinux \
     --mainline-variant "nomitig=mitigations=off" \
     --out bench/results
+
+# the checkpoint, verified
+bench/fetch-model.sh ~/madrust/artifacts/model-instruct
+
+# the agent
+make agent
+EXTRA_DIR=~/madrust/artifacts/model-instruct \
+    bench/mkinitramfs.sh ~/madrust/artifacts/agent.cpio madrust-agent/madrust-agent.elf
+python3 bench/run.py \
+    --madrust "$(make -s print-kernel-path)" \
+    --mainline ~/madrust/artifacts/vmlinux \
+    --initrd ~/madrust/artifacts/agent.cpio --memory 1024M \
+    --only agent-steps,agent-tokens,agent-seconds,agent-step-ms \
+    --out bench/results/agent
 
 # the oracle for the runtime
 python3 bench/reference/reference_tokens.py --out reference.json
