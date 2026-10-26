@@ -24,20 +24,21 @@ of hiding.
 Implemented:
 
 ```text
-read 0        write 1       close 3       fstat 5       poll 7
-lseek 8       mmap 9        mprotect 10   munmap 11     brk 12
-rt_sigaction 13             rt_sigprocmask 14           ioctl 16
-sched_yield 24              mremap 25     madvise 28    dup 32
-dup2 33      nanosleep 35   getpid 39     exit 60       kill 62
-uname 63     fcntl 72      getcwd 79     readlink 89   gettimeofday 96
-getrusage 98                getuid 102    getgid 104    geteuid 107
-getegid 108  getppid 110   sigaltstack 131             prctl 157
-arch_prctl 158              gettid 186    futex 202     sched_getaffinity 204
-getdents64 217              set_tid_address 218          clock_gettime 228
-clock_nanosleep 230          exit_group 231 tgkill 234   openat 257
-newfstatat 262              set_robust_list 273          dup3 292
-pipe2 293    prlimit64 302  getrandom 318 membarrier 324
-statx 332    rseq 334        mlock 149      munlock 150
+read 0                  write 1                 close 3                 fstat 5
+poll 7                  lseek 8                 mmap 9                  mprotect 10
+munmap 11               brk 12                  rt_sigaction 13         rt_sigprocmask 14
+ioctl 16                sched_yield 24          mremap 25               madvise 28
+dup 32                  dup2 33                 nanosleep 35            getpid 39
+clone 56                exit 60                 kill 62                 uname 63
+fcntl 72                getcwd 79               readlink 89             gettimeofday 96
+getrusage 98            getuid 102              getgid 104              geteuid 107
+getegid 108             getppid 110             sigaltstack 131         mlock 149
+munlock 150             prctl 157               arch_prctl 158          gettid 186
+futex 202               sched_getaffinity 204   getdents64 217          set_tid_address 218
+clock_gettime 228       clock_nanosleep 230     exit_group 231          tgkill 234
+openat 257              newfstatat 262          set_robust_list 273     dup3 292
+pipe2 293               prlimit64 302           getrandom 318           membarrier 324
+statx 332               rseq 334
 ```
 
 Not implemented yet, and they return `-ENOSYS`: `lseek` 8, `clone` 56,
@@ -393,15 +394,21 @@ done are implemented and asserted in CI.
 | M4b | A standard library program runs unmodified, prints and exits 0 | golden log | done |
 | M4c | An anonymous mapping faults its pages in on demand, and the per page tail measures a real fault | the `weights` workload against mainline | done |
 | M8 | Published benchmark report: raw CSV, median, p99, sigma, N >= 30 | `bench/` scripts | done |
-| E1 | The initramfs is a read only file system: a user program reads a file from it | `openat`, `read`, `lseek`, `fstat` | next |
-| E2 | The weights are mapped with 2 MiB pages | the `weights` workload, before and after | next |
-| E3 | A scheduler that keeps the tail of a runnable thread inside a budget | the `threads` workload | next |
-| E4 | A Rust inference runtime generates the same tokens as the reference implementation | token for token diff against the reference | next |
-| E5 | Tokens per second and time to first token, both kernels, same machine | the rig, with the raw data published | next |
+| M9 | Boots with 4 vCPUs; every processor runs its own threads and reports a heartbeat | boot gate with four processors in CI | done |
+| E1 | The initramfs is a read only file system: a user program reads a file from it | `openat`, `read`, `lseek`, `fstat` | done |
+| E2 | The weights are mapped with 2 MiB pages | the `weights` workload, before and after | done |
+| E2b | The weights are resident: `mlock` keeps them in memory and the pages are large | the `locked pages` line of the boot log | done |
+| E3a | A scheduler with priorities and wakeup preemption | the `threads` workload and the wakeup test | done |
+| E3b | The tail of a runnable thread stays inside a budget | the `threads` workload, published with its p99 | done |
+| E4 | A Rust inference runtime generates the same tokens as the reference implementation | token for token diff against the reference | done |
+| E5 | Tokens per second and time to first token, both kernels, same machine | the rig, with the raw data published | done |
+| E6 | The agent asks the model for a tool call, runs the tool and goes on, and the call is always well formed | the agent gate in CI, and the grammar tests | done |
+| E7 | The agent is measured on both kernels: the latency of a step and the tokens of a step | the rig, with the raw data published | next |
 | M5 | `/init` busybox shell runs `ls | wc -l` with the same output as Linux | diff suite | deferred |
 | M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log | deferred |
 | M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI | deferred |
-| M9 | Boots with 4 vCPUs; parallel workload scales at least 2.5x over 1 vCPU | litmus tests + benchmark | deferred |
+| M10 | The kernel reaches the network: an agent calls an API and reads the answer | the networking gate in CI | next |
+| M11 | A quantized model fits in the memory of the machine and keeps its answer | the runtime against the reference, with the digest of the checkpoint | next |
 
 The deferred milestones are not abandoned, they are sequenced behind the
 endgame: a model has to be read from a file system, and the file system that

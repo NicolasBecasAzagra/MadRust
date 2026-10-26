@@ -23,28 +23,36 @@ commit per milestone.
 | M0 | Boot through the Xen PVH handover, serial output, physical memory map | done |
 | M1 | GDT, TSS with an IST stack, IDT, recoverable exceptions, 8259 PIC, PIT | done |
 | M2 | Buddy allocator, size class heap, higher half kernel, direct map | done |
+| M2b | The kernel runs from the higher half and reaches physical memory only through the direct map | done |
 | M2c | Frame metadata carved out of the memory it describes, 32 GiB of guests | done |
 | M3 | Kernel threads, preemptive round robin scheduler, interrupt safe locks | done |
-| M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 54 Linux system calls | done |
+| M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 58 Linux system calls | done |
 | M4b | A real userland: a standard library program running unmodified | done |
 | M4c | Demand paging for anonymous mappings | done |
+| M8 | Benchmark rig, six workloads, the comparison published with its raw data | done |
+| M9 | SMP: ACPI MADT, INIT-SIPI-SIPI, LAPIC and IOAPIC, IPIs, four processors | done |
 | E1 | The initramfs as a read only file system | done |
 | E2 | A file backed mapping and large pages | done |
+| E2b | Large pages for file mappings and `mlock` residency of the weights | done |
+| E3a | A scheduler with priorities and wakeup preemption | done |
+| E3b | The tail of the scheduler measured, and the policy that shortens it | done |
 | E4 | The inference runtime: a real model, token for token against the reference | done |
-| M8 | Benchmark rig, four workloads, first comparison published | done |
+| E5 | The measurement of the runtime on both kernels, same machine, same binary | done |
+| E6 | The agent: model, tool call, tool result and model, with a grammar that forces the call | done |
 
 What comes next, in the order it has to happen, is the path to the final
-artefact: a real model served by a Rust inference runtime, measured against
-mainline in the same machine.
+artefact: an operating system that serves models to agents, faster than the
+incumbent.
 
 | Next | Why it is next |
 |---|---|
-| The measurement of the runtime | Tokens per second and time to the first token, both kernels, same machine, same binary |
-| A scheduler with a better tail | Batching inference requests lives on the tail of the scheduler, and the kernel is still uniprocessor |
-| SMP (LAPIC/IOAPIC) | A server that batches requests needs more than one processor |
+| The measurement of the agent on both kernels | The latency of a step of the loop is the number an agent server is bought for |
+| Networking | An agent that cannot call an API is a demo; with it, it is a server |
+| Quantization | A model that does not fit in the memory of the machine cannot be served |
+| A scheduler with a better tail | Batching inference requests lives on the tail of the scheduler |
 
 Deferred, and named so they are not lost: processes and a real file system,
-dynamic linking, signals, a shell test suite, and SMP. The reasoning is in
+dynamic linking, signals and a shell test suite. The reasoning is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Exit criteria for each milestone are objective and machine-checkable. See
@@ -130,12 +138,21 @@ The full Linux VM setup (for building mainline Linux and distro rootfs) is in
 ## Repository layout
 
 ```text
-crates/madrust-arch      x86_64 hardware access, port I/O, boot trampoline
-crates/madrust-bootinfo  pure parsing of the PVH boot handover structures
-crates/madrust-drivers   16550A UART, isa-debug-exit
-crates/madrust-kernel    the no_std kernel binary
-docs/                    architecture, boot protocol, benchmarking, VM setup
-scripts/                 ISO and CI helper scripts
+madrust-arch/       x86_64 hardware access, port I/O, boot trampoline
+madrust-bootinfo/   pure parsing of the PVH boot handover structures
+madrust-drivers/    16550A UART, isa-debug-exit
+madrust-mm/         paging, the buddy allocator, the heap, the mappings
+madrust-sched/      the scheduler and its policy
+madrust-elf/        the ELF64 reader
+madrust-initramfs/  the reader of the cpio archive of the initramfs
+madrust-kernel/     the no_std kernel binary
+madrust-userland/   the test program that runs unmodified in ring 3
+madrust-bench/      the workload that measures the kernel
+madrust-infer/      the inference runtime, the grammar and the chat prompt
+madrust-agent/      the agent loop: model, tool call, tool result
+bench/              the rig, the workloads, the reference build, the datasets
+docs/               architecture, boot protocol, benchmarking, VM setup
+scripts/            ISO and CI helper scripts
 ```
 
 Dependencies policy: kernel crates may only use MIT, BSD or ISC licensed code.

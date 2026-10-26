@@ -42,7 +42,7 @@ publish the losses as carefully as the wins. Three findings came out of it:
   from the higher half with a direct map of physical memory, manages physical
   memory with a buddy allocator whose metadata is carved out of the memory it
   describes, faults user pages in on demand, backs anonymous and file
-  mappings with 2 MiB pages, serves 55 Linux system calls, exposes the
+  mappings with 2 MiB pages, serves 58 Linux system calls, exposes the
   initramfs as a read only file system, and runs preemptive kernel threads.
 - **A runtime** (`madrust-infer`): reads a model in the `safetensors` format,
   maps it through the initramfs without copying it, and generates tokens with

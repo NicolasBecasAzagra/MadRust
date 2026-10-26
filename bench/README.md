@@ -53,11 +53,34 @@ Every run writes into `bench/results/` by default (or `--out DIR`):
 ```text
 madrust.csv        one row per sample of the MadRust run
 madrust.log        the serial log of the MadRust run
+madrust.qemu.log   what the emulator said, kept for the runs that fail
 mainline.csv       the same for mainline, when it was run
 mainline.log
 summary.csv        median, p99 and standard deviation per workload
 summary.json       the summary plus the run metadata
 ```
+
+## The model and the agent
+
+The rig also measures the runtime and the agent, with an initramfs that
+carries the checkpoint:
+
+```sh
+bench/fetch-model.sh ~/madrust/artifacts/model-instruct
+make agent
+EXTRA_DIR=~/madrust/artifacts/model-instruct \
+    bench/mkinitramfs.sh ~/madrust/artifacts/agent.cpio madrust-agent/madrust-agent.elf
+bench/run.py --madrust target/.../madrust-kernel \
+             --mainline artifacts/vmlinux \
+             --initrd ~/madrust/artifacts/agent.cpio --memory 1024M \
+             --only agent-steps,agent-tokens,agent-seconds,agent-step-ms
+```
+
+The agent prints one line per step and one summary line, and the rig turns
+them into four measurements: the steps the loop took, the tokens the model
+generated, the seconds the run lasted, and the milliseconds of a step. The
+initramfs of the agent carries 270 megabytes of weights, so the guest needs
+at least a gigabyte of memory.
 
 ## QEMU configuration
 
@@ -97,7 +120,7 @@ come from the archive or the workload would run without descriptors 0 to 2.
 numbers in the finished `newc` archive, because creating a device node needs
 root on both macOS and Linux.
 
-The binary runs five measurements, prints one `RESULT <workload> <value> <unit>`
+The binary runs eight measurements, prints one `RESULT <workload> <value> <unit>`
 line per measured quantity and sample, and ends with `BENCH DONE`:
 
 | Workload | What it measures | Unit |
@@ -106,8 +129,14 @@ line per measured quantity and sample, and ends with `BENCH DONE`:
 | `mmap` | `mmap` an anonymous region, touch every page, `munmap` | ns per MiB |
 | `weights` | Map a large fixed region and touch every page | ns per MiB |
 | `weights-tail` | The slowest single page of the `weights` sample | ns per page |
+| `weights-huge` | The same region, asked for 2 MiB pages with `madvise` | ns per MiB |
+| `weights-huge-tail` | The slowest single page of the `weights-huge` sample | ns per page |
 | `futex` | Two threads ping-pong through one futex word | ns per round trip |
 | `threads` | Four threads doing fixed arithmetic, spawn to join | ns for the whole run |
+
+The `huge` variant asks the kernel for large pages with `madvise` and prints
+the answer of the kernel to the advice, so a kernel without large pages says
+so instead of being measured on something else.
 
 `weights` stands in for faulting model weights in, which is the kernel cost that
 dominates loading a model. MadRust has no file system yet, so the honest proxy
