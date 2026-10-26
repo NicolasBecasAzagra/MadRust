@@ -103,6 +103,22 @@ impl Vocab {
         None
     }
 
+    /// A fingerprint of the vocabulary.
+    ///
+    /// A cache that holds a mask of tokens must not hand it to another
+    /// vocabulary. The fingerprint covers the token count and the bytes of the
+    /// token strings, so two vocabularies with the same count but different
+    /// tokens get different values and the cache is rebuilt.
+    pub fn fingerprint(&self) -> u64 {
+        let count = self.tokens.len().to_le_bytes();
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in self.text.as_bytes().iter().chain(count.iter()) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
     /// `true` when every id in `0..size` has a token string.
     ///
     /// The inverse map must be complete for the model vocabulary: a missing id

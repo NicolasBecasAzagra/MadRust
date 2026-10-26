@@ -22,9 +22,9 @@
 //! token is allowed when its *whole* byte sequence keeps the automaton alive:
 //! a token whose first byte is legal but whose later bytes are not is rejected.
 //! The result is cached per automaton state, because a vocabulary has about
-//! 49k entries and the same state returns many times. The cache assumes one
-//! vocabulary per grammar; a later call with a vocabulary of a different size
-//! rebuilds it.
+//! 49k entries and the same state returns many times. The cache belongs to one
+//! vocabulary: it carries the fingerprint of the vocabulary it was built for,
+//! and a call with another vocabulary rebuilds it.
 //!
 //! [`BitSet`] is defined here, not in [`crate::math`], because only this module
 //! uses it. It is a `Vec<u64>` with one bit per byte or token id.
@@ -37,6 +37,7 @@
 use core::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::error::{Error, Result};
 use crate::vocab::Vocab;
 
 /// Argument keys a tool call may carry.
@@ -148,7 +149,8 @@ struct DfaState {
 }
 
 struct TokenCache {
-    vocab_tokens: usize,
+    /// The fingerprint of the vocabulary the mask was built for.
+    vocab_fingerprint: u64,
     per_state: Vec<Option<Vec<u32>>>,
 }
 
@@ -157,8 +159,25 @@ impl Grammar {
     ///
     /// A name must be plain ASCII without a quote or a backslash: it is placed
     /// literally between the quotes of the `tool` value. The list must not be
-    /// empty.
-    pub fn tool_call(tool_names: &[&str]) -> Grammar {
+    /// empty, because a grammar without a name has an empty language and every
+    /// step would stop with nothing to say.
+    pub fn tool_call(tool_names: &[&str]) -> Result<Grammar> {
+        if tool_names.is_empty() {
+            return Err(Error::new(
+                "grammar: a tool call needs at least one tool name",
+            ));
+        }
+        for name in tool_names {
+            let plain = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\');
+            if !plain {
+                return Err(Error::new(format!(
+                    "grammar: the tool name {name:?} is not plain ASCII"
+                )));
+            }
+        }
         let mut nfa = Nfa::new();
         let start = nfa.state();
         let name_start = literal_from(&mut nfa, start, b"{\"tool\":\"");
@@ -175,11 +194,11 @@ impl Grammar {
         nfa.accepting[end] = true;
 
         let states = nfa.determinize(start);
-        Grammar {
+        Ok(Grammar {
             states,
             empty: BitSet::new(),
             cache: RefCell::new(None),
-        }
+        })
     }
 
     /// The state before the first byte.
@@ -222,12 +241,13 @@ impl Grammar {
     /// can consume a byte of the call.
     pub fn allowed_tokens(&self, state: State, vocab: &Vocab) -> Vec<u32> {
         let count = vocab.token_count();
+        let fingerprint = vocab.fingerprint();
         let mut cache = self.cache.borrow_mut();
         let entry = match cache.as_mut() {
-            Some(entry) if entry.vocab_tokens == count => entry,
+            Some(entry) if entry.vocab_fingerprint == fingerprint => entry,
             _ => {
                 *cache = Some(TokenCache {
-                    vocab_tokens: count,
+                    vocab_fingerprint: fingerprint,
                     per_state: vec![None; self.states.len()],
                 });
                 cache
@@ -410,7 +430,9 @@ fn string(nfa: &mut Nfa) -> (usize, usize) {
     let end = nfa.state();
     let body = nfa.state();
     nfa.byte(start, b'"', body);
-    for byte in 0..=255u8 {
+    for byte in 0x20..=255u8 {
+        // A control byte below 0x20 is not allowed in a JSON string, and the
+        // parser of the runtime refuses it, so the grammar must not offer it.
         if byte != b'"' && byte != b'\\' {
             nfa.byte(body, byte, body);
         }
@@ -422,26 +444,11 @@ fn string(nfa: &mut Nfa) -> (usize, usize) {
     for &byte in b"\"\\/nrt" {
         nfa.byte(escape, byte, body);
     }
-    let (hex_start, hex_end) = hex4(nfa);
-    nfa.byte(escape, b'u', hex_start);
-    nfa.epsilon(hex_end, body);
+    // The `\u` escape is not offered: a code point needs a surrogate pair
+    // when it is above the basic plane, and the parser of the runtime only
+    // accepts the pairs. A grammar that offers the escape and a parser that
+    // refuses half of it is a step that ends without an answer.
     (start, end)
-}
-
-/// Exactly four hexadecimal digits.
-fn hex4(nfa: &mut Nfa) -> (usize, usize) {
-    let start = nfa.state();
-    let mut current = start;
-    for _ in 0..4 {
-        let next = nfa.state();
-        for byte in 0..=255u8 {
-            if byte.is_ascii_hexdigit() {
-                nfa.byte(current, byte, next);
-            }
-        }
-        current = next;
-    }
-    (start, current)
 }
 
 /// A JSON number: `-? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)?`.
@@ -557,7 +564,7 @@ mod tests {
 
     #[test]
     fn accepts_a_complete_call_and_rejects_a_malformed_one() {
-        let grammar = Grammar::tool_call(&["read", "write"]);
+        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
         assert!(accepts(&grammar, CALL.as_bytes()));
         assert!(accepts(&grammar, br#"{"tool":"write","args":{}}"#));
         assert!(accepts(
@@ -578,7 +585,7 @@ mod tests {
 
     #[test]
     fn every_non_complete_state_on_a_valid_call_can_continue() {
-        let grammar = Grammar::tool_call(&["read", "write"]);
+        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
         let vocab = synthetic_vocab(CALL);
         let mut state = grammar.start();
         let mut position = 0usize;
@@ -614,7 +621,7 @@ mod tests {
 
     #[test]
     fn every_reachable_non_complete_state_can_continue() {
-        let grammar = Grammar::tool_call(&["read", "write"]);
+        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
         let mut seen = vec![false; grammar.states.len()];
         let mut stack = vec![0usize];
         while let Some(index) = stack.pop() {

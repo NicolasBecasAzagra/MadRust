@@ -26,6 +26,12 @@ pub enum Value {
     Number(f64),
     /// `true` or `false`.
     Bool(bool),
+    /// `null`.
+    ///
+    /// The grammar of a tool call offers it as an argument value, so the
+    /// parser accepts it: a step that ends because the model chose `null`
+    /// loses the answer for no reason.
+    Null,
 }
 
 impl Value {
@@ -52,6 +58,7 @@ impl Value {
                 }
             }
             Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+            Value::Null => out.push_str("null"),
         }
     }
 }
@@ -176,10 +183,22 @@ fn parse_value(scanner: &mut Scanner<'_>) -> Result<Value> {
     match scanner.peek() {
         Some(b'"') => Ok(Value::String(scanner.parse_string()?)),
         Some(b't') | Some(b'f') => Ok(Value::Bool(scanner.parse_bool()?)),
-        Some(b'n') => Err(Error::new(
-            "call: null is not an argument value; use a string, a number or a boolean",
-        )),
-        Some(_) => Ok(Value::Number(scanner.parse_number()?)),
+        Some(b'n') => {
+            scanner.skip_whitespace();
+            for expected in b"null" {
+                if scanner.bump()? != *expected {
+                    return Err(Error::new("call: the value is not null"));
+                }
+            }
+            Ok(Value::Null)
+        }
+        Some(_) => {
+            let value = scanner.parse_number()?;
+            if !value.is_finite() {
+                return Err(Error::new("call: the number is not finite"));
+            }
+            Ok(Value::Number(value))
+        }
         None => Err(Error::new("call: unexpected end of document")),
     }
 }
@@ -239,10 +258,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_null_a_wrong_order_and_trailing_bytes() {
-        assert!(Call::parse(br#"{"tool":"read_file","args":{"path":null}}"#).is_err());
+    fn rejects_a_wrong_order_and_trailing_bytes() {
         assert!(Call::parse(br#"{"args":{},"tool":"done"}"#).is_err());
         assert!(Call::parse(br#"{"tool":"done","args":{}} extra"#).is_err());
         assert!(Call::parse(br#"{"tool":"done","args":{"a":1,"a":2}}"#).is_err());
+    }
+
+    #[test]
+    fn accepts_null_as_a_value() {
+        // The grammar of a tool call offers null as an argument value, so the
+        // parser takes it: a step that ends because the model chose null
+        // loses the answer for no reason.
+        let call = Call::parse(br#"{"tool":"read_file","args":{"path":null}}"#)
+            .expect("the call is valid");
+        assert_eq!(call.args.get("path"), Some(&Value::Null));
+        assert_eq!(call.string("path"), None);
+        assert_eq!(call.args_json(), r#"{"path":null}"#);
+    }
+
+    #[test]
+    fn refuses_a_number_that_is_not_finite() {
+        assert!(Call::parse(br#"{"tool":"done","args":{"limit":1e999}}"#).is_err());
     }
 }

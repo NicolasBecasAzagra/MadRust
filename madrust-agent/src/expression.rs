@@ -18,6 +18,7 @@ pub fn evaluate(text: &str) -> Result<i64, String> {
     let mut parser = Parser {
         bytes: text.as_bytes(),
         position: 0,
+        depth: 0,
     };
     parser.skip();
     if parser.peek().is_none() {
@@ -38,7 +39,16 @@ pub fn evaluate(text: &str) -> Result<i64, String> {
 struct Parser<'a> {
     bytes: &'a [u8],
     position: usize,
+    /// How deep the parenthesis nest right now.
+    depth: usize,
 }
+
+/// The deepest parenthesis the parser accepts.
+///
+/// The guest gives a thread 256 KiB of stack and the parser uses a frame per
+/// level, so a value with thousands of opening brackets would end the run
+/// with a fault. The bound is far above any expression a model writes.
+pub const MAX_DEPTH: usize = 64;
 
 impl Parser<'_> {
     /// The next byte without consuming it.
@@ -131,11 +141,17 @@ impl Parser<'_> {
         match self.peek() {
             Some(b'+') => {
                 self.position += 1;
-                self.unary()
+                self.enter()?;
+                let value = self.unary();
+                self.depth -= 1;
+                value
             }
             Some(b'-') => {
                 self.position += 1;
-                let value = self.unary()?;
+                self.enter()?;
+                let value = self.unary();
+                self.depth -= 1;
+                let value = value?;
                 value
                     .checked_neg()
                     .ok_or_else(|| "negation overflow".to_string())
@@ -150,7 +166,10 @@ impl Parser<'_> {
         match self.peek() {
             Some(b'(') => {
                 self.position += 1;
-                let value = self.expression()?;
+                self.enter()?;
+                let value = self.expression();
+                self.depth -= 1;
+                let value = value?;
                 self.skip();
                 match self.bump()? {
                     b')' => Ok(value),
@@ -167,6 +186,17 @@ impl Parser<'_> {
             )),
             None => Err("unexpected end of expression".to_string()),
         }
+    }
+
+    /// Enter one level of nesting, and refuse to go past the bound.
+    fn enter(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(format!(
+                "the expression nests deeper than {MAX_DEPTH} levels"
+            ));
+        }
+        Ok(())
     }
 
     /// A decimal integer, checked against the range of `i64`.
@@ -193,7 +223,7 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::evaluate;
+    use super::{evaluate, MAX_DEPTH};
 
     #[test]
     fn applies_precedence_and_parentheses() {
@@ -220,6 +250,20 @@ mod tests {
         assert!(evaluate("1 2").is_err());
         assert!(evaluate("a + 1").is_err());
         assert!(evaluate("1 + 2)").is_err());
+    }
+
+    #[test]
+    fn refuses_an_expression_that_nests_too_deep() {
+        // The guest gives a thread 256 KiB of stack, so the parser refuses a
+        // nest that would not fit.
+        let deep = format!(
+            "{}1{}",
+            "(".repeat(MAX_DEPTH + 1),
+            ")".repeat(MAX_DEPTH + 1)
+        );
+        assert!(evaluate(&deep).is_err());
+        let shallow = format!("{}1{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH));
+        assert_eq!(evaluate(&shallow), Ok(1));
     }
 
     #[test]

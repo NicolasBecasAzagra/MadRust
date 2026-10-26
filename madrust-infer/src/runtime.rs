@@ -488,13 +488,13 @@ fn generate_session(
     let first = match grammar {
         Some(active) => {
             let current = state.ok_or_else(|| Error::new("runtime: grammar state is missing"))?;
-            let allowed = active.allowed_tokens(current, &vocab);
+            let allowed = active.allowed_tokens(current, vocab);
             if allowed.is_empty() {
                 grammar_stopped = true;
                 None
             } else {
                 let token = sample_allowed(session.logits(), &allowed)?;
-                state = Some(advance_token(active, current, token, &vocab)?);
+                state = Some(advance_token(active, current, token, vocab)?);
                 Some(token)
             }
         }
@@ -515,13 +515,13 @@ fn generate_session(
             Some(active) => {
                 let current =
                     state.ok_or_else(|| Error::new("runtime: grammar state is missing"))?;
-                let allowed = active.allowed_tokens(current, &vocab);
+                let allowed = active.allowed_tokens(current, vocab);
                 if allowed.is_empty() {
                     grammar_stopped = true;
                     break;
                 }
                 let next = sample_allowed(session.logits(), &allowed)?;
-                state = Some(advance_token(active, current, next, &vocab)?);
+                state = Some(advance_token(active, current, next, vocab)?);
                 next
             }
             None => session.sample()?,
