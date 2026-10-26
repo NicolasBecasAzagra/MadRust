@@ -73,30 +73,37 @@ jobs:
           set -e
           cat serial.log
           test "$status" -eq 33
-          grep -q "MadRust: boot OK" serial.log
+          # The kernel and the program write to the same serial port, and the
+          # two interleave at the byte level: a line of the program can arrive
+          # behind a line of the kernel. The prefix of the kernel is cut
+          # before the exact matches, so the gate does not depend on where
+          # the two streams meet.
+          tr -d '\r' < serial.log | sed -E 's/^\[[^]]*\][[:space:]]*//' > serial-clean.log
+          grep -q "MadRust: boot OK" serial-clean.log
           # The kernel must run from the higher half and reach physical memory
           # through the direct map only.
-          grep -q "0xffffffff80000000" serial.log
-          grep -q "MM DIRECTMAP OK" serial.log
-          grep -q "\[mem\] RAM" serial.log
-          grep -q "MEM OK" serial.log
-          grep -q "HEAP OK 10000" serial.log
+          grep -q "0xffffffff80000000" serial-clean.log
+          grep -q "MM DIRECTMAP OK" serial-clean.log
+          grep -q "\[mem\] RAM" serial-clean.log
+          grep -q "MEM OK" serial-clean.log
+          grep -q "HEAP OK 10000" serial-clean.log
           # The user program prints through the write system call and exits
           # through exit_group; the kernel reports the status it received.
-          grep -q "Hello from MadRust userland" serial.log
-          grep -q "USER OK exit=0" serial.log
-          grep -q "SCHED OK" serial.log
+          grep -q "Hello from MadRust userland" serial-clean.log
+          grep -q "USER OK exit=0" serial-clean.log
+          grep -q "SCHED OK" serial-clean.log
           # Interleaving proof: every demo thread must appear in the log.
-          grep -q "^T1 " serial.log
-          grep -q "^T2 " serial.log
-          grep -q "^T3 " serial.log
-          grep -q "DIV0" serial.log
-          grep -q "TICKS 100" serial.log
+          grep -q "^T1 " serial-clean.log
+          grep -q "^T2 " serial-clean.log
+          grep -q "^T3 " serial-clean.log
+          grep -q "DIV0" serial-clean.log
+          grep -q "TICKS 100" serial-clean.log
 
       - name: Boot kernel with four processors
         run: |
           # The multiprocessor path has its own race, so it is a gate of its
           # own and not a variation of the single processor boot.
+          set +e
           timeout 120 qemu-system-x86_64 -M q35 -cpu Skylake-Client -smp 4 -m 512M \
             -kernel "$(make -s print-kernel-path)" \
             -display none -monitor none -no-reboot \
@@ -104,7 +111,11 @@ jobs:
             -device isa-debug-exit,iobase=0xf4,iosize=0x04
           status=$?
           echo "QEMU exit status: $status"
+          set -e
           cat smp.log
+          # The exit status of the emulator is the code the kernel writes to
+          # the debug exit port: 33 means the boot reached its end. The shell
+          # must not stop on that number, or the gate fails on a good boot.
           test "$status" -eq 33
           grep -q "SMP processors=4" smp.log
           grep -q "SMP OK cpus=4" smp.log
@@ -130,8 +141,10 @@ jobs:
           set -e
           cat initramfs.log
           test "$status" -eq 33
-          # Normalise the CRLF of the kernel lines; the workload uses LF.
-          tr -d '\r' < initramfs.log > initramfs-boot.log
+          # Normalise the CRLF of the kernel lines and cut the prefix of the
+          # kernel log: the workload and the kernel share the serial port and
+          # their lines can meet.
+          tr -d '\r' < initramfs.log | sed -E 's/^\[[^]]*\][[:space:]]*//' > initramfs-boot.log
           # One module, and as many files and entries as the archive holds: the
           # count changes when the archive gains alignment files.
           grep -qE "^\[user\] initramfs: 1 module, [0-9]+ files, [0-9]+ entries$" initramfs-boot.log
@@ -182,8 +195,9 @@ jobs:
           set -e
           cat agent.log
           test "$status" -eq 33
+          tr -d '\r' < agent.log | sed -E 's/^\[[^]]*\][[:space:]]*//' > agent-boot.log
           # Every step of the loop reports its tool and its result, and the
           # run ends with the summary the rig reads.
-          grep -q "^AGENT step=1 tool=" agent.log
-          grep -qE "^AGENT steps=[0-9]+ tokens=[0-9]+ seconds=[0-9.]+ tool_calls=[0-9]+$" agent.log
-          grep -qxF "MadRust: boot OK" agent.log
+          grep -q "^AGENT step=1 tool=" agent-boot.log
+          grep -qE "^AGENT steps=[0-9]+ tokens=[0-9]+ seconds=[0-9.]+ tool_calls=[0-9]+$" agent-boot.log
+          grep -qxF "MadRust: boot OK" agent-boot.log
