@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The model root and the three paths every run reads.
+//! The model root and the four paths every run reads.
 //!
-//! In the guest the model, the vocabulary and the config live at the initramfs
-//! root, and the kernel gives a program no environment, so the three constants
-//! are the whole story. A native run is an ordinary host process: it sets
+//! In the guest the model, the vocabulary, the config and the merges live at
+//! the initramfs root, and the kernel gives a program no environment, so the
+//! four constants are the whole story. A native run is an ordinary host
+//! process: it sets
 //! [`ROOT_ENV`] to the directory that holds the files, and the same binary
 //! opens them there. The root is resolved once, at the start of a run, and the
 //! log records whether it came from the environment or from the guest.
@@ -24,10 +25,13 @@ pub const VOCAB_PATH: &str = "/vocab.json";
 /// Config path in the initramfs root.
 pub const CONFIG_PATH: &str = "/config.json";
 
+/// Merges path in the initramfs root.
+pub const MERGES_PATH: &str = "/merges.txt";
+
 /// Environment variable that replaces the initramfs root when it is defined.
 pub const ROOT_ENV: &str = "MADRUST_INFER_ROOT";
 
-/// The three paths a run reads, plus the root they were derived from.
+/// The four paths a run reads, plus the root they were derived from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
     /// Root the other paths were built from.
@@ -38,6 +42,8 @@ pub struct Paths {
     pub vocab: String,
     /// `config.json` under the root.
     pub config: String,
+    /// `merges.txt` under the root.
+    pub merges: String,
 }
 
 impl Paths {
@@ -48,16 +54,18 @@ impl Paths {
             model: MODEL_PATH.to_string(),
             vocab: VOCAB_PATH.to_string(),
             config: CONFIG_PATH.to_string(),
+            merges: MERGES_PATH.to_string(),
         }
     }
 
-    /// A host directory that holds the three files.
+    /// A host directory that holds the files.
     pub fn under(root: String) -> Self {
         let separator = if root.ends_with('/') { "" } else { "/" };
         Self {
             model: format!("{root}{separator}model.safetensors"),
             vocab: format!("{root}{separator}vocab.json"),
             config: format!("{root}{separator}config.json"),
+            merges: format!("{root}{separator}merges.txt"),
             root,
         }
     }
@@ -91,7 +99,7 @@ fn resolve_from(value: Option<OsString>) -> Result<(Paths, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_from, Paths, CONFIG_PATH, MODEL_PATH, VOCAB_PATH};
+    use super::{resolve_from, Paths, CONFIG_PATH, MERGES_PATH, MODEL_PATH, VOCAB_PATH};
     use std::ffi::OsString;
 
     #[test]
@@ -101,6 +109,7 @@ mod tests {
         assert_eq!(paths.model, MODEL_PATH);
         assert_eq!(paths.vocab, VOCAB_PATH);
         assert_eq!(paths.config, CONFIG_PATH);
+        assert_eq!(paths.merges, MERGES_PATH);
     }
 
     #[test]
@@ -109,6 +118,7 @@ mod tests {
         assert_eq!(paths.model, "/models/smollm2/model.safetensors");
         assert_eq!(paths.vocab, "/models/smollm2/vocab.json");
         assert_eq!(paths.config, "/models/smollm2/config.json");
+        assert_eq!(paths.merges, "/models/smollm2/merges.txt");
         let trailing = Paths::under("/models/smollm2/".to_string());
         assert_eq!(trailing.model, "/models/smollm2/model.safetensors");
     }

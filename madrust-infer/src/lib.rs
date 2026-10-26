@@ -15,6 +15,10 @@
 //! * [`safetensors`] parses the tensor directory in a `safetensors` header.
 //! * [`vocab`] inverts the token string to id map and decodes bytes. It also
 //!   recovers the raw bytes of a token, which the grammar needs.
+//! * [`bpe`] is the byte pair merge encoder: the GPT-2 pre-tokenizer, the byte
+//!   level alphabet and the `merges.txt` of a checkpoint, stored in one buffer
+//!   so a real merge table fits a small heap. It is host tested and needs no
+//!   file system.
 //! * [`config`] reads the handful of values a `safetensors` file cannot carry:
 //!   the head count, the norm epsilon, the RoPE theta and the RoPE pair order.
 //! * [`math`] holds the pure kernels: RMSNorm, RoPE, softmax and greedy
@@ -43,6 +47,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod bpe;
 pub mod chat;
 pub mod cli;
 pub mod config;

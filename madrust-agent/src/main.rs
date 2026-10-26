@@ -117,7 +117,7 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     for step in 1..=MAX_STEPS {
         let prompt = chat::tool_prompt(SYSTEM, task, &tools::NAMES, &history);
-        let ids = encoder.encode(&prompt)?;
+        let ids = encoder.encode(server.vocab(), &prompt)?;
         let generation = server.generate(&ids, MAX_NEW_TOKENS, Some(&grammar))?;
         tokens = tokens.saturating_add(generation.tokens.len());
 
