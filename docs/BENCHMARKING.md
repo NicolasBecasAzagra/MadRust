@@ -301,6 +301,33 @@ What can be said, and what cannot:
 The raw rows of the three batches are in `bench/results/inference/`,
 `bench/results/inference-before/` and `bench/results/inference-joint/`.
 
+### The checkpoint
+
+The inference runs serve a real checkpoint, so the checkpoint is part of the
+methodology and not a detail of the setup. `bench/fetch-model.sh` downloads
+`HuggingFaceTB/SmolLM2-135M-Instruct` at a pinned revision and checks the
+SHA-256 of every file before a run uses it:
+
+| File | Bytes | Role |
+|---|---|---|
+| `model.safetensors` | 269060552 | The weights, bfloat16 |
+| `vocab.json` | 800662 | The vocabulary, token to id |
+| `config.json` | 861 | The dimensions of the model |
+| `tokenizer.json` | 2104556 | The tokenizer, with the merges inside |
+| `tokenizer_config.json` | 3764 | The chat template and the special token ids |
+| `merges.txt` | 466391 | The merges, for a byte pair merge encoder |
+
+The revision is pinned, because a moving reference would change the weights
+under a published measurement. A weight file that arrived incomplete would
+produce numbers that mean nothing and a wrong answer much later, so the
+digest is checked before the file is used and the run stops when it does not
+match.
+
+The chat markers of the template are single tokens of the vocabulary, so a
+prompt can carry them as one token each. The runtime has no byte pair merge
+encoder, so the plain text of a prompt is encoded one byte per token: the
+model reads the same bytes, with more tokens to carry them.
+
 ### What the numbers mean
 
 The comparison is between two kernels running the same binary under the same
