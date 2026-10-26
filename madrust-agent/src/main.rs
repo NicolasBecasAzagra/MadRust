@@ -107,7 +107,7 @@ use crate::tools::Outcome;
 fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::open()?;
     let encoder = encode::Encoder::new(server.vocab())?;
-    let grammar = Grammar::tool_call(&tools::NAMES);
+    let grammar = Grammar::tool_call(&tools::NAMES)?;
     let mut history: Vec<(Role, String)> = Vec::new();
 
     let started = Instant::now();
@@ -162,46 +162,12 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Ask the machine to go down, so Linux does not panic when PID 1 exits.
-///
-/// Mainline Linux panics with "Attempted to kill init!" when the last process
-/// leaves, and the agent is PID 1 there. A kernel that does not know the call
-/// answers with an error and the process leaves the ordinary way, which is what
-/// MadRust does. The benchmark workload and the inference runtime use the same
-/// approach.
-#[cfg(target_os = "linux")]
-fn power_off() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        const SYS_REBOOT: u64 = 169;
-        const LINUX_REBOOT_MAGIC1: u64 = 0x0123_4567;
-        const LINUX_REBOOT_MAGIC2: u64 = 0xCDEF_0123;
-        const LINUX_REBOOT_CMD_POWER_OFF: u64 = 0x4321_FEDC;
-
-        // SAFETY: reboot takes three arguments. On a kernel that accepts it the
-        // call never returns; on a kernel that refuses it, the result is an
-        // error number and the caller continues.
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                inlateout("rax") SYS_REBOOT as i64 => _,
-                in("rdi") LINUX_REBOOT_MAGIC1,
-                in("rsi") LINUX_REBOOT_CMD_POWER_OFF,
-                in("rdx") LINUX_REBOOT_MAGIC2,
-                lateout("rcx") _,
-                lateout("r11") _,
-                options(nostack),
-            );
-        }
-    }
-}
-
 /// Flush the log, ask the machine to go down, and leave with `status`.
 #[cfg(target_os = "linux")]
 fn leave(status: i32) -> ! {
     use std::io::Write;
     let _ = std::io::stdout().flush();
-    power_off();
+    madrust_infer::power_off::power_off();
     std::process::exit(status)
 }
 

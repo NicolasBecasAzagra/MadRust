@@ -337,6 +337,10 @@ unsafe fn syscall6(
 /// Ask the machine to go down, so the kernel does not panic when the last
 /// process leaves.
 ///
+/// The call is `reboot(magic1, magic2, cmd)`: the two magic words are the
+/// first two arguments and the command is the third. The kernel answers
+/// `-EINVAL` when the order is wrong, so the order is not a detail.
+///
 /// Mainline Linux panics with "Attempted to kill init!" when PID 1 exits, and
 /// the workload is PID 1 there. Asking the kernel to power the machine off
 /// ends the run without that panic. A kernel that does not know the call
@@ -350,8 +354,8 @@ fn power_off() {
         syscall3(
             SYS_REBOOT,
             LINUX_REBOOT_MAGIC1,
-            LINUX_REBOOT_CMD_POWER_OFF,
             LINUX_REBOOT_MAGIC2,
+            LINUX_REBOOT_CMD_POWER_OFF,
         );
     }
 }

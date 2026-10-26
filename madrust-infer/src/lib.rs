@@ -34,6 +34,8 @@
 //!   `MADRUST_INFER_ROOT` when a native host process sets it.
 //! * [`prompt`] encodes a prompt that the caller built, one byte per token,
 //!   for the callers that build a conversation at run time.
+//! * [`power_off`] asks the machine to go down before the last process
+//!   leaves, so mainline Linux does not panic when PID 1 exits.
 //! * [`reference`] is the published SmolLM2-135M run the runtime checks
 //!   itself against when it serves that checkpoint.
 //! * `mapping`, `model` and `runtime` need Linux `mmap` and are only built for
@@ -50,6 +52,7 @@ pub mod json;
 pub mod math;
 pub mod matvec;
 pub mod paths;
+pub mod power_off;
 pub mod prompt;
 pub mod reference;
 pub mod safetensors;
