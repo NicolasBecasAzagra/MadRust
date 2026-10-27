@@ -80,6 +80,7 @@ const FUTEX_OPERATION_MASK: u64 = 0x7f;
 
 /// `read` system call number.
 const SYS_READ: u64 = 0;
+const SYS_OPEN: u64 = 2;
 /// `write` system call number.
 const SYS_WRITE: u64 = 1;
 /// `close` system call number.
@@ -392,6 +393,7 @@ pub extern "C" fn madrust_syscall_dispatch(
     match number {
         SYS_READ => sys_read(argument1, argument2, argument3),
         SYS_WRITE => sys_write(argument1, argument2, argument3),
+        SYS_OPEN => sys_openat(argument1, argument2, argument3),
         SYS_OPENAT => sys_openat(argument1, argument2, argument3),
         SYS_CLOSE => fd::close(argument1),
         SYS_FSTAT => sys_fstat(argument1, argument2),
@@ -483,6 +485,10 @@ fn sys_write(descriptor: u64, buffer: u64, length: u64) -> i64 {
 ///
 /// Only `AT_FDCWD` is meaningful, because the working directory is the archive
 /// root. The mode argument is ignored: nothing can be created.
+///
+/// The old `open` call is the same one with the working directory, and a
+/// program that uses the standard library asks for it: without it the call
+/// answers ENOSYS and the program cannot read a file.
 fn sys_openat(dirfd: u64, path: u64, flags: u64) -> i64 {
     if dirfd != AT_FDCWD {
         return EINVAL;

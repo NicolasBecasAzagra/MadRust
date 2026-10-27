@@ -29,8 +29,6 @@ pub const ENOSYS: i64 = -38;
 pub const EACCES: i64 = -13;
 /// File exists.
 pub const EEXIST: i64 = -17;
-/// Not a directory.
-pub const ENOTDIR: i64 = -20;
 /// Is a directory.
 pub const EISDIR: i64 = -21;
 /// Illegal seek.

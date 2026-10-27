@@ -84,8 +84,9 @@ pub struct Generation {
     pub matmul_flops_per_second: f64,
     /// `true` when generation stopped on the end of sequence token.
     pub eos_reached: bool,
-    /// `true` when a grammar was given and generation stopped because no
-    /// allowed token remained.
+    /// `true` when a grammar was given and the generation stopped because
+    /// the grammar had nothing more to say: either no token was allowed, or
+    /// the call was already complete.
     pub grammar_stopped: bool,
     /// Characters of the vocabulary strings that were outside the byte-level
     /// alphabet and were written as their own UTF-8 bytes.
@@ -521,7 +522,14 @@ fn generate_session(
                     break;
                 }
                 let next = sample_allowed(session.logits(), &allowed)?;
-                state = Some(advance_token(active, current, next, vocab)?);
+                let next_state = advance_token(active, current, next, vocab)?;
+                // The call is complete: the grammar says so, and a model that
+                // keeps writing after it has closed the call is writing
+                // something the caller cannot use. The generation stops here.
+                state = Some(next_state);
+                if active.is_complete(next_state) {
+                    grammar_stopped = true;
+                }
                 next
             }
             None => session.sample()?,
