@@ -19,9 +19,14 @@ use crate::sync::IrqSpinLock;
 
 /// Slots in the table.
 ///
-/// The workload needs one mapping, the runtime a handful of stack mappings, and
-/// a split on `munmap` needs a spare slot, so the table leaves a wide margin.
-pub const CAPACITY: usize = 32;
+/// The workload needs one mapping and the runtime a handful of stack mappings,
+/// but a program that uses the standard library asks the kernel for one
+/// mapping per allocation: the allocator of Rust reserves every block with
+/// its own `mmap`, and a hundred small allocations are a hundred mappings. A
+/// table of thirty two slots was full before the program had read a file, so
+/// the table has room for a thousand and the lookup that scans it is the
+/// price.
+pub const CAPACITY: usize = 1024;
 
 struct Storage(UnsafeCell<MappingTable<CAPACITY>>);
 

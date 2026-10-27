@@ -37,7 +37,7 @@ use super::errno::{
 };
 
 /// Number of descriptors in the table.
-const MAX_DESCRIPTORS: usize = 32;
+const MAX_DESCRIPTORS: usize = 64;
 
 /// Number of pipes the table can create.
 const MAX_PIPES: usize = 4;

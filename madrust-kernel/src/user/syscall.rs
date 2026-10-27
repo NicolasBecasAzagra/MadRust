@@ -512,7 +512,12 @@ fn sys_openat(dirfd: u64, address: u64, flags: u64) -> i64 {
     };
     let result = fd::open(path, flags);
     if result < 0 {
-        crate::kprintln!("open failed: number=257 path={address:#x} error={result}");
+        // The name is in the log: a program that opens a file that is there
+        // and does not find it needs to know which name it asked for.
+        crate::kprintln!(
+            "open failed: number=257 address={address:#x} error={result} name={}",
+            core::str::from_utf8(path).unwrap_or("<not utf8>")
+        );
     }
     result
 }
@@ -691,7 +696,20 @@ fn sys_mmap(
     let descriptor = i64::try_from(descriptor).unwrap_or(-1);
     match vm::mmap(address, length, protection, flags, descriptor, offset) {
         Ok(base) => i64::try_from(base).unwrap_or(i64::MAX),
-        Err(error) => error,
+        Err(error) => {
+            // The program only sees that the mapping failed. The reason is in
+            // the log, because an allocation that fails with no explanation
+            // is the hardest kind of failure to fix.
+            crate::kprintln!(
+                "mmap failed: address={address:#x} length={length:#x} flags={flags:#x} error={error} free_frames={}",
+                crate::memory::with(|manager| manager.free_frames()).unwrap_or(0)
+            );
+            let (in_use, capacity) = crate::user::mappings::usage();
+            crate::kprintln!(
+                "mmap failed: mappings in use={in_use} of {capacity}"
+            );
+            error
+        }
     }
 }
 

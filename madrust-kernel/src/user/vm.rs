@@ -178,7 +178,14 @@ pub fn sys_brk(requested: u64) -> u64 {
     let old_end = mapped_break_end(floor);
     let new_end = page_up(requested);
     if new_end > old_end {
-        if map_region_eager(old_end, new_end - old_end).is_err() {
+        if let Err(error) = map_region_eager(old_end, new_end - old_end) {
+            // The program asked for more memory and the kernel could not
+            // give it: the reason is in the log, because the program only
+            // sees that an allocation failed.
+            crate::kprintln!(
+                "heap: the break could not grow to {new_end:#x} ({} bytes): {error:?}",
+                new_end - old_end
+            );
             return floor;
         }
     } else if new_end < old_end {
