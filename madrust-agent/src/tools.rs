@@ -2,10 +2,13 @@
 //! The tool registry.
 //!
 //! Five tools, exactly the names in [`NAMES`], each with the argument keys the
-//! system prompt explains. Every tool returns one line of text: the loop puts
-//! it in the history as the user turn and prints it in the `AGENT` line. A
-//! refused system call is a result too, `error errno=N`, so the model sees the
-//! failure and can choose another call instead of the loop going silent.
+//! system prompt explains. [`REQUIREMENTS`] states the keys a call has to
+//! carry, so the grammar of the call refuses a tool call that cannot work
+//! before the loop spends a step on it. Every tool returns one line of text:
+//! the loop puts it in the history as the user turn and prints it in the
+//! `AGENT` line. A refused system call is a result too, `error errno=N`, so the
+//! model sees the failure and can choose another call instead of the loop
+//! going silent.
 //!
 //! `read_file` and `write_file` use the standard library, which reaches the
 //! kernel through the Linux calls both kernels implement. `list_dir` uses the
@@ -21,6 +24,21 @@ use crate::expression;
 
 /// The tool names, in the order the system prompt lists them.
 pub const NAMES: [&str; 5] = ["read_file", "list_dir", "write_file", "compute", "done"];
+
+/// The argument keys each tool needs, by tool name.
+///
+/// The grammar of the call accepts a tool call only when its object carries
+/// every key of the tool. A key here must be one of
+/// `madrust_infer::grammar::ARGUMENT_NAMES`; the test of this module checks
+/// that, because a key outside that list makes the grammar construction fail
+/// at start up.
+pub const REQUIREMENTS: &[(&str, &[&str])] = &[
+    ("read_file", &["path"]),
+    ("list_dir", &["path"]),
+    ("write_file", &["path", "text"]),
+    ("compute", &["value"]),
+    ("done", &["text"]),
+];
 
 /// What one tool call produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -339,7 +357,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{run, Outcome, NAMES};
+    use madrust_infer::grammar::{Grammar, ARGUMENT_NAMES};
+
+    use super::{run, Outcome, NAMES, REQUIREMENTS};
     use crate::call::{Call, Value};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -366,6 +386,62 @@ mod tests {
 
     fn text(value: &str) -> Value {
         Value::String(value.to_string())
+    }
+
+    #[test]
+    fn every_required_key_is_an_accepted_argument() {
+        for (tool, keys) in REQUIREMENTS {
+            assert!(
+                NAMES.contains(tool),
+                "the requirements name the unknown tool {tool}"
+            );
+            for key in *keys {
+                assert!(
+                    ARGUMENT_NAMES.contains(key),
+                    "{tool} needs {key}, which the grammar does not accept"
+                );
+            }
+        }
+        // A tool with no entry would accept an empty object, the call this
+        // table exists to refuse.
+        for name in NAMES {
+            assert!(
+                REQUIREMENTS.iter().any(|(tool, _)| *tool == name),
+                "{name} states no requirements"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grammar_accepts_the_keys_of_every_tool() {
+        let grammar = Grammar::tool_call_with_requirements(&NAMES, REQUIREMENTS)
+            .expect("every required key is an accepted argument");
+        for call in [
+            br#"{"tool":"read_file","args":{"path":"/a"}}"#.as_slice(),
+            br#"{"tool":"list_dir","args":{"path":"/a"}}"#,
+            br#"{"tool":"write_file","args":{"path":"/a","text":"b"}}"#,
+            br#"{"tool":"compute","args":{"value":"1+1"}}"#,
+            br#"{"tool":"done","args":{"text":"ok"}}"#,
+        ] {
+            let mut state = grammar.start();
+            for &byte in call {
+                let next = grammar.advance(state, &[byte]);
+                assert!(next.is_some(), "the call left the grammar");
+                state = next.expect("the byte has a transition");
+            }
+            assert!(grammar.is_complete(state), "the call is not complete");
+        }
+        // The call the table exists to refuse: an empty object for a tool that
+        // needs a path. The closing brace leaves the language, or the call
+        // reaches its end without being complete.
+        let mut state = grammar.start();
+        for &byte in br#"{"tool":"read_file","args":{}}"# {
+            match grammar.advance(state, &[byte]) {
+                Some(next) => state = next,
+                None => break,
+            }
+        }
+        assert!(!grammar.is_complete(state));
     }
 
     #[test]

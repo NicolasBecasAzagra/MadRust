@@ -14,6 +14,16 @@
 //! in the names, the keys, the values and the number of members, so a sampled
 //! sequence that stays inside the automaton is a complete, well formed call.
 //!
+//! [`Grammar::tool_call_with_requirements`] also takes the keys each tool
+//! needs. A call of such a tool is accepted only when its argument object
+//! carries every one of those keys, in any order. While a required key is
+//! missing the object offers only the missing required keys, so a key that is
+//! not required cannot take the place of one; once the requirements are met
+//! every key of [`ARGUMENT_NAMES`] stays legal. [`Grammar::tool_call`] is the
+//! same grammar with no requirements. A call that is missing an argument the
+//! tool reads is not in the language, so it never reaches the tool and never
+//! costs a step.
+//!
 //! The strings of the arguments are bounded: [`Grammar::tool_call`] accepts at
 //! most [`DEFAULT_MAX_STRING_LENGTH`] characters in a string value, and
 //! [`Grammar::tool_call_with_limit`] takes the bound from the caller. The
@@ -62,6 +72,16 @@ use crate::vocab::Vocab;
 pub const ARGUMENT_NAMES: &[&str] = &[
     "path", "command", "query", "text", "name", "value", "limit", "count", "args",
 ];
+
+/// The argument keys a tool needs, by tool name.
+///
+/// A tool that is absent from the table, or that lists no key, accepts an
+/// empty object. Every key must be one of [`ARGUMENT_NAMES`]: the grammar
+/// cannot accept a key it does not know, so a requirement outside that list is
+/// an error at construction instead of a grammar that accepts nothing. The
+/// table order carries no meaning: a call may list the required keys in any
+/// order, and once they are all present it may carry any accepted key.
+pub type Requirements<'a> = &'a [(&'a str, &'a [&'a str])];
 
 /// Characters a string value of a tool call may hold under
 /// [`Grammar::tool_call`].
@@ -192,7 +212,7 @@ impl Grammar {
     /// empty, because a grammar without a name has an empty language and every
     /// step would stop with nothing to say.
     pub fn tool_call(tool_names: &[&str]) -> Result<Grammar> {
-        Self::tool_call_with_limit(tool_names, DEFAULT_MAX_STRING_LENGTH)
+        Self::tool_call_with_requirements(tool_names, &[])
     }
 
     /// Build the grammar of one tool call whose argument strings hold at most
@@ -215,20 +235,77 @@ impl Grammar {
     /// empty, because a grammar without a name has an empty language and every
     /// step would stop with nothing to say.
     pub fn tool_call_with_limit(tool_names: &[&str], max_length: usize) -> Result<Grammar> {
+        Self::tool_call_with_requirements_and_limit(tool_names, &[], max_length)
+    }
+
+    /// Build the grammar of one tool call where each tool accepts only a call
+    /// that carries the keys [`Requirements`] lists for it.
+    ///
+    /// The string values of the arguments hold at most
+    /// [`DEFAULT_MAX_STRING_LENGTH`] characters; use
+    /// [`Grammar::tool_call_with_requirements_and_limit`] for another bound.
+    /// The names and the rest of the construction follow [`Grammar::tool_call`].
+    ///
+    /// The object of a call lists the required keys of its tool first, in any
+    /// order, and only then any other key of [`ARGUMENT_NAMES`]; the object
+    /// cannot close before every required key is there. Every key of
+    /// `requirements` must be one of [`ARGUMENT_NAMES`]. A requirement the
+    /// grammar cannot carry is an error, not a tool that accepts nothing: an
+    /// empty language would stop every step of the loop. A tool the table does
+    /// not name, and a name in the table that is not one of `tool_names`,
+    /// needs no argument.
+    pub fn tool_call_with_requirements(
+        tool_names: &[&str],
+        requirements: Requirements<'_>,
+    ) -> Result<Grammar> {
+        Self::tool_call_with_requirements_and_limit(
+            tool_names,
+            requirements,
+            DEFAULT_MAX_STRING_LENGTH,
+        )
+    }
+
+    /// Build the grammar of one tool call with both the argument requirements
+    /// and the string bound of the caller.
+    ///
+    /// The automaton keeps one copy of the value frame per subset of the keys
+    /// a tool needs, so a tool that needs `n` keys costs `2^n` times the value
+    /// frame; the tool registry needs at most two keys per tool.
+    pub fn tool_call_with_requirements_and_limit(
+        tool_names: &[&str],
+        requirements: Requirements<'_>,
+        max_length: usize,
+    ) -> Result<Grammar> {
         validate_names(tool_names)?;
+        validate_requirements(requirements)?;
         let mut nfa = Nfa::new();
         let start = nfa.state();
         let name_start = literal_from(&mut nfa, start, b"{\"tool\":\"");
-        let name_end = nfa.state();
-        for name in tool_names {
-            let (name_state, end) = literal(&mut nfa, name.as_bytes());
+        let end = nfa.state();
+        // One frame per distinct requirement list. Two tools that need the
+        // same keys share the frame, so a grammar without requirements keeps
+        // the shape it had before the requirements existed.
+        let mut frames: Vec<(Vec<&str>, usize)> = Vec::new();
+        for &name in tool_names {
+            let required = required_keys(requirements, name);
+            let suffix = match frames.iter().position(|(keys, _)| *keys == required) {
+                Some(index) => frames[index].1,
+                None => {
+                    let suffix = nfa.state();
+                    let arguments = literal_from(&mut nfa, suffix, b"\",\"args\":");
+                    let (object_start, object_end) =
+                        object(&mut nfa, ARGUMENT_NAMES, &required, max_length);
+                    nfa.epsilon(arguments, object_start);
+                    let finish = literal_from(&mut nfa, object_end, b"}");
+                    nfa.epsilon(finish, end);
+                    frames.push((required, suffix));
+                    suffix
+                }
+            };
+            let (name_state, name_end) = literal(&mut nfa, name.as_bytes());
             nfa.epsilon(name_start, name_state);
-            nfa.epsilon(end, name_end);
+            nfa.epsilon(name_end, suffix);
         }
-        let arguments = literal_from(&mut nfa, name_end, b"\",\"args\":");
-        let (object_start, object_end) = object(&mut nfa, ARGUMENT_NAMES, max_length);
-        nfa.epsilon(arguments, object_start);
-        let end = literal_from(&mut nfa, object_end, b"}");
         nfa.accepting[end] = true;
 
         let states = nfa.determinize(start);
@@ -336,6 +413,39 @@ fn validate_names(tool_names: &[&str]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Check that every required key is one the grammar can carry.
+fn validate_requirements(requirements: Requirements<'_>) -> Result<()> {
+    for &(name, keys) in requirements {
+        for &key in keys {
+            if !ARGUMENT_NAMES.contains(&key) {
+                return Err(Error::new(format!(
+                    "grammar: the tool {name:?} needs the key {key:?}, which is not an argument name"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The keys `tool` needs, with no repeated key.
+///
+/// A name the table does not list needs nothing, and so does a name the table
+/// lists twice with different keys: the keys of every entry apply.
+fn required_keys<'a>(requirements: Requirements<'a>, tool: &str) -> Vec<&'a str> {
+    let mut keys = Vec::new();
+    for &(name, required) in requirements {
+        if name != tool {
+            continue;
+        }
+        for &key in required {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
 }
 
 /// One byte transition of a state.
@@ -580,45 +690,98 @@ fn value(nfa: &mut Nfa, max_length: usize) -> (usize, usize) {
     union(nfa, &fragments)
 }
 
-/// The argument object: `{}` or members whose keys come from `names`.
-fn object(nfa: &mut Nfa, names: &[&str], max_length: usize) -> (usize, usize) {
+/// The argument object: `{}`, or the missing required keys of `required`
+/// followed by any key of `names`.
+///
+/// A mask records which required keys the members already carried. While the
+/// mask is not full, the only members the object offers are the required keys
+/// it still misses, in any order, so a key that is not required cannot take
+/// the place of one that is. The object closes only at the full mask, and the
+/// keys of `names` stay legal from there on. The first member follows the
+/// opening brace without a comma; every later member starts with one.
+///
+/// One value frame is built per mask: a key ends in the frame of the mask it
+/// moves to, and the frame returns to the state after a value of that mask, so
+/// the number of frames is the number of masks.
+fn object(nfa: &mut Nfa, names: &[&str], required: &[&str], max_length: usize) -> (usize, usize) {
+    let masks = 1usize << required.len();
+    let full = masks - 1;
     let start = nfa.state();
     let end = nfa.state();
-    let after_open = nfa.state();
-    nfa.byte(start, b'{', after_open);
-    nfa.byte(after_open, b'}', end);
+    let first = nfa.state();
+    nfa.byte(start, b'{', first);
+    let after_value: Vec<usize> = (0..masks).map(|_| nfa.state()).collect();
 
-    let key_start = nfa.state();
-    nfa.byte(after_open, b'"', key_start);
-
-    let quote = nfa.state();
-    for name in names {
-        let (name_start, name_end) = literal(nfa, name.as_bytes());
-        nfa.epsilon(key_start, name_start);
-        nfa.epsilon(name_end, quote);
+    let frames: Vec<(usize, usize)> = (0..masks).map(|_| value(nfa, max_length)).collect();
+    for (mask, &(_, frame_end)) in frames.iter().enumerate() {
+        nfa.epsilon(frame_end, after_value[mask]);
     }
-    let colon = nfa.state();
-    nfa.byte(quote, b'"', colon);
-    let value_start = nfa.state();
-    nfa.byte(colon, b':', value_start);
+    // `{}` is the whole object only when the tool needs nothing.
+    if full == 0 {
+        nfa.byte(first, b'}', end);
+    }
 
-    let (value_start_fragment, value_end_fragment) = value(nfa, max_length);
-    nfa.epsilon(value_start, value_start_fragment);
-    let after_value = nfa.state();
-    nfa.epsilon(value_end_fragment, after_value);
-    nfa.byte(after_value, b'}', end);
-    let comma = nfa.state();
-    nfa.byte(after_value, b',', comma);
-    nfa.byte(comma, b'"', key_start);
+    for (mask, &after) in after_value.iter().enumerate() {
+        // One key position per mask, shared by the first member and by a
+        // member after a comma.
+        let key_start = nfa.state();
+        if mask == 0 {
+            nfa.byte(first, b'"', key_start);
+        }
+        let comma = nfa.state();
+        nfa.byte(after, b',', comma);
+        nfa.byte(comma, b'"', key_start);
+        if mask == full {
+            nfa.byte(after, b'}', end);
+        }
+
+        // While a required key is missing, it and the other missing keys are
+        // the only members. The full mask carries every accepted key.
+        let members: Vec<(&str, usize)> = if mask == full {
+            names.iter().map(|&name| (name, full)).collect()
+        } else {
+            required
+                .iter()
+                .enumerate()
+                .filter(|&(bit, _)| mask & (1 << bit) == 0)
+                .map(|(bit, &key)| (key, mask | (1 << bit)))
+                .collect()
+        };
+        // One closing quote and colon per next mask: every key that lands on
+        // the same mask shares them.
+        let mut colons: Vec<Option<usize>> = vec![None; masks];
+        for (name, next) in members {
+            let colon = match colons[next] {
+                Some(colon) => colon,
+                None => {
+                    let colon = nfa.state();
+                    nfa.byte(colon, b':', frames[next].0);
+                    colons[next] = Some(colon);
+                    colon
+                }
+            };
+            let (key_state, key_end) = literal(nfa, name.as_bytes());
+            nfa.epsilon(key_start, key_state);
+            nfa.byte(key_end, b'"', colon);
+        }
+    }
     (start, end)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BitSet, Grammar, DEFAULT_MAX_STRING_LENGTH};
+    use super::{BitSet, Grammar, Requirements, DEFAULT_MAX_STRING_LENGTH};
     use crate::vocab::{token_for_byte, Vocab};
 
     const CALL: &str = r#"{"tool":"read","args":{"path":"a","limit":1}}"#;
+
+    /// A requirement table for the tests: `read` needs `path`, `write` needs
+    /// both keys, and `plain` needs nothing.
+    const REQUIREMENTS: Requirements<'_> = &[
+        ("read", &["path"]),
+        ("write", &["path", "text"]),
+        ("plain", &[]),
+    ];
 
     fn accepts(grammar: &Grammar, bytes: &[u8]) -> bool {
         let mut state = grammar.start();
@@ -659,6 +822,219 @@ mod tests {
         assert!(!accepts(&grammar, br#"{"tool":"list","args":{}}"#));
         // The outer brace is missing.
         assert!(!accepts(&grammar, br#"{"tool":"read","args":{"path":"a"}"#));
+    }
+
+    #[test]
+    fn a_call_with_every_required_key_is_accepted() {
+        let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
+            .expect("every required key is an accepted key");
+        assert!(accepts(&grammar, br#"{"tool":"read","args":{"path":"a"}}"#));
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a","text":"b"}}"#
+        ));
+        // Extra accepted keys do not hurt.
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a","text":"b","limit":1}}"#
+        ));
+    }
+
+    #[test]
+    fn a_call_missing_a_required_key_is_rejected() {
+        let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
+            .expect("every required key is an accepted key");
+        assert!(!accepts(&grammar, br#"{"tool":"read","args":{}}"#));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"text":"a"}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a"}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"text":"b"}}"#
+        ));
+    }
+
+    #[test]
+    fn the_order_of_the_required_keys_does_not_matter() {
+        let grammar = Grammar::tool_call_with_requirements(&["write"], REQUIREMENTS)
+            .expect("every required key is an accepted key");
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a","text":"b"}}"#
+        ));
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"text":"b","path":"a"}}"#
+        ));
+        // A key of the accepted list after the required ones, and a repeated
+        // required key, still close the call.
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"text":"b","path":"a","count":1,"text":"c"}}"#
+        ));
+    }
+
+    #[test]
+    fn the_open_brace_only_offers_a_missing_required_key() {
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("path is an accepted key");
+        let after_open = grammar
+            .advance(grammar.start(), br#"{"tool":"read","args":{"#)
+            .expect("the frame is legal");
+        assert_eq!(
+            grammar.allowed_bytes(after_open).iter().collect::<Vec<_>>(),
+            vec![usize::from(b'"')],
+            "a comma or a closing brace right after the opening brace is not JSON"
+        );
+        // Only the required key starts here, not `query` or another key of the
+        // accepted list.
+        let after_quote = grammar
+            .advance(after_open, b"\"")
+            .expect("the quote of a key is legal");
+        assert_eq!(
+            grammar
+                .allowed_bytes(after_quote)
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![usize::from(b'p')],
+            "a key that is not required must not take the place of `path`"
+        );
+    }
+
+    #[test]
+    fn the_object_closes_only_when_every_required_key_is_present() {
+        let grammar = Grammar::tool_call_with_requirements(&["write"], REQUIREMENTS)
+            .expect("both keys are accepted keys");
+        let after_path = grammar
+            .advance(grammar.start(), br#"{"tool":"write","args":{"path":"a""#)
+            .expect("the first member is legal");
+        let allowed = grammar.allowed_bytes(after_path);
+        assert!(allowed.contains(usize::from(b',')));
+        assert!(
+            !allowed.contains(usize::from(b'}')),
+            "the object closed before `text`"
+        );
+        let after_text = grammar
+            .advance(after_path, br#","text":"b""#)
+            .expect("the second member is legal");
+        assert!(
+            grammar
+                .allowed_bytes(after_text)
+                .contains(usize::from(b'}')),
+            "the object does not close after every required key"
+        );
+    }
+
+    #[test]
+    fn a_member_starts_with_a_comma_only_after_another_member() {
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("path is an accepted key");
+        // A comma right after the opening brace, and a member with no comma
+        // after the one before it, are the two malformed shapes of the run.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{,"path":"a"}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a""path":"b"}}"#
+        ));
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","path":"b"}}"#
+        ));
+    }
+
+    #[test]
+    fn a_key_that_is_not_required_waits_for_the_required_ones() {
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("path is an accepted key");
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"query":false}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"query":false,"path":"a"}}"#
+        ));
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","query":false,"limit":1}}"#
+        ));
+    }
+
+    #[test]
+    fn a_tool_without_requirements_accepts_an_empty_object() {
+        let grammar = Grammar::tool_call_with_requirements(&["plain", "read"], REQUIREMENTS)
+            .expect("every required key is an accepted key");
+        assert!(accepts(&grammar, br#"{"tool":"plain","args":{}}"#));
+        // The empty object stays legal for the tool that needs nothing, and
+        // only for that tool.
+        assert!(!accepts(&grammar, br#"{"tool":"read","args":{}}"#));
+    }
+
+    #[test]
+    fn a_requirement_outside_the_argument_names_is_an_error() {
+        let error = match Grammar::tool_call_with_requirements(&["read"], &[("read", &["body"])]) {
+            Ok(_) => panic!("`body` is not an accepted argument key"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("body"), "{error}");
+    }
+
+    #[test]
+    fn every_non_complete_state_of_a_requiring_grammar_can_finish() {
+        let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
+            .expect("every required key is an accepted key");
+        let mut reverse = vec![Vec::new(); grammar.states.len()];
+        for (index, state) in grammar.states.iter().enumerate() {
+            for &(_, next) in &state.transitions {
+                reverse[next].push(index);
+            }
+        }
+        let mut reaches_end = vec![false; grammar.states.len()];
+        let mut stack: Vec<usize> = (0..grammar.states.len())
+            .filter(|&index| grammar.states[index].accepting)
+            .collect();
+        for &index in &stack {
+            reaches_end[index] = true;
+        }
+        while let Some(index) = stack.pop() {
+            for &previous in &reverse[index] {
+                if !reaches_end[previous] {
+                    reaches_end[previous] = true;
+                    stack.push(previous);
+                }
+            }
+        }
+
+        let mut seen = vec![false; grammar.states.len()];
+        let mut stack = vec![0usize];
+        while let Some(index) = stack.pop() {
+            if seen[index] {
+                continue;
+            }
+            seen[index] = true;
+            let state = &grammar.states[index];
+            if !state.accepting {
+                assert!(
+                    !state.allowed.is_empty(),
+                    "state {index} has no allowed byte and is not complete"
+                );
+                assert!(
+                    reaches_end[index],
+                    "state {index} cannot reach a complete call"
+                );
+            }
+            for &(_, next) in &state.transitions {
+                stack.push(next);
+            }
+        }
     }
 
     #[test]
