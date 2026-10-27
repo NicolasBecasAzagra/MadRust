@@ -28,6 +28,7 @@
 use madrust_infer::bpe::Bpe;
 use madrust_infer::chat;
 use madrust_infer::error::Result;
+#[cfg(target_os = "linux")]
 use madrust_infer::paths;
 use madrust_infer::prompt::ByteTokens;
 use madrust_infer::vocab::Vocab;
