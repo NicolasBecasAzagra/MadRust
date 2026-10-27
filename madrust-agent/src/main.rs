@@ -11,6 +11,16 @@
 //! `/vocab.json` and reports how many bytes it has. The loop stops at the
 //! `done` tool or after [`MAX_STEPS`] steps.
 //!
+//! The grammar bounds the strings of the call: an argument string holds at
+//! most `madrust_infer::grammar::DEFAULT_MAX_STRING_LENGTH` characters (128 by
+//! default), and one escape sequence counts as one character. The tool names
+//! and the argument keys are literals and are not bounded. A tool call carries
+//! a path, a command or a short answer, so the bound costs no useful call.
+//! It is what keeps a call finite: without it a model that opens a string and
+//! never closes it samples until [`MAX_NEW_TOKENS`] runs out and writes no
+//! call at all. A caller that needs another bound calls
+//! `Grammar::tool_call_with_limit` instead of `Grammar::tool_call`.
+//!
 //! The output is one line per event, so the rig can read a run without a
 //! parser for prose:
 //!
@@ -37,6 +47,8 @@ pub const MAX_STEPS: usize = 4;
 ///
 /// A tool call is a short JSON object, but the grammar allows merged tokens
 /// and the model can choose many one byte tokens before it closes the call.
+/// The grammar bounds every argument string, so the budget is not the only
+/// thing that ends an unterminated call.
 pub const MAX_NEW_TOKENS: usize = 256;
 
 /// The task used when the program gets no argument.
@@ -107,6 +119,8 @@ use crate::tools::Outcome;
 fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::open()?;
     let encoder = encode::Encoder::new(server.vocab())?;
+    // The default bound on the argument strings: a path, a command or the
+    // answer of `done` fits, and an unterminated string stops the call.
     let grammar = Grammar::tool_call(&tools::NAMES)?;
     let mut history: Vec<(Role, String)> = Vec::new();
 

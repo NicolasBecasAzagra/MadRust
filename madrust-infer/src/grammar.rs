@@ -14,6 +14,20 @@
 //! in the names, the keys, the values and the number of members, so a sampled
 //! sequence that stays inside the automaton is a complete, well formed call.
 //!
+//! The strings of the arguments are bounded: [`Grammar::tool_call`] accepts at
+//! most [`DEFAULT_MAX_STRING_LENGTH`] characters in a string value, and
+//! [`Grammar::tool_call_with_limit`] takes the bound from the caller. The
+//! bound is what keeps a call finite. Without it a string loops over any byte,
+//! so a model that opens a string it never closes keeps sampling and spends
+//! the whole token budget without producing a call. A tool call carries a
+//! path, a command or a short answer, so a small bound costs nothing. The
+//! bound applies to the string values only: the tool names and the argument
+//! keys are literals, and a number value keeps the width of `number`.
+//!
+//! One character of a string is one byte outside `"` and `\`, or one escape
+//! sequence (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`), even though the escape
+//! takes two bytes on the wire.
+//!
 //! The automaton is built once, from a small NFA with epsilon transitions, by
 //! subset construction. [`Grammar::advance`] is a pure byte transition, so the
 //! same grammar serves the sampler, the tests and any later tool loop.
@@ -48,6 +62,16 @@ use crate::vocab::Vocab;
 pub const ARGUMENT_NAMES: &[&str] = &[
     "path", "command", "query", "text", "name", "value", "limit", "count", "args",
 ];
+
+/// Characters a string value of a tool call may hold under
+/// [`Grammar::tool_call`].
+///
+/// A tool call carries a path, a command, a number or a short answer, never a
+/// document. 128 characters hold the longest path of the tool registry and a
+/// sentence of the `done` answer with margin, and the automaton grows by two
+/// states per character, so the default stays small. A caller that needs
+/// another bound uses [`Grammar::tool_call_with_limit`].
+pub const DEFAULT_MAX_STRING_LENGTH: usize = 128;
 
 /// A set of small non-negative integers, one bit per element.
 ///
@@ -157,27 +181,41 @@ struct TokenCache {
 impl Grammar {
     /// Build the grammar of one tool call over `tool_names`.
     ///
+    /// The string values of the arguments hold at most
+    /// [`DEFAULT_MAX_STRING_LENGTH`] characters. Use
+    /// [`Grammar::tool_call_with_limit`] to choose another bound; the bound is
+    /// what makes a call finite, because an unbounded string lets a model
+    /// sample until the token budget runs out.
+    ///
     /// A name must be plain ASCII without a quote or a backslash: it is placed
     /// literally between the quotes of the `tool` value. The list must not be
     /// empty, because a grammar without a name has an empty language and every
     /// step would stop with nothing to say.
     pub fn tool_call(tool_names: &[&str]) -> Result<Grammar> {
-        if tool_names.is_empty() {
-            return Err(Error::new(
-                "grammar: a tool call needs at least one tool name",
-            ));
-        }
-        for name in tool_names {
-            let plain = !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\');
-            if !plain {
-                return Err(Error::new(format!(
-                    "grammar: the tool name {name:?} is not plain ASCII"
-                )));
-            }
-        }
+        Self::tool_call_with_limit(tool_names, DEFAULT_MAX_STRING_LENGTH)
+    }
+
+    /// Build the grammar of one tool call whose argument strings hold at most
+    /// `max_length` characters.
+    ///
+    /// One character is one byte outside `"` and `\`, or one escape sequence
+    /// (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`), which takes two bytes on the wire.
+    /// A bound of zero accepts only the empty string. The automaton builds the
+    /// string as a chain of `max_length` positions, so the state count grows
+    /// by about two states per character and never by subset blow up; a call
+    /// whose string is one character longer has no legal byte and generation
+    /// stops.
+    ///
+    /// The bound applies to the string values only. The tool names and the
+    /// argument keys are literals, and a number value keeps the width of the
+    /// JSON number production.
+    ///
+    /// A name must be plain ASCII without a quote or a backslash: it is placed
+    /// literally between the quotes of the `tool` value. The list must not be
+    /// empty, because a grammar without a name has an empty language and every
+    /// step would stop with nothing to say.
+    pub fn tool_call_with_limit(tool_names: &[&str], max_length: usize) -> Result<Grammar> {
+        validate_names(tool_names)?;
         let mut nfa = Nfa::new();
         let start = nfa.state();
         let name_start = literal_from(&mut nfa, start, b"{\"tool\":\"");
@@ -188,7 +226,7 @@ impl Grammar {
             nfa.epsilon(end, name_end);
         }
         let arguments = literal_from(&mut nfa, name_end, b"\",\"args\":");
-        let (object_start, object_end) = object(&mut nfa, ARGUMENT_NAMES);
+        let (object_start, object_end) = object(&mut nfa, ARGUMENT_NAMES, max_length);
         nfa.epsilon(arguments, object_start);
         let end = literal_from(&mut nfa, object_end, b"}");
         nfa.accepting[end] = true;
@@ -277,6 +315,27 @@ impl Grammar {
         }
         ids
     }
+}
+
+/// Check that every tool name can be placed literally in the call.
+fn validate_names(tool_names: &[&str]) -> Result<()> {
+    if tool_names.is_empty() {
+        return Err(Error::new(
+            "grammar: a tool call needs at least one tool name",
+        ));
+    }
+    for name in tool_names {
+        let plain = !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\');
+        if !plain {
+            return Err(Error::new(format!(
+                "grammar: the tool name {name:?} is not plain ASCII"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// One byte transition of a state.
@@ -424,26 +483,36 @@ fn union(nfa: &mut Nfa, fragments: &[(usize, usize)]) -> (usize, usize) {
     (start, end)
 }
 
-/// A JSON string: any byte except `"` and `\`, or one escape sequence.
-fn string(nfa: &mut Nfa) -> (usize, usize) {
+/// A JSON string of at most `max_length` characters: a byte outside `"` and
+/// `\`, or one escape sequence.
+///
+/// The body is a chain of `max_length` positions, so a string one character
+/// too long has no next byte. A position also closes the string, so every
+/// reachable position can reach a complete call.
+fn string(nfa: &mut Nfa, max_length: usize) -> (usize, usize) {
     let start = nfa.state();
     let end = nfa.state();
-    let body = nfa.state();
-    nfa.byte(start, b'"', body);
-    for byte in 0x20..=255u8 {
-        // A control byte below 0x20 is not allowed in a JSON string, and the
-        // parser of the runtime refuses it, so the grammar must not offer it.
-        if byte != b'"' && byte != b'\\' {
-            nfa.byte(body, byte, body);
+    let mut position = nfa.state();
+    nfa.byte(start, b'"', position);
+    for _ in 0..max_length {
+        let next = nfa.state();
+        for byte in 0x20..=255u8 {
+            // A control byte below 0x20 is not allowed in a JSON string, and
+            // the parser of the runtime refuses it, so the grammar must not
+            // offer it.
+            if byte != b'"' && byte != b'\\' {
+                nfa.byte(position, byte, next);
+            }
         }
+        let escape = nfa.state();
+        nfa.byte(position, b'\\', escape);
+        for &byte in b"\"\\/nrt" {
+            nfa.byte(escape, byte, next);
+        }
+        nfa.byte(position, b'"', end);
+        position = next;
     }
-    nfa.byte(body, b'"', end);
-
-    let escape = nfa.state();
-    nfa.byte(body, b'\\', escape);
-    for &byte in b"\"\\/nrt" {
-        nfa.byte(escape, byte, body);
-    }
+    nfa.byte(position, b'"', end);
     // The `\u` escape is not offered: a code point needs a surrogate pair
     // when it is above the basic plane, and the parser of the runtime only
     // accepts the pairs. A grammar that offers the escape and a parser that
@@ -500,9 +569,9 @@ fn number(nfa: &mut Nfa) -> (usize, usize) {
 }
 
 /// One JSON value of an argument.
-fn value(nfa: &mut Nfa) -> (usize, usize) {
+fn value(nfa: &mut Nfa, max_length: usize) -> (usize, usize) {
     let fragments = [
-        string(nfa),
+        string(nfa, max_length),
         number(nfa),
         literal(nfa, b"true"),
         literal(nfa, b"false"),
@@ -512,7 +581,7 @@ fn value(nfa: &mut Nfa) -> (usize, usize) {
 }
 
 /// The argument object: `{}` or members whose keys come from `names`.
-fn object(nfa: &mut Nfa, names: &[&str]) -> (usize, usize) {
+fn object(nfa: &mut Nfa, names: &[&str], max_length: usize) -> (usize, usize) {
     let start = nfa.state();
     let end = nfa.state();
     let after_open = nfa.state();
@@ -533,7 +602,7 @@ fn object(nfa: &mut Nfa, names: &[&str]) -> (usize, usize) {
     let value_start = nfa.state();
     nfa.byte(colon, b':', value_start);
 
-    let (value_start_fragment, value_end_fragment) = value(nfa);
+    let (value_start_fragment, value_end_fragment) = value(nfa, max_length);
     nfa.epsilon(value_start, value_start_fragment);
     let after_value = nfa.state();
     nfa.epsilon(value_end_fragment, after_value);
@@ -546,7 +615,7 @@ fn object(nfa: &mut Nfa, names: &[&str]) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{BitSet, Grammar};
+    use super::{BitSet, Grammar, DEFAULT_MAX_STRING_LENGTH};
     use crate::vocab::{token_for_byte, Vocab};
 
     const CALL: &str = r#"{"tool":"read","args":{"path":"a","limit":1}}"#;
@@ -560,6 +629,15 @@ mod tests {
             }
         }
         grammar.is_complete(state)
+    }
+
+    /// A complete call whose single string value holds `length` characters.
+    fn call_with_string(length: usize) -> Vec<u8> {
+        format!(
+            "{{\"tool\":\"read\",\"args\":{{\"path\":\"{}\"}}}}",
+            "a".repeat(length)
+        )
+        .into_bytes()
     }
 
     #[test]
@@ -640,6 +718,119 @@ mod tests {
                 stack.push(next);
             }
         }
+    }
+
+    #[test]
+    fn a_string_of_exactly_the_bound_is_accepted() {
+        let grammar = Grammar::tool_call_with_limit(&["read"], 8).expect("the names are plain");
+        assert!(accepts(&grammar, &call_with_string(8)));
+        assert!(!accepts(&grammar, &call_with_string(9)));
+    }
+
+    #[test]
+    fn an_escape_counts_as_one_character() {
+        let grammar = Grammar::tool_call_with_limit(&["read"], 2).expect("the names are plain");
+        // Four wire bytes, two characters.
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"\n\t"}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"\n\t\n"}}"#
+        ));
+    }
+
+    #[test]
+    fn several_arguments_each_within_the_bound_are_accepted() {
+        let grammar = Grammar::tool_call_with_limit(&["write"], 8).expect("the names are plain");
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a/b.txt","text":"hola que","count":7}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a/b.txt","text":"hola que tal"}}"#
+        ));
+    }
+
+    #[test]
+    fn the_bound_does_not_touch_the_tool_name_or_the_keys() {
+        // `read` and `command` are longer than the bound: both are literals,
+        // so the bound never applies to them.
+        let grammar = Grammar::tool_call_with_limit(&["read"], 3).expect("the names are plain");
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"command":"ls"}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"command":"ls -l"}}"#
+        ));
+    }
+
+    #[test]
+    fn every_reachable_non_complete_state_reaches_a_complete_call() {
+        for max_length in [0usize, 1, 4, DEFAULT_MAX_STRING_LENGTH] {
+            let grammar = Grammar::tool_call_with_limit(&["read", "write"], max_length)
+                .expect("the names are plain");
+            let mut reverse = vec![Vec::new(); grammar.states.len()];
+            for (index, state) in grammar.states.iter().enumerate() {
+                for &(_, next) in &state.transitions {
+                    reverse[next].push(index);
+                }
+            }
+            let mut reaches_end = vec![false; grammar.states.len()];
+            let mut stack: Vec<usize> = (0..grammar.states.len())
+                .filter(|&index| grammar.states[index].accepting)
+                .collect();
+            for &index in &stack {
+                reaches_end[index] = true;
+            }
+            while let Some(index) = stack.pop() {
+                for &previous in &reverse[index] {
+                    if !reaches_end[previous] {
+                        reaches_end[previous] = true;
+                        stack.push(previous);
+                    }
+                }
+            }
+
+            let mut seen = vec![false; grammar.states.len()];
+            let mut stack = vec![0usize];
+            while let Some(index) = stack.pop() {
+                if seen[index] {
+                    continue;
+                }
+                seen[index] = true;
+                if !grammar.states[index].accepting {
+                    assert!(
+                        reaches_end[index],
+                        "state {index} of the bound {max_length} cannot reach a complete call"
+                    );
+                }
+                for &(_, next) in &grammar.states[index].transitions {
+                    stack.push(next);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_state_count_stays_small_for_the_default_bound() {
+        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
+        assert!(
+            grammar.states.len() < 700,
+            "{} states for the default bound of {DEFAULT_MAX_STRING_LENGTH} characters",
+            grammar.states.len()
+        );
+        // The bound is a chain: each character adds one position state and one
+        // escape state, never a subset blow up.
+        let limited = Grammar::tool_call_with_limit(&["read", "write"], 64).expect("names");
+        assert_eq!(
+            grammar.states.len() - limited.states.len(),
+            2 * (DEFAULT_MAX_STRING_LENGTH - 64)
+        );
     }
 
     #[test]
