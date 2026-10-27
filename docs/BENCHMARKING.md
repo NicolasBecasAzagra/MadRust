@@ -141,6 +141,12 @@ five, because every sample faults 65536 pages.
   deviation for every workload and every kernel, plus the metadata: the QEMU
   version, the host, the SHA-256 of both kernel images and the exact command
   line that produced the run.
+- The reference kernel panics when PID 1 exits, and the power off of the
+  guest does not always reach the machine, so a reference run does not always
+  end on its own. The rig stops the guest as soon as every measurement it
+  was asked for is in the log, and takes the time of that moment as the time
+  of the run. The panic that follows is the reference kernel's behaviour and
+  it is published in the log.
 - The time of a boot is the moment of the last line of the workload, not the
   moment the emulator process ends. A run that reaches the timeout reports an
   error instead of a number: the timeout is not a measurement of a boot, and
