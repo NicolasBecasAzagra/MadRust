@@ -57,18 +57,7 @@ impl Encoder {
     /// token for every byte. The mode appears on one log line, so a run says
     /// which path it took.
     pub fn new(vocab: &Vocab) -> Result<Self> {
-        let (root, _) = paths::resolve()?;
-        let merges = match std::fs::read(&root.merges) {
-            Ok(bytes) => Some(bytes),
-            Err(error) => {
-                // The reason is in the log: a missing file and a refused read
-                // are different problems, and the run has to say which one it
-                // was.
-                println!("AGENT encoder merges={} error={error}", root.merges);
-                None
-            }
-        };
-        Self::from_merges(vocab, merges.as_deref())
+        Self::from_merges(vocab, read_merges().as_deref())
     }
 
     /// The pure half of [`new`](Self::new), so both modes are tested without a
@@ -155,6 +144,48 @@ fn earliest_marker(text: &str) -> Option<(usize, &'static str)> {
         (None, Some(end)) => Some((end, chat::IM_END)),
         (None, None) => None,
     }
+}
+
+/// Read the merges of the checkpoint, when the model root has them.
+///
+/// The file is opened with the call of the runtime, not with the one of the
+/// standard library: the standard library opens files with a syscall of its
+/// own on this target, and a kernel that does not have it yet refuses the
+/// call. The runtime already knows how to open a file of the initramfs,
+/// because it opens the model with it.
+#[cfg(target_os = "linux")]
+fn read_merges() -> Option<Vec<u8>> {
+    let (root, _) = match paths::resolve() {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            println!("AGENT encoder merges error={error}");
+            return None;
+        }
+    };
+    let mut file = match madrust_infer::mapping::open_readonly_optional(&root.merges) {
+        Ok(Some(file)) => file,
+        Ok(None) => return None,
+        Err(error) => {
+            // The reason is in the log: a missing file and a refused read are
+            // different problems, and the run has to say which one it was.
+            println!("AGENT encoder merges={} error={error}", root.merges);
+            return None;
+        }
+    };
+    let mut bytes = Vec::new();
+    match std::io::Read::read_to_end(&mut file, &mut bytes) {
+        Ok(_) => Some(bytes),
+        Err(error) => {
+            println!("AGENT encoder merges={} error={error}", root.merges);
+            None
+        }
+    }
+}
+
+/// The host build has no guest to read the merges from.
+#[cfg(not(target_os = "linux"))]
+fn read_merges() -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(test)]
