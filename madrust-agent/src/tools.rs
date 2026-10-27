@@ -10,7 +10,7 @@
 //! `read_file` and `write_file` use the standard library, which reaches the
 //! kernel through the Linux calls both kernels implement. `list_dir` uses the
 //! raw `openat` and `getdents64` calls the benchmark workload uses, because
-//! MadRust answers `getdents64` with `ENOTDIR`: the same bytes then run on both
+//! MadRust answers `getdents64` with `ENOSYS`: the same bytes then run on both
 //! kernels and the MadRust run reports the error it really got.
 
 use std::fs::{File, OpenOptions};

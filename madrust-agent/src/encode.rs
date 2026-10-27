@@ -58,7 +58,16 @@ impl Encoder {
     /// which path it took.
     pub fn new(vocab: &Vocab) -> Result<Self> {
         let (root, _) = paths::resolve()?;
-        let merges = std::fs::read(&root.merges).ok();
+        let merges = match std::fs::read(&root.merges) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                // The reason is in the log: a missing file and a refused read
+                // are different problems, and the run has to say which one it
+                // was.
+                println!("AGENT encoder merges={} error={error}", root.merges);
+                None
+            }
+        };
         Self::from_merges(vocab, merges.as_deref())
     }
 

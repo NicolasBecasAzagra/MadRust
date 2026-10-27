@@ -397,8 +397,12 @@ pub extern "C" fn madrust_syscall_dispatch(
         SYS_FSTAT => sys_fstat(argument1, argument2),
         SYS_LSEEK => fd::seek(argument1, argument2 as i64, argument3),
         SYS_NEWFSTATAT => sys_newfstatat(argument1, argument2, argument3, argument4),
-        SYS_STATX => ENOENT,
-        SYS_GETDENTS64 => ENOTDIR,
+        // A call that is not implemented answers ENOSYS, which is what tells
+        // the standard library to try the older call. ENOENT would say that
+        // the file does not exist, and a program that asks for the metadata
+        // of a file that is there would believe it is gone.
+        SYS_STATX => ENOSYS,
+        SYS_GETDENTS64 => ENOSYS,
         SYS_POLL => sys_poll(argument1, argument2),
         SYS_IOCTL => sys_ioctl(argument1),
         SYS_FCNTL => fd::fcntl(argument1, argument2, argument3),
@@ -434,7 +438,7 @@ pub extern "C" fn madrust_syscall_dispatch(
         SYS_GETTID => current_tid(),
         SYS_GETPPID => 0,
         SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => 0,
-        SYS_READLINK => EINVAL,
+        SYS_READLINK => ENOSYS,
         SYS_GETCWD => sys_getcwd(argument1, argument2),
         SYS_PIPE2 => sys_pipe2(argument1),
         SYS_DUP => fd::dup(argument1, argument2),
