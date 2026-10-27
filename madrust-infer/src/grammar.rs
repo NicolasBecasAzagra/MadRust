@@ -35,9 +35,19 @@
 //! bound applies to the string values only: the tool names and the argument
 //! keys are literals, and a number value keeps the width of `number`.
 //!
-//! One character of a string is one byte outside `"` and `\`, or one escape
-//! sequence (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`), even though the escape
-//! takes two bytes on the wire.
+//! The text of a tool call is ASCII. A byte of a string value is a printable
+//! ASCII byte, `0x20..=0x7E`, or one escape sequence, and a byte outside that
+//! range is not in the language: a string that carries a character above ASCII
+//! has no derivation. The parser of the runtime reads the bytes of a string as
+//! UTF-8 and refuses a byte that does not form UTF-8, so a grammar that offered
+//! `0x7F..=0xFF` would end a step with a call the parser rejects. The price is
+//! that an argument cannot carry a character outside ASCII, a path with an
+//! accent for example, and that price is paid here on purpose.
+//!
+//! One character of a string is one printable ASCII byte outside `"` and `\`,
+//! or one escape sequence (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`), even though the
+//! escape takes two bytes on the wire. The escapes are the only way a quote, a
+//! backslash, a slash, a newline, a carriage return or a tab enters a string.
 //!
 //! The automaton is built once, from a small NFA with epsilon transitions, by
 //! subset construction. [`Grammar::advance`] is a pure byte transition, so the
@@ -252,10 +262,10 @@ impl Grammar {
     /// Build the grammar of one tool call over `tool_names`.
     ///
     /// The string values of the arguments hold at most
-    /// [`DEFAULT_MAX_STRING_LENGTH`] characters. Use
-    /// [`Grammar::tool_call_with_limit`] to choose another bound; the bound is
-    /// what makes a call finite, because an unbounded string lets a model
-    /// sample until the token budget runs out.
+    /// [`DEFAULT_MAX_STRING_LENGTH`] characters, and their text is printable
+    /// ASCII. Use [`Grammar::tool_call_with_limit`] to choose another bound;
+    /// the bound is what makes a call finite, because an unbounded string lets
+    /// a model sample until the token budget runs out.
     ///
     /// A name must be plain ASCII without a quote or a backslash: it is placed
     /// literally between the quotes of the `tool` value. The list must not be
@@ -268,13 +278,16 @@ impl Grammar {
     /// Build the grammar of one tool call whose argument strings hold at most
     /// `max_length` characters.
     ///
-    /// One character is one byte outside `"` and `\`, or one escape sequence
-    /// (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`), which takes two bytes on the wire.
-    /// A bound of zero accepts only the empty string. The automaton builds the
-    /// string as a chain of `max_length` positions, so the state count grows
-    /// by about two states per character and never by subset blow up; a call
-    /// whose string is one character longer has no legal byte and generation
-    /// stops.
+    /// One character is one printable ASCII byte, `0x20..=0x7E`, outside `"`
+    /// and `\`, or one escape sequence (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`),
+    /// which takes two bytes on the wire. A byte above `0x7E` is not in the
+    /// language, because the parser of the runtime reads the string as UTF-8
+    /// and refuses a byte that does not form UTF-8; the price is that a
+    /// character outside ASCII has no way into a call. A bound of zero accepts
+    /// only the empty string. The automaton builds the string as a chain of
+    /// `max_length` positions, so the state count grows by about two states per
+    /// character and never by subset blow up; a call whose string is one
+    /// character longer has no legal byte and generation stops.
     ///
     /// The bound applies to the string values only. The tool names and the
     /// argument keys are literals, and a number value keeps the width of the
@@ -292,7 +305,8 @@ impl Grammar {
     /// that carries the arguments [`Requirements`] lists for it.
     ///
     /// The string values of the arguments hold at most
-    /// [`DEFAULT_MAX_STRING_LENGTH`] characters; use
+    /// [`DEFAULT_MAX_STRING_LENGTH`] characters, and their text is printable
+    /// ASCII, as [`Grammar::tool_call`] documents; use
     /// [`Grammar::tool_call_with_requirements_and_limit`] for another bound.
     /// The names and the rest of the construction follow [`Grammar::tool_call`].
     ///
@@ -319,10 +333,13 @@ impl Grammar {
     /// Build the grammar of one tool call with both the argument requirements
     /// and the string bound of the caller.
     ///
-    /// The automaton keeps one copy of the value frame per subset of the keys
-    /// a tool needs and per value type, so a tool that needs `n` keys costs
-    /// `2^n` times the value frame; the tool registry needs at most two keys
-    /// per tool, all of them strings.
+    /// The text of the string values is printable ASCII, exactly as
+    /// [`Grammar::tool_call_with_limit`] documents: the parser of the runtime
+    /// reads the bytes as UTF-8, and a byte above `0x7E` is not in the
+    /// language. The automaton keeps one copy of the value frame per subset of
+    /// the keys a tool needs and per value type, so a tool that needs `n` keys
+    /// costs `2^n` times the value frame; the tool registry needs at most two
+    /// keys per tool, all of them strings.
     pub fn tool_call_with_requirements_and_limit(
         tool_names: &[&str],
         requirements: Requirements<'_>,
@@ -659,8 +676,15 @@ fn union(nfa: &mut Nfa, fragments: &[(usize, usize)]) -> (usize, usize) {
     (start, end)
 }
 
-/// A JSON string of at most `max_length` characters: a byte outside `"` and
-/// `\`, or one escape sequence.
+/// A JSON string of at most `max_length` characters.
+///
+/// A character is one printable ASCII byte, `0x20..=0x7E`, other than `"` and
+/// `\`, or one escape sequence (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`). A byte
+/// outside that range is not in the language: the parser of the runtime reads
+/// the string as UTF-8, and the grammar must not offer a byte the parser
+/// refuses. For the same reason the `\u` escape is not offered: a code point
+/// above the basic plane needs a surrogate pair, and a lone half of one is
+/// refused.
 ///
 /// The body is a chain of `max_length` positions, so a string one character
 /// too long has no next byte. A position also closes the string, so every
@@ -672,10 +696,7 @@ fn string(nfa: &mut Nfa, max_length: usize) -> (usize, usize) {
     nfa.byte(start, b'"', position);
     for _ in 0..max_length {
         let next = nfa.state();
-        for byte in 0x20..=255u8 {
-            // A control byte below 0x20 is not allowed in a JSON string, and
-            // the parser of the runtime refuses it, so the grammar must not
-            // offer it.
+        for byte in 0x20..=0x7Eu8 {
             if byte != b'"' && byte != b'\\' {
                 nfa.byte(position, byte, next);
             }
@@ -689,10 +710,6 @@ fn string(nfa: &mut Nfa, max_length: usize) -> (usize, usize) {
         position = next;
     }
     nfa.byte(position, b'"', end);
-    // The `\u` escape is not offered: a code point needs a surrogate pair
-    // when it is above the basic plane, and the parser of the runtime only
-    // accepts the pairs. A grammar that offers the escape and a parser that
-    // refuses half of it is a step that ends without an answer.
     (start, end)
 }
 
@@ -902,6 +919,64 @@ mod tests {
             "a".repeat(length)
         )
         .into_bytes()
+    }
+
+    /// A complete call whose `path` value holds `body` byte for byte.
+    fn call_with_body(body: &[u8]) -> Vec<u8> {
+        let mut call = b"{\"tool\":\"read\",\"args\":{\"path\":\"".to_vec();
+        call.extend_from_slice(body);
+        call.extend_from_slice(b"\"}}");
+        call
+    }
+
+    #[test]
+    fn a_byte_outside_printable_ascii_is_rejected() {
+        let grammar = Grammar::tool_call(&["read"]).expect("the names are plain");
+        // `0xC3 0xA9` is `é` in UTF-8: a well formed character, but not ASCII,
+        // so the grammar does not offer it and the parser never sees it.
+        assert!(!accepts(&grammar, &call_with_body(b"\xc3\xa9")));
+        assert!(!accepts(&grammar, &call_with_body(b"\x7f")));
+        assert!(!accepts(&grammar, &call_with_body(b"\x80")));
+        assert!(!accepts(&grammar, &call_with_body(b"\x1f")));
+        assert!(!accepts(&grammar, &call_with_body(b"\x00")));
+    }
+
+    #[test]
+    fn every_printable_ascii_byte_is_accepted() {
+        let grammar = Grammar::tool_call(&["read"]).expect("the names are plain");
+        for byte in 0x20..=0x7Eu8 {
+            if byte == b'"' || byte == b'\\' {
+                // These two are the framing and the escape byte, never a raw
+                // body byte.
+                continue;
+            }
+            assert!(
+                accepts(&grammar, &call_with_body(&[byte])),
+                "the printable byte {byte:#04x} is not accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_escape_sequences_are_accepted_and_no_other_escape_is() {
+        let grammar = Grammar::tool_call(&["read"]).expect("the names are plain");
+        for escape in [
+            br#"\""#.as_slice(),
+            br#"\\"#,
+            br#"\/"#,
+            br#"\n"#,
+            br#"\r"#,
+            br#"\t"#,
+        ] {
+            assert!(
+                accepts(&grammar, &call_with_body(escape)),
+                "the escape {escape:?} is not accepted"
+            );
+        }
+        // The `\u` escape stays out of the language: a code point above the
+        // basic plane needs a surrogate pair, and a lone half is refused by
+        // the parser.
+        assert!(!accepts(&grammar, &call_with_body(br#"\u0041"#)));
     }
 
     #[test]
