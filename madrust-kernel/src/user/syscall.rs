@@ -393,7 +393,7 @@ pub extern "C" fn madrust_syscall_dispatch(
     match number {
         SYS_READ => sys_read(argument1, argument2, argument3),
         SYS_WRITE => sys_write(argument1, argument2, argument3),
-        SYS_OPEN => sys_openat(argument1, argument2, argument3),
+        SYS_OPEN => sys_open(argument1, argument2),
         SYS_OPENAT => sys_openat(argument1, argument2, argument3),
         SYS_CLOSE => fd::close(argument1),
         SYS_FSTAT => sys_fstat(argument1, argument2),
@@ -479,6 +479,14 @@ fn sys_write(descriptor: u64, buffer: u64, length: u64) -> i64 {
         return EFAULT;
     };
     fd::write(descriptor, bytes)
+}
+
+/// `open`: open one entry of the initramfs archive.
+///
+/// The old call takes the path and the flags, and the working directory is
+/// the root of the archive. The mode is ignored: nothing can be created.
+fn sys_open(path: u64, flags: u64) -> i64 {
+    sys_openat(AT_FDCWD, path, flags)
 }
 
 /// `openat`: open one entry of the initramfs archive.
