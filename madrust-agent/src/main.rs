@@ -125,7 +125,14 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
         let call = match call::Call::parse(&generation.bytes) {
             Ok(call) => call,
             Err(error) => {
+                // What the model wrote is in the log too: a call that does not
+                // parse is the answer of the model, and the answer is what
+                // says why it did not parse.
                 eprintln!("AGENT ERR step={step} {error}");
+                println!(
+                    "{}",
+                    step_line(step, "?", "{}", sanitize(&String::from_utf8_lossy(&generation.bytes)))
+                );
                 break;
             }
         };
