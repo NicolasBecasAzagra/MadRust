@@ -487,7 +487,7 @@ fn sys_write(descriptor: u64, buffer: u64, length: u64) -> i64 {
 /// the root of the archive. The mode is ignored: nothing can be created.
 fn sys_open(path: u64, flags: u64) -> i64 {
     let result = sys_openat(AT_FDCWD, path, flags);
-    if result != 0 {
+    if result < 0 {
         crate::kprintln!("open failed: number=2 path={path:#x} flags={flags:#x} error={result}");
     }
     result
@@ -511,7 +511,7 @@ fn sys_openat(dirfd: u64, address: u64, flags: u64) -> i64 {
         return EFAULT;
     };
     let result = fd::open(path, flags);
-    if result != 0 {
+    if result < 0 {
         crate::kprintln!("open failed: number=257 path={address:#x} error={result}");
     }
     result
@@ -547,7 +547,7 @@ fn sys_newfstatat(dirfd: u64, path: u64, address: u64, flags: u64) -> i64 {
 /// borrows the archive module memory, so the copy goes straight from the
 /// reserved archive to the program.
 fn sys_read(descriptor: u64, address: u64, length: u64) -> i64 {
-    let Some(length) = user_range(address, length) else {
+    let Some(length) = user_range_faulted(address, length) else {
         return EFAULT;
     };
     if length == 0 {
@@ -1128,7 +1128,7 @@ fn sys_getrusage(address: u64) -> i64 {
 
 /// Validate a user range and borrow it as bytes.
 fn user_bytes(address: u64, length: u64) -> Option<&'static [u8]> {
-    let length = user_range(address, length)?;
+    let length = user_range_faulted(address, length)?;
     if length == 0 {
         return Some(&[]);
     }
@@ -1177,6 +1177,34 @@ fn user_c_string(address: u64) -> Option<&'static [u8]> {
 /// the end of the user half, starts at the null page or touches a page with no
 /// translation. Rejecting the range here keeps a bad pointer from becoming a
 /// kernel page fault.
+/// Check a range of user memory and bring in the pages that are missing.
+///
+/// A program that reads into a buffer it has just allocated asks for pages
+/// that the kernel has not mapped yet: the demand paging maps them when the
+/// program touches them, and a system call that writes into the buffer has to
+/// do the same. A range that cannot be brought in is refused.
+fn user_range_faulted(address: u64, length: u64) -> Option<usize> {
+    if length == 0 {
+        return Some(0);
+    }
+    let end = address.checked_add(length)?;
+    if address < PAGE_SIZE || end > USER_SPACE_END {
+        return None;
+    }
+    let mut page = address & !(PAGE_SIZE - 1);
+    while page < end {
+        if paging::frame_at(page).is_none() {
+            // The page is missing: the demand paging maps it when the program
+            // touches it, and the call is the touch.
+            if vm::handle_page_fault(page, vm::PAGE_FAULT_WRITE) != vm::PageFaultOutcome::Resolved {
+                return None;
+            }
+        }
+        page += PAGE_SIZE;
+    }
+    usize::try_from(length).ok()
+}
+
 fn user_range(address: u64, length: u64) -> Option<usize> {
     if length == 0 {
         return Some(0);

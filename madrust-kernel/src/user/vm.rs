@@ -109,7 +109,7 @@ static FILE_PAGE_FAULTS: AtomicU64 = AtomicU64::new(0);
 const PAGE_FAULT_PROTECTION: u64 = 1 << 0;
 
 /// Page fault error code: the faulting access was a write.
-const PAGE_FAULT_WRITE: u64 = 1 << 1;
+pub const PAGE_FAULT_WRITE: u64 = 1 << 1;
 
 /// What the page fault handler did with an address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
