@@ -22,9 +22,10 @@
 //! `Grammar::tool_call_with_limit` instead of `Grammar::tool_call`.
 //!
 //! [`tools::REQUIREMENTS`] is part of the grammar too: a call of a tool is
-//! accepted only when its argument object carries the keys that tool needs, so
-//! the model cannot answer `{"tool":"read_file","args":{}}` and spend a step
-//! on a call the tool would refuse.
+//! accepted only when its argument object carries the keys that tool needs,
+//! under values of the type each key declares, so the model cannot answer
+//! `{"tool":"read_file","args":{}}` or `{"tool":"read_file","args":{"path":false}}`
+//! and spend a step on a call the tool would refuse.
 //!
 //! The output is one line per event, so the rig can read a run without a
 //! parser for prose:
@@ -126,8 +127,8 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
     let encoder = encode::Encoder::new(server.vocab())?;
     // The default bound on the argument strings: a path, a command or the
     // answer of `done` fits, and an unterminated string stops the call. The
-    // grammar carries the keys of each tool too, so it never generates a call
-    // that is missing the argument the tool reads.
+    // grammar carries the keys of each tool too, with the type of value each
+    // key takes, so it never generates a call the tool cannot read.
     let grammar = Grammar::tool_call_with_requirements(&tools::NAMES, tools::REQUIREMENTS)?;
     let mut history: Vec<(Role, String)> = Vec::new();
 

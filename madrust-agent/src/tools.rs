@@ -22,22 +22,33 @@ use std::io::{Read, Write};
 use crate::call::Call;
 use crate::expression;
 
+use madrust_infer::grammar::{Argument, ValueType};
+
 /// The tool names, in the order the system prompt lists them.
 pub const NAMES: [&str; 5] = ["read_file", "list_dir", "write_file", "compute", "done"];
 
-/// The argument keys each tool needs, by tool name.
+/// The arguments each tool takes, by tool name.
 ///
 /// The grammar of the call accepts a tool call only when its object carries
-/// every key of the tool. A key here must be one of
-/// `madrust_infer::grammar::ARGUMENT_NAMES`; the test of this module checks
-/// that, because a key outside that list makes the grammar construction fail
-/// at start up.
-pub const REQUIREMENTS: &[(&str, &[&str])] = &[
-    ("read_file", &["path"]),
-    ("list_dir", &["path"]),
-    ("write_file", &["path", "text"]),
-    ("compute", &["value"]),
-    ("done", &["text"]),
+/// every required key, and only when the value under a key has the declared
+/// type. A key here must be one of `madrust_infer::grammar::ARGUMENT_NAMES`;
+/// the test of this module checks that, because a key outside that list makes
+/// the grammar construction fail at start up.
+pub const REQUIREMENTS: &[(&str, &[Argument<'static>])] = &[
+    (
+        "read_file",
+        &[Argument::required("path", ValueType::String)],
+    ),
+    ("list_dir", &[Argument::required("path", ValueType::String)]),
+    (
+        "write_file",
+        &[
+            Argument::required("path", ValueType::String),
+            Argument::required("text", ValueType::String),
+        ],
+    ),
+    ("compute", &[Argument::required("value", ValueType::String)]),
+    ("done", &[Argument::required("text", ValueType::String)]),
 ];
 
 /// What one tool call produced.
@@ -390,15 +401,16 @@ mod tests {
 
     #[test]
     fn every_required_key_is_an_accepted_argument() {
-        for (tool, keys) in REQUIREMENTS {
+        for (tool, arguments) in REQUIREMENTS {
             assert!(
                 NAMES.contains(tool),
                 "the requirements name the unknown tool {tool}"
             );
-            for key in *keys {
+            for argument in *arguments {
                 assert!(
-                    ARGUMENT_NAMES.contains(key),
-                    "{tool} needs {key}, which the grammar does not accept"
+                    ARGUMENT_NAMES.contains(&argument.key),
+                    "{tool} declares {}, which the grammar does not accept",
+                    argument.key
                 );
             }
         }
@@ -410,6 +422,23 @@ mod tests {
                 "{name} states no requirements"
             );
         }
+    }
+
+    #[test]
+    fn the_path_of_read_file_is_a_string() {
+        let grammar = Grammar::tool_call_with_requirements(&NAMES, REQUIREMENTS)
+            .expect("every declared key is an accepted argument");
+        let after_colon = grammar
+            .advance(grammar.start(), br#"{"tool":"read_file","args":{"path":"#)
+            .expect("the key and its colon are legal");
+        assert_eq!(
+            grammar
+                .allowed_bytes(after_colon)
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![usize::from(b'"')],
+            "a boolean must not start the value of `path`"
+        );
     }
 
     #[test]
