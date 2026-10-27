@@ -99,10 +99,22 @@ pub fn resolve(path: &[u8]) -> Result<Option<Entry<'static>>, PathError> {
     // SAFETY: the cell was written once before user mode and is never mutated
     // afterwards. `Archive` is `Copy`, so the read yields an independent view.
     let archive = unsafe { *ARCHIVE.0.get() };
-    match archive {
+    let result = match archive {
         Some(archive) => archive.resolve(path),
         None => Ok(None),
-    }
+    };
+    // The name and the answer are in the log: a program that opens a file
+    // that is in the archive needs to know what the kernel looked for.
+    crate::kprintln!(
+        "initramfs resolve: name={} found={}",
+        core::str::from_utf8(path).unwrap_or("<not utf8>"),
+        match &result {
+            Ok(Some(entry)) => entry.name_str().unwrap_or("<not utf8>"),
+            Ok(None) => "none",
+            Err(_) => "error",
+        }
+    );
+    result
 }
 
 /// Find the archive among the loader's modules.

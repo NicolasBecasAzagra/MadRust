@@ -705,9 +705,7 @@ fn sys_mmap(
                 crate::memory::with(|manager| manager.free_frames()).unwrap_or(0)
             );
             let (in_use, capacity) = crate::user::mappings::usage();
-            crate::kprintln!(
-                "mmap failed: mappings in use={in_use} of {capacity}"
-            );
+            crate::kprintln!("mmap failed: mappings in use={in_use} of {capacity}");
             error
         }
     }

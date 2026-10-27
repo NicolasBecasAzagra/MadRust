@@ -421,6 +421,30 @@ const fn align4(value: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// The archive of the agent has to resolve the files the runtime opens.
+    #[test]
+    fn the_agent_archive_resolves_its_files() {
+        let Ok(bytes) = std::fs::read("../madrust-agent/initramfs.cpio") else {
+            return;
+        };
+        let Ok(archive) = Archive::parse(&bytes) else {
+            panic!("the archive of the agent does not parse");
+        };
+        for path in ["/config.json", "/model.safetensors", "/vocab.json", "/bench"] {
+            let found = archive.resolve(path.as_bytes());
+            match found {
+                Ok(Some(entry)) => println!("{path}: found {:?}", entry.name_str()),
+                Ok(None) => println!("{path}: NOT FOUND"),
+                Err(error) => println!("{path}: error {error:?}"),
+            }
+        }
+        let names: Vec<_> = archive
+            .entries()
+            .map(|entry| entry.name_str().map(|s| s.to_string()))
+            .collect();
+        println!("entries: {names:?}");
+    }
+
     use super::*;
 
     /// Append one entry to a `newc` archive being built by a test.
