@@ -288,6 +288,41 @@ def qemu_command(
     return command
 
 
+def expected_complete(text: str, expected: dict[str, int]) -> bool:
+    """Whether every measurement the run was asked for is in the log.
+
+    The rig stops the guest as soon as it has the numbers, instead of
+    waiting for the guest to leave. A guest that does not leave on its own
+    (the reference kernel panics when PID 1 exits, and the power off does
+    not always reach the machine) would otherwise cost the whole timeout
+    after the data is already there.
+    """
+    seen: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
+        match = RESULT_RE.match(KERNEL_LOG_RE.sub("", line))
+        if match:
+            name = match.group("workload")
+            seen[name] = seen.get(name, 0) + 1
+            continue
+        match = INFER_RE.match(KERNEL_LOG_RE.sub("", line))
+        if match:
+            name = "infer-ttft" if match.group("workload") == "ttft_ms" else "infer-tps"
+            seen[name] = seen.get(name, 0) + 1
+            continue
+        match = AGENT_RE.match(KERNEL_LOG_RE.sub("", line))
+        if match:
+            for name in ("agent-steps", "agent-tokens", "agent-seconds", "agent-step-ms"):
+                seen[name] = seen.get(name, 0) + 1
+    for name, count in expected.items():
+        if name in ("boot-seconds", "boot-rss-mb"):
+            # The rig measures those itself, after the run.
+            continue
+        if seen.get(name, 0) < count:
+            return False
+    return True
+
+
 def bench_done(text: str) -> bool:
     """Whether the log says the workload reached the end of the run.
 
@@ -341,6 +376,7 @@ def run_once(
     append_extra: str = "",
     memory: str = "512M",
     smp: str = "1",
+    expected: dict[str, int] | None = None,
 ) -> tuple[list[str], str, float, int, dict[str, Any]]:
     log = out_dir / f"{label}.log"
     # The output of QEMU itself is kept in a file of its own. When the guest
@@ -369,12 +405,20 @@ def run_once(
             outcome = "exited"
             finished_at = time.monotonic()
             break
-        if bench_done(read_log(log)):
+        text = read_log(log)
+        if bench_done(text):
             # The last line is already in the file. The time of that line is
             # the time of the run, so it is taken before the guest is stopped.
             finished_at = time.monotonic()
             outcome = "finished"
             # Let the serial line flush the last line, then stop the guest.
+            time.sleep(1.0)
+            break
+        if expected and expected_complete(text, expected):
+            # Every measurement is in the log: the guest has nothing left to
+            # say, and it does not always leave on its own.
+            finished_at = time.monotonic()
+            outcome = "finished"
             time.sleep(1.0)
             break
         peak_rss = max(peak_rss, peak_rss_kb(process.pid))
@@ -805,6 +849,7 @@ def main() -> int:
             append_extra,
             args.memory,
             args.smp,
+            expected,
         )
         metadata["commands"][label] = shlex.join(command)
         # What a boot costs, measured from the outside: the wall clock of the
