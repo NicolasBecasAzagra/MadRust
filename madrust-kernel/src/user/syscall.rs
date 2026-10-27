@@ -486,7 +486,11 @@ fn sys_write(descriptor: u64, buffer: u64, length: u64) -> i64 {
 /// The old call takes the path and the flags, and the working directory is
 /// the root of the archive. The mode is ignored: nothing can be created.
 fn sys_open(path: u64, flags: u64) -> i64 {
-    sys_openat(AT_FDCWD, path, flags)
+    let result = sys_openat(AT_FDCWD, path, flags);
+    if result != 0 {
+        crate::kprintln!("open failed: number=2 path={path:#x} flags={flags:#x} error={result}");
+    }
+    result
 }
 
 /// `openat`: open one entry of the initramfs archive.
@@ -497,14 +501,20 @@ fn sys_open(path: u64, flags: u64) -> i64 {
 /// The old `open` call is the same one with the working directory, and a
 /// program that uses the standard library asks for it: without it the call
 /// answers ENOSYS and the program cannot read a file.
-fn sys_openat(dirfd: u64, path: u64, flags: u64) -> i64 {
+fn sys_openat(dirfd: u64, address: u64, flags: u64) -> i64 {
     if dirfd != AT_FDCWD {
+        crate::kprintln!("openat refused: dirfd={dirfd:#x} path={address:#x}");
         return EINVAL;
     }
-    let Some(path) = user_c_string(path) else {
+    let Some(path) = user_c_string(address) else {
+        crate::kprintln!("openat refused: path={address:#x} is not readable");
         return EFAULT;
     };
-    fd::open(path, flags)
+    let result = fd::open(path, flags);
+    if result != 0 {
+        crate::kprintln!("open failed: number=257 path={address:#x} error={result}");
+    }
+    result
 }
 
 /// `newfstatat`: describe one entry of the initramfs archive.

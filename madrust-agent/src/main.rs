@@ -131,7 +131,12 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("AGENT ERR step={step} {error}");
                 println!(
                     "{}",
-                    step_line(step, "?", "{}", sanitize(&String::from_utf8_lossy(&generation.bytes)))
+                    step_line(
+                        step,
+                        "?",
+                        "{}",
+                        &sanitize(&String::from_utf8_lossy(&generation.bytes)),
+                    )
                 );
                 break;
             }
