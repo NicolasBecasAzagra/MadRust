@@ -430,7 +430,12 @@ mod tests {
         let Ok(archive) = Archive::parse(&bytes) else {
             panic!("the archive of the agent does not parse");
         };
-        for path in ["/config.json", "/model.safetensors", "/vocab.json", "/bench"] {
+        for path in [
+            "/config.json",
+            "/model.safetensors",
+            "/vocab.json",
+            "/bench",
+        ] {
             let found = archive.resolve(path.as_bytes());
             match found {
                 Ok(Some(entry)) => println!("{path}: found {:?}", entry.name_str()),

@@ -69,6 +69,10 @@ AGENT_FLAGS := --manifest-path $(AGENT_DIR)/Cargo.toml \
 	--target-dir $(AGENT_TARGET_DIR)
 AGENT_INITRAMFS := $(AGENT_DIR)/initramfs.cpio
 
+# The reader of the cpio archive of the initramfs is a crate of its own, like
+# the other programs that are not the kernel.
+INITRAMFS_DIR := madrust-initramfs
+
 QEMU ?= qemu-system-x86_64
 # Number of processors for the multiprocessor boot.
 SMP ?= 4
@@ -182,6 +186,8 @@ test:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host
 	$(CARGO) test --manifest-path $(AGENT_DIR)/Cargo.toml \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host
+	$(CARGO) test --manifest-path $(INITRAMFS_DIR)/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host
 
 fmt:
 	$(CARGO) fmt --all
@@ -194,6 +200,8 @@ fmt-check:
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path madrust-bench/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(INFER_DIR)/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml -- --check
 
 # The kernel build reads the embedded user program, so both lint targets need
 # the userland binary to exist.
@@ -211,6 +219,8 @@ clippy-host:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host -- -D warnings
 	$(CARGO) clippy --manifest-path $(AGENT_DIR)/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host -- -D warnings
+	$(CARGO) clippy --manifest-path $(INITRAMFS_DIR)/Cargo.toml --all-targets \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host -- -D warnings
 
 check: userland
 	$(CARGO) check --workspace --bins --lib $(KERNEL_FLAGS)
