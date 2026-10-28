@@ -299,7 +299,9 @@ the native host, one processor, 1024 MiB, the same initramfs for both kernels:
 
 The loop is three times faster on MadRust than on the reference kernel with the
 same binary and the same checkpoint, and the guest needs 164 megabytes less.
-The raw rows are in `bench/results/agent/`.
+The raw rows are in `bench/results/agent/`. The rows of the runtime on the
+same host are in `bench/results/inference-native/`, and the rows of the
+operations are in `bench/results/vps-1cpu/`.
 
 The transcript of the run is the honest part:
 

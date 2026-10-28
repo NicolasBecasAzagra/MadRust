@@ -63,8 +63,13 @@ with the same binary and the same checkpoint.
 One processor, 512 MiB for the operations and 1024 MiB for the model and the
 agent, QEMU 8.2.2, Linux 7.3.0 built from the mainline tree by
 `bench/prepare-mainline.sh`, the same initramfs and the same binary on both
-sides. The raw rows are in `bench/results/vps-1cpu/` and in
-`bench/results/agent/`.
+sides. Every number of the table comes from a committed dataset:
+
+| rows | dataset |
+|---|---|
+| the operations | `bench/results/vps-1cpu/` |
+| the model | `bench/results/inference-native/` |
+| the agent | `bench/results/agent/` |
 
 Three things about these numbers:
 
