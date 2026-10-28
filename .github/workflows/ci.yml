@@ -102,8 +102,25 @@ jobs:
       - name: Boot kernel with a network device
         run: |
           # The guest has no firmware, so the kernel enumerates the bus by
-          # itself. This boot attaches a network device and asserts that the
-          # enumeration names it next to the bridge of the host.
+          # itself. This boot attaches a network device, runs a server on the
+          # host and asserts that the guest resolves the gateway, sends one
+          # datagram to the server and reads its answer.
+          #
+          # The server is the few lines below: it waits for the datagram, says
+          # what it received and answers the same address. It is written to a
+          # file, so a server that never hears anything fails the step instead
+          # of hanging it.
+          python3 - > net-server.log 2>&1 <<'PY' &
+          import socket
+
+          server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          server.settimeout(60)
+          server.bind(("0.0.0.0", 9999))
+          data, address = server.recvfrom(2048)
+          print("server got %d bytes from %s" % (len(data), address), flush=True)
+          server.sendto(b"pong", address)
+          PY
+          server=$!
           set +e
           timeout 60 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 512M \
             -kernel "$(make -s print-kernel-path)" \
@@ -115,13 +132,25 @@ jobs:
           status=$?
           echo "QEMU exit status: $status"
           set -e
+          wait "$server" || true
+          cat net-server.log
           cat pci.log
           test "$status" -eq 33
           tr -d '\r' < pci.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > pci-boot.log
+          # The server must have received the datagram of the guest and the
+          # guest must have received the answer of the server. The two lines
+          # below are the two halves of the exchange, with the address and the
+          # ports the guest uses.
+          grep -q "server got 4 bytes from" net-server.log
+          grep -qxF "[net] udp send 10.0.2.15:49152 -> 10.0.2.2:9999 len=4" pci-boot.log
+          grep -qxF '[net] udp recv 10.0.2.2:9999 -> 10.0.2.15:49152 len=4 data="pong"' pci-boot.log
           # One line per function that answers, with the vendor and the device
           # id as four hexadecimal digits each.
           grep -qE "^\[pci\] [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] [0-9a-f]{4}:[0-9a-f]{4} class [0-9a-f]{6}$" pci-boot.log
-          grep -q "^\[pci\] 00:1f.0 8086:29c0 " pci-boot.log
+          # The bridge of the host is an ICH9, and the revision of it
+          # depends on the version of the emulator: 29c0 on one and 2918 on
+          # another. The line has to name the device, not the revision.
+          grep -qE "^\[pci\] 00:1f\.0 8086:29[0-9a-f]{2} " pci-boot.log
           grep -q " 1af4:1000 " pci-boot.log
           # The kernel claims the legacy port window of the card and reports
           # the base it assigned, the size the device asked for, the features
@@ -134,26 +163,24 @@ jobs:
           # line are the same.
           grep -qE "^\[virtio\] queue 0 base=0x[0-9a-f]{12} descriptors=[0-9]+ max=[0-9]+$" pci-boot.log
           grep -qE "^\[virtio\] queue 1 base=0x[0-9a-f]{12} descriptors=[0-9]+ max=[0-9]+$" pci-boot.log
-          # One frame is handed to the transmit queue and the device reports it
-          # back through the used ring: descriptor zero, the length the device
-          # chose to report and one frame moved.
+          # Two frames are handed to the transmit queue: the address resolution
+          # request and the datagram. The device reports each one back through
+          # the used ring, so the counter of that ring reaches two.
           grep -qE "^\[virtio\] tx queue=1 desc=0 len=[0-9]+ used=1$" pci-boot.log
+          grep -qE "^\[virtio\] tx queue=1 desc=0 len=[0-9]+ used=2$" pci-boot.log
           # The driver posts empty buffers into the receive queue before it
           # waits for an answer, and reports how many.
           grep -qE "^\[virtio\] rx queue=0 buffers=[0-9]+$" pci-boot.log
-          # The answer sits in the receive queue: the driver reads the entry
-          # the device completed, names the type of the frame and the hardware
-          # address of the sender.
-          grep -qE "^\[virtio\] rx queue=0 desc=[0-9]+ len=[0-9]+ type=0x0806 src=([0-9a-f]{2}:){5}[0-9a-f]{2}$" pci-boot.log
-          # The frame is the reply of the gateway to the request, so the
-          # driver prints the address of the gateway that answered and the
-          # hardware address it carries.
-          grep -qE "^\[virtio\] arp reply from 10\.0\.2\.2 mac=([0-9a-f]{2}:){5}[0-9a-f]{2}$" pci-boot.log
+          # The answer of the gateway to the address resolution request is
+          # read out of the receive queue and the hardware address it carries
+          # is the one the datagram is addressed to.
+          grep -qE "^\[net\] arp gateway=10\.0\.2\.2 mac=([0-9a-f]{2}:){5}[0-9a-f]{2}$" pci-boot.log
           grep -qxF "MadRust: boot OK" pci-boot.log
-          # The frame must also leave the guest. The dump is written by the
+          # The frames must also leave the guest. The dump is written by the
           # emulator at the boundary of its user mode network, so it holds what
           # arrived there and what the host answered: the address resolution
-          # request for the gateway, and the reply of the gateway.
+          # request for the gateway, the reply of the gateway and the datagram
+          # of the guest.
           python3 - <<'PY'
           import struct
           import sys
@@ -174,9 +201,9 @@ jobs:
               offset += captured
 
           def arp(frame):
-              # Broadcast destination, the type of an address resolution
-              # packet, Ethernet hardware on IPv4 and one of its two operations.
-              if len(frame) < 42 or frame[0:6] != b"\xff" * 6:
+              # The type of an address resolution packet, Ethernet hardware on
+              # IPv4. The operation tells the two directions apart below.
+              if len(frame) < 42:
                   return None
               if frame[12:14] != b"\x08\x06" or frame[14:18] != b"\x00\x01\x08\x00":
                   return None
@@ -186,6 +213,7 @@ jobs:
               frame
               for frame in frames
               if (arp(frame) is not None
+                  and frame[0:6] == b"\xff" * 6
                   and frame[20:22] == b"\x00\x01"
                   and frame[28:32] == bytes([10, 0, 2, 15])
                   and frame[38:42] == bytes([10, 0, 2, 2]))
@@ -201,6 +229,22 @@ jobs:
           ]
           if not reply:
               sys.exit("the gateway did not answer the address resolution request")
+          # The datagram of the guest: an IPv4 frame with the protocol of UDP,
+          # the port of the guest, the port of the server and the bytes the
+          # server reports.
+          datagrams = [
+              frame
+              for frame in frames
+              if (len(frame) >= 46
+                  and frame[12:14] == b"\x08\x00"
+                  and frame[14] >> 4 == 4
+                  and frame[23] == 17
+                  and frame[34:36] == struct.pack(">H", 49152)
+                  and frame[36:38] == struct.pack(">H", 9999)
+                  and frame[42:46] == b"ping")
+          ]
+          if not datagrams:
+              sys.exit("the datagram of the guest did not reach the network")
           print("NET FRAME OK sent=%d received=%d" % (len(request[0]), len(frames)))
           PY
 

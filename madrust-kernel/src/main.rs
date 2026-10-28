@@ -43,6 +43,7 @@ mod idt;
 mod ioapic;
 mod lapic;
 mod memory;
+mod net;
 mod pci;
 mod percpu;
 mod pic;
@@ -319,8 +320,14 @@ unsafe extern "C" fn _start(
     // Take the network card when the machine carries one. The legacy window
     // is polled, so this stays before the interrupt controller is programmed
     // too; a card that does not answer leaves the rest of the boot alone.
-    if let Err(error) = virtio::probe() {
-        kprintln!("[virtio] net: {:?}", error);
+    match virtio::probe() {
+        Ok(Some(device)) => {
+            if let Err(error) = net::run(device) {
+                kprintln!("[net] {:?}", error);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => kprintln!("[virtio] net: {:?}", error),
     }
 
     gdt::init();
