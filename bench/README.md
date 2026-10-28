@@ -137,6 +137,24 @@ come from the archive or the workload would run without descriptors 0 to 2.
 numbers in the finished `newc` archive, because creating a device node needs
 root on both macOS and Linux.
 
+There is one measurement more, and it is not made by that binary: the round
+trip over the network. The program of `madrust-netclient/` opens a socket of
+the ABI, sends a datagram to a server on the host and waits for the answer,
+and the rig records the time it took. The server binds a port the kernel of
+the host chooses, so two runs never collide, and the port reaches the guest
+through `/net.conf` in the initramfs, because neither kernel passes arguments
+to the program it runs. The line of the program has a fixed shape:
+
+```text
+NET OK rt=599 retries=3 answer=ping-0
+```
+
+and a failure says where it failed:
+
+```text
+NET FAIL stage=warmup retries=646163 error=no answer
+```
+
 The binary runs eight measurements, prints one `RESULT <workload> <value> <unit>`
 line per measured quantity and sample, and ends with `BENCH DONE`. The rig
 adds eight more rows of its own, taken from the emulator rather than from the

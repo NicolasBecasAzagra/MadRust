@@ -121,6 +121,7 @@ measurement. It runs on both kernels without modification.
 | `agent-step-ms` | Milliseconds of one step of the agent loop |
 | `boot-seconds` | Wall clock time from the start of the emulator to the last line |
 | `boot-rss-mb` | Resident memory the emulator reached |
+| `net` | Time of a round trip over the network: a datagram to a server on the host and the answer back |
 
 The binary prints one `RESULT <workload> <value> <unit>` line per
 measurement, and `BENCH DONE` at the end. A measurement that the kernel
@@ -136,8 +137,8 @@ five, because every sample faults 65536 pages.
 ### Protocol
 
 - Thirty iterations for the four operation workloads per kernel, five for
-  `weights`, ten for `weights-huge`, and one for the model, the agent and the
-  boot rows.
+  `weights`, ten for `weights-huge`, thirty for `net`, and one for the model,
+  the agent and the boot rows.
 - Every iteration is recorded, including the ones that failed. Nothing is
   discarded, nothing is retried until it looks good.
 - The raw data is one CSV per kernel, with one row per iteration: workload,
