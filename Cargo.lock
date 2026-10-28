@@ -35,11 +35,16 @@ dependencies = [
  "madrust-elf",
  "madrust-initramfs",
  "madrust-mm",
+ "madrust-net",
  "madrust-sched",
 ]
 
 [[package]]
 name = "madrust-mm"
+version = "0.1.0"
+
+[[package]]
+name = "madrust-net"
 version = "0.1.0"
 
 [[package]]

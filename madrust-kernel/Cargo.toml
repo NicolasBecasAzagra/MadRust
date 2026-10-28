@@ -19,4 +19,11 @@ madrust-drivers = { path = "../madrust-drivers" }
 madrust-elf = { path = "../madrust-elf" }
 madrust-initramfs = { path = "../madrust-initramfs" }
 madrust-mm = { path = "../madrust-mm" }
+madrust-net = { path = "../madrust-net" }
 madrust-sched = { path = "../madrust-sched" }
+
+# The protocols are a dependency of the kernel before the code that carries a
+# datagram uses them, which is the next step of the milestone. Until then the
+# manifest lint would warn that `madrust-net` is never named.
+[lints.cargo]
+unused_dependencies = "allow"

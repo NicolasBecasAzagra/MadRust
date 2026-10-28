@@ -73,6 +73,11 @@ AGENT_INITRAMFS := $(AGENT_DIR)/initramfs.cpio
 # the other programs that are not the kernel.
 INITRAMFS_DIR := madrust-initramfs
 
+# The protocols of the network path are a crate of their own too, but they are
+# not a program: the kernel depends on them, so they are built for the kernel
+# target, and their tests run on the host.
+NET_DIR := madrust-net
+
 QEMU ?= qemu-system-x86_64
 # Number of processors for the multiprocessor boot.
 SMP ?= 4
@@ -188,6 +193,8 @@ test:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host
 	$(CARGO) test --manifest-path $(INITRAMFS_DIR)/Cargo.toml \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host
+	$(CARGO) test --manifest-path $(NET_DIR)/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/net-host
 
 
 fmt:
@@ -197,6 +204,7 @@ fmt:
 	$(CARGO) fmt --manifest-path $(INFER_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml
+	$(CARGO) fmt --manifest-path $(NET_DIR)/Cargo.toml
 
 fmt-check:
 	$(CARGO) fmt --all -- --check
@@ -205,11 +213,13 @@ fmt-check:
 	$(CARGO) fmt --manifest-path $(INFER_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path $(NET_DIR)/Cargo.toml -- --check
 
 # The kernel build reads the embedded user program, so both lint targets need
 # the userland binary to exist.
 clippy: userland
 	$(CARGO) clippy --workspace --bins --lib $(KERNEL_FLAGS) -- -D warnings
+	$(CARGO) clippy --manifest-path $(NET_DIR)/Cargo.toml --lib $(KERNEL_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(USERLAND_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(BENCH_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(INFER_FLAGS) --bins --lib -- -D warnings
@@ -224,6 +234,8 @@ clippy-host:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host -- -D warnings
 	$(CARGO) clippy --manifest-path $(INITRAMFS_DIR)/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host -- -D warnings
+	$(CARGO) clippy --manifest-path $(NET_DIR)/Cargo.toml --all-targets \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/net-host -- -D warnings
 
 
 check: userland
