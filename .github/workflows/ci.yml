@@ -127,6 +127,12 @@ jobs:
           # it offers and its hardware address. QEMU's address starts with
           # 52:54:00, the prefix of the host side of the emulated card.
           grep -qE "^\[virtio\] net base=0x[0-9a-f]{4} size=32 features=0x[0-9a-f]{8} mac=52:54:00(:[0-9a-f]{2}){3}$" pci-boot.log
+          # The device is then brought up and given a ring per direction. The
+          # legacy interface fixes the queue size, so the driver lays each
+          # ring out for the number the device reports and both numbers of a
+          # line are the same.
+          grep -qE "^\[virtio\] queue 0 base=0x[0-9a-f]{12} descriptors=[0-9]+ max=[0-9]+$" pci-boot.log
+          grep -qE "^\[virtio\] queue 1 base=0x[0-9a-f]{12} descriptors=[0-9]+ max=[0-9]+$" pci-boot.log
           grep -qxF "MadRust: boot OK" pci-boot.log
 
       - name: Boot kernel with four processors
