@@ -2,34 +2,97 @@
 
 [![CI](https://github.com/NicolasBecasAzagra/MadRust/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasBecasAzagra/MadRust/actions/workflows/ci.yml)
 
-A Linux-ABI-compatible operating system kernel written entirely in Rust.
+**An operating system for local AI agents, written in Rust from the kernel up.**
 
-MadRust is a from-scratch x86_64 kernel that speaks the Linux userspace ABI: the
-same system calls, the same `struct` layouts, the same ELF loading rules. The
-long-term goal is to boot an unmodified Debian/Ubuntu userland on it, and to
-benchmark it against mainline Linux under identical, published conditions.
+MadRust is a from-scratch x86_64 kernel that speaks the Linux userspace ABI:
+the same system calls, the same `struct` layouts, the same ELF loading rules.
+On top of that kernel sit two programs that are not toys: an inference runtime
+that serves a real language model with no dependency outside the Rust standard
+library, and an agent that asks the model what to do and runs the tools.
 
-Everything in this repository is written in Rust. The only foreign code is the
-bootloader-free PVH boot protocol handover implemented by QEMU itself, and the
-SPDX headers below.
+The goal is a machine that serves models to agents, faster and with less
+memory than the incumbent, and that shows its numbers.
+
+```text
+        the agent            the runtime              the kernel
+   model, tool, result   weights, forward pass,     paging, scheduling,
+   over five tools       bytes, a byte grammar      memory, processes
+        |                        |                        |
+        +------------------------+------------------------+
+                                 |
+                     Linux ABI, unmodified programs
+```
+
+## What we are building
+
+Three layers, each one measurable against mainline Linux on the same machine,
+with the same binary and the same checkpoint.
+
+1. **A kernel that does less.** No page table isolation, no LSM, no audit, no
+   cgroups, no hooks. Demand paging, large pages, a scheduler with a short
+   tail, and real multiprocessing. Every number is published, including the
+   losses.
+2. **A runtime that serves a model.** The weights are mapped from the
+   initramfs without being copied, kept resident, and read by a decoder
+   written from scratch: RMSNorm, rotary embeddings, grouped query attention,
+   the gated feed forward block and a key value cache. It generates the same
+   tokens as the reference implementation, one for one.
+3. **An agent that acts.** The model answers with a tool call, the kernel
+   runs the tool, and the model answers again. The shape of the call is not a
+   request in the prompt but an automaton over bytes: the answer cannot be
+   anything but a well formed call of a declared tool, with the keys that tool
+   needs, each of them once, with the type the tool expects.
+
+## What it does today
+
+| | MadRust | mainline | mainline, mitigations off |
+|---|---|---|---|
+| system call | **376 ns** | 29.3 us | 1.04 us |
+| map and touch memory | **6.83 ms/MiB** | 25.8 ms/MiB | 8.69 ms/MiB |
+| fault in memory, 4 KiB pages | **2.01 ms/MiB** | 44.6 ms/MiB | 13.7 ms/MiB |
+| fault in memory, 2 MiB pages | **825 us/MiB** | 44.9 ms/MiB | 13.0 ms/MiB |
+| futex round trip | **6.53 us** | 407 us | 97.7 us |
+| four threads, spawn to join | **620 us** | 7.73 ms | 4.59 ms |
+| boot to the first result | **12.9 s** | 206 s | 63.8 s |
+| resident memory of the guest | **319 MB** | 476 MB | 483 MB |
+| time to the first token | **11.25 s** | 24.67 s | 22.82 s |
+| tokens per second | **0.45** | 0.20 | 0.21 |
+| seconds of an agent loop | **821** | 2793 | 2570 |
+| resident memory with the model | **857 MB** | 1021 MB | 1023 MB |
+
+One processor, 1024 MiB, QEMU 8.2.2, Linux 7.3.0 built from the mainline
+tree by `bench/prepare-mainline.sh`, the same initramfs and the same binary on
+both sides. The raw rows are in `bench/results/vps-1cpu/` and in
+`bench/results/agent/`.
+
+Three things about these numbers:
+
+- **The ratios are the claim.** Two to three times cheaper per operation, three
+  times faster in the agent loop, a fifth of the memory of the guest.
+- **The absolute numbers describe an emulator.** There is no hardware
+  acceleration on the host, so a wall clock statement about a processor is not
+  supported yet. A host with KVM is the open issue for that.
+- **Every loss is published.** The reference kernel without mitigations is
+  measured too, and the batches where a boot did not finish are in
+  `bench/results/` with the samples that are missing.
 
 ## Status
 
-Everything below is implemented, verified locally and asserted in CI. One
-commit per milestone.
+Everything below is implemented, verified on the host and asserted in the
+continuous integration. One commit per milestone.
 
 | Milestone | What it delivers | State |
 |---|---|---|
 | M0 | Boot through the Xen PVH handover, serial output, physical memory map | done |
 | M1 | GDT, TSS with an IST stack, IDT, recoverable exceptions, 8259 PIC, PIT | done |
 | M2 | Buddy allocator, size class heap, higher half kernel, direct map | done |
-| M2b | The kernel runs from the higher half and reaches physical memory only through the direct map | done |
+| M2b | The kernel reaches physical memory only through the direct map | done |
 | M2c | Frame metadata carved out of the memory it describes, 32 GiB of guests | done |
 | M3 | Kernel threads, preemptive round robin scheduler, interrupt safe locks | done |
 | M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 58 Linux system calls | done |
 | M4b | A real userland: a standard library program running unmodified | done |
 | M4c | Demand paging for anonymous mappings | done |
-| M8 | Benchmark rig, six workloads, the comparison published with its raw data | done |
+| M8 | Benchmark rig, eight workloads, the comparison published with its raw data | done |
 | M9 | SMP: ACPI MADT, INIT-SIPI-SIPI, LAPIC and IOAPIC, IPIs, four processors | done |
 | E1 | The initramfs as a read only file system | done |
 | E2 | A file backed mapping and large pages | done |
@@ -40,66 +103,22 @@ commit per milestone.
 | E5 | The measurement of the runtime on both kernels, same machine, same binary | done |
 | E6 | The agent: model, tool call, tool result and model, with a grammar that forces the call | done |
 
-What comes next, in the order it has to happen, is the path to the final
-artefact: an operating system that serves models to agents, faster than the
-incumbent.
+## What comes next
+
+In the order it has to happen. The reasoning and the exit criteria of each one
+are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the issues of the
+tracker carry the same criteria.
 
 | Next | Why it is next |
 |---|---|
-| The measurement of the agent on both kernels | The latency of a step of the loop is the number an agent server is bought for |
-| Networking | An agent that cannot call an API is a demo; with it, it is a server |
-| Quantization | A model that does not fit in the memory of the machine cannot be served |
-| A scheduler with a better tail | Batching inference requests lives on the tail of the scheduler |
+| **The network** | An agent that cannot call an API is a demonstration. With it, it is a server: PCI, a virtio network device, IPv4 and UDP, and the socket calls of the ABI. |
+| **Quantization** | A model that does not fit in the memory of the machine cannot be served. A quantized checkpoint, decoded by the same runtime and checked token for token against the reference. |
+| **A checkpoint that closes the conversation** | The model of 135 million parameters reads a file and then asks for it again. The grammar is not the problem: the checkpoint is. |
+| **A host with hardware acceleration** | The only thing missing for the timings to describe a machine instead of an emulator. |
+| **A scheduler with a better tail** | Batching inference requests lives on the tail of the scheduler. |
 
 Deferred, and named so they are not lost: processes and a real file system,
-dynamic linking, signals and a shell test suite. The reasoning is in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-Exit criteria for each milestone are objective and machine-checkable. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## What this project is not
-
-Being "better than Linux at everything" is not a goal, and it is not a
-measurable one. MadRust publishes a narrow, defensible claim instead:
-
-- Same userspace, same QEMU version, same machine model, same rootfs, same
-  benchmark scripts, raw results committed to the repository.
-- Two areas where a purpose-built kernel can plausibly win in a private VM:
-  syscall entry cost (no KPTI/retpoline in a trusted single-tenant guest) and
-  fork/exec plus tail latency (no LSM, no audit, no cgroups, no hooks).
-- Every loss is published too. No cherry-picking, no "mitigations off!" as the
-  only comparison point.
-
-The methodology is specified in [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
-
-### First measurement
-
-MadRust against Linux 7.3.0, one processor, 512 MiB, thirty iterations per
-workload, under emulation:
-
-| Workload | MadRust | mainline | mainline, mitigations off |
-|---|---|---|---|
-| system call | 245.5 ns | 9581 ns | 520 ns |
-| map and touch memory | 1.768 ms/MiB | 7.792 ms/MiB | 3.263 ms/MiB |
-| fault in memory | 907.6 us/MiB | 12.700 ms/MiB | 4.117 ms/MiB |
-| slowest page fault | 474.8 us | 1293.4 us | 572.9 us |
-| futex round trip | 3.56 us | 128.5 us | 24.06 us |
-| threads | 224.7 us | 1566.5 us | 823.5 us |
-
-With the mitigations disabled on both sides, MadRust is about twice as cheap
-per system call, four and a half times as cheap per MiB faulted in and seven
-times as cheap per futex round trip, because it does much less work per
-operation. An earlier run is published too, with twenty seven missing samples
-from a boot that did not finish, because the rig records what happened
-instead of hiding it.
-
-Every number above was produced by an emulator, so the ratios are inflated
-by the translation overhead both kernels pay, and the two tail measurements
-have five samples each. A run with hardware acceleration is required before
-any statement about wall clock performance. The full reading, the caveats and
-the raw iterations are in [docs/BENCHMARKING.md](docs/BENCHMARKING.md) and in
-`bench/results/`.
+dynamic linking, signals and a shell test suite.
 
 ## Build and run
 
@@ -107,16 +126,16 @@ Requirements:
 
 - Rust nightly (pinned in `rust-toolchain.toml`), with the `rust-src` and
   `llvm-tools` components.
-- QEMU 11.x (`qemu-system-x86_64`).
+- QEMU 8.2 or newer (`qemu-system-x86_64`).
 - `xorriso` and `mtools` only if you build disk images.
 
 ```sh
 rustup toolchain install nightly-2026-10-24 \
     --component rust-src --component llvm-tools --component rustfmt --component clippy
-make build          # cargo build --release
-make run            # boot in QEMU, serial on stdout
-make test           # host unit tests
-make check          # fmt + clippy
+make build          # the kernel
+make run            # boot it in QEMU, serial on stdout
+make test           # host unit tests of every crate
+make check          # format and clippy of every crate
 ```
 
 Boot directly with QEMU:
@@ -132,7 +151,31 @@ Debugging: add `-s -S` to QEMU (gdbstub on port 1234, CPU halted), then attach
 `lldb target/x86_64-madrust/release/madrust-kernel` with `gdb-remote 1234`
 (macOS) or `gdb` with `target remote :1234` (Linux).
 
-The full Linux VM setup (for building mainline Linux and distro rootfs) is in
+### The comparison against mainline
+
+```sh
+bench/prepare-mainline.sh ~/madrust/artifacts   # the reference image, on a Linux host
+bench/fetch-model.sh ~/madrust/artifacts/model-instruct   # the checkpoint, verified
+python3 bench/run.py \
+    --madrust "$(make -s print-kernel-path)" \
+    --mainline ~/madrust/artifacts/vmlinux \
+    --mainline-variant "nomitig=mitigations=off" \
+    --out bench/results
+```
+
+### The agent
+
+```sh
+make agent agent-initramfs
+EXTRA_DIR=~/madrust/artifacts/model-instruct \
+    bench/mkinitramfs.sh ~/madrust/artifacts/agent.cpio madrust-agent/madrust-agent.elf
+python3 bench/run.py --madrust "$(make -s print-kernel-path)" \
+    --mainline ~/madrust/artifacts/vmlinux \
+    --initrd ~/madrust/artifacts/agent.cpio --memory 1024M \
+    --only agent-steps,agent-tokens,agent-seconds,agent-step-ms
+```
+
+The full Linux VM setup (for building mainline Linux and a distro rootfs) is in
 [docs/VM-SETUP.md](docs/VM-SETUP.md).
 
 ## Repository layout
@@ -148,7 +191,7 @@ madrust-initramfs/  the reader of the cpio archive of the initramfs
 madrust-kernel/     the no_std kernel binary
 madrust-userland/   the test program that runs unmodified in ring 3
 madrust-bench/      the workload that measures the kernel
-madrust-infer/      the inference runtime, the grammar and the chat prompt
+madrust-infer/      the inference runtime, the grammar, the merge encoder
 madrust-agent/      the agent loop: model, tool call, tool result
 bench/              the rig, the workloads, the reference build, the datasets
 docs/               architecture, boot protocol, benchmarking, VM setup
@@ -158,6 +201,21 @@ scripts/            ISO and CI helper scripts
 Dependencies policy: kernel crates may only use MIT, BSD or ISC licensed code.
 `GPL-2.0-only` is incompatible with `Apache-2.0-only`, so Apache-only crates
 are forbidden in the kernel.
+
+## What this project is not
+
+Being "better than Linux at everything" is not a goal, and it is not a
+measurable one. MadRust publishes a narrow, defensible claim instead:
+
+- Same userspace, same QEMU version, same machine model, same rootfs, same
+  benchmark scripts, raw results committed to the repository.
+- Two areas where a purpose-built kernel can plausibly win in a private VM:
+  syscall entry cost (no KPTI/retpoline in a trusted single-tenant guest) and
+  fork/exec plus tail latency (no LSM, no audit, no cgroups, no hooks).
+- Every loss is published too. No cherry-picking, no "mitigations off!" as the
+  only comparison point.
+
+The methodology is specified in [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 
 ## Boot protocol
 
@@ -197,7 +255,7 @@ answer, and this repository is one answer to it.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - crates, design decisions, milestone ladder, risks, stop rules.
 - [docs/BOOT.md](docs/BOOT.md) - PVH boot protocol, trampoline, memory map, debugging.
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - the method, and the raw numbers with their caveats.
-- [docs/LEARNING.md](docs/LEARNING.md) - how to read the kernel, experiments to run, sources to read next.
+- [docs/LEARNING.md](docs/LEARNING.md) - how to read the kernel and the userland, experiments to run, sources to read next.
 - [docs/VM-SETUP.md](docs/VM-SETUP.md) - the Linux build host: mainline Linux, rootfs, and the artifact handoff.
 
 ## Contributing
