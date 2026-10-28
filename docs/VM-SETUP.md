@@ -71,7 +71,7 @@ requires. Keep the `vmlinux` file and the kernel version string.
 ```sh
 sudo apt install -y debootstrap
 debootstrap --arch=amd64 bookworm /srv/rootfs http://deb.debian.org/debian
-cd /srv/rootfs && find . | cpio -o -H newc | gzip > /srv/initramfs.cpio.gz
+cd /srv/rootfs && find . | cpio -o -H newc > /srv/initramfs.cpio
 ```
 
 The initramfs is passed to both kernels with `-initrd`, so both run the exact
@@ -85,7 +85,7 @@ the Linux host:
 | Artifact | What it is |
 |---|---|
 | `vmlinux` | Mainline kernel, built with `CONFIG_PVH=y` |
-| `initramfs.cpio.gz` | The rootfs both kernels boot |
+| `initramfs.cpio` | The rootfs both kernels boot, uncompressed `newc` |
 | `kernel-version.txt` | `make kernelversion` output, for the report |
 | `host-info.txt` | `uname -a`, `nproc`, `free -h`, `qemu-system-x86_64 --version`, and whether `/dev/kvm` exists |
 
@@ -98,9 +98,9 @@ the checkout installs the right nightly automatically on first use, with the
 ```sh
 git clone https://github.com/NicolasBecasAzagra/MadRust.git
 cd MadRust
-cargo build --release
+make build
 qemu-system-x86_64 -M q35 -m 512M \
-    -kernel target/x86_64-madrust/release/madrust-kernel \
+    -kernel "$(make -s print-kernel-path)" \
     -display none -monitor none -no-reboot -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04
 ```

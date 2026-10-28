@@ -170,7 +170,7 @@ The kernel loads a user program and enters ring 3 with it:
 The boot path is deterministic and asserted by CI:
 
 ```text
-MadRust: x86_64 kernel, M3
+MadRust: x86_64 kernel, M4b (SMP)
 [mm] kernel virtual: 0xffffffff80000000
 [mm] direct map: 0xffff888000000000
 MM DIRECTMAP OK
@@ -180,6 +180,8 @@ MM DIRECTMAP OK
 [mem] RAM 0x00000000100000 - 0x00001ffdf000 (523132 KiB)
 [mem] total usable RAM: 536341504 bytes (511 MiB)
 MEM managed frames: 131039
+Hello from MadRust userland
+USER OK exit=0
 MEM free frames: 130679
 MEM OK
 HEAP OK 10000

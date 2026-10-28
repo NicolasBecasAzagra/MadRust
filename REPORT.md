@@ -171,6 +171,9 @@ And on the cross check host:
 | mainline with mitigations off, cost per MiB | 4.16 ms | 4.33 ms |
 | mainline with mitigations off, slowest fault | 2.55 ms | 1.67 ms |
 
+The raw rows of the first measurement of the large pages are in
+`bench/results/e2/`.
+
 The reference kernel gets slightly slower per MiB when it uses large pages,
 and its worst fault does not improve. On MadRust the same change halves the
 cost per MiB and shortens the worst fault by a factor of nine. Both kernels
@@ -248,9 +251,9 @@ build under emulation is larger than the difference between the kernels, and
 no ratio can be published from those batches.
 
 **After the arithmetic and the residency were added, the gap is larger than
-the variance.** The time to the first token on MadRust fell to 6.8 seconds
-and the rate rose to 0.80 tokens per second, against 21.9 and 22.8 seconds
-for the reference kernel in the batches above. A gap of more than three times
+the variance.** In the batch that is committed, the time to the first token on
+MadRust was 10.70 seconds and the rate 0.52 tokens per second, against 21.9
+and 22.8 seconds for the reference kernel in the batches above. A gap of more than three times
 survives a variance of two, so this one can be stated. What it measures is a
 kernel that faults the weights in large pages, keeps them resident, and runs
 a forward pass written in Rust without a single dependency outside the
