@@ -42,6 +42,7 @@ use madrust_elf::USER_SPACE_END;
 use madrust_mm::paging::PAGE_SIZE;
 
 use crate::gdt::{CODE_SELECTOR, USER_CODE_SELECTOR};
+use crate::net;
 use crate::pit;
 
 use super::errno::*;
@@ -117,6 +118,22 @@ const SYS_DUP: u64 = 32;
 const SYS_DUP2: u64 = 33;
 /// `nanosleep` system call number.
 const SYS_NANOSLEEP: u64 = 35;
+/// `socket` system call number.
+const SYS_SOCKET: u64 = 41;
+/// `connect` system call number.
+const SYS_CONNECT: u64 = 42;
+/// `sendto` system call number.
+const SYS_SENDTO: u64 = 44;
+/// `recvfrom` system call number.
+const SYS_RECVFROM: u64 = 45;
+/// `shutdown` system call number.
+const SYS_SHUTDOWN: u64 = 48;
+/// `bind` system call number.
+const SYS_BIND: u64 = 49;
+/// `getsockname` system call number.
+const SYS_GETSOCKNAME: u64 = 51;
+/// `setsockopt` system call number.
+const SYS_SETSOCKOPT: u64 = 54;
 /// `clone` system call number.
 const SYS_CLONE: u64 = 56;
 /// `getpid` system call number.
@@ -212,6 +229,15 @@ const AT_EMPTY_PATH: u64 = 0x1000;
 
 /// Longest path a system call accepts, including the terminating NUL.
 const PATH_MAX: usize = 4096;
+
+/// `AF_INET`: the internet address family.
+const AF_INET: u16 = 2;
+/// `SOCK_DGRAM`: a datagram socket.
+const SOCK_DGRAM: u16 = 2;
+/// Bits of the socket type that select the kind of socket.
+const SOCK_TYPE_MASK: u64 = 0xf;
+/// Size of `struct sockaddr_in`, the only address a socket call accepts.
+const SOCKADDR_IN_SIZE: u64 = 16;
 
 /// Stack limit reported to the program, 8 MiB.
 const STACK_LIMIT: u64 = 8 * 1024 * 1024;
@@ -454,6 +480,18 @@ pub extern "C" fn madrust_syscall_dispatch(
         }
         SYS_KILL => sys_kill(argument1),
         SYS_TGKILL => sys_tgkill(argument1, argument2),
+        SYS_SOCKET => sys_socket(argument1, argument2, argument3),
+        SYS_CONNECT => sys_connect(argument1, argument2, argument3),
+        SYS_BIND => sys_bind(argument1, argument2, argument3),
+        SYS_SENDTO => sys_sendto(
+            argument1, argument2, argument3, argument4, argument5, argument6,
+        ),
+        SYS_RECVFROM => sys_recvfrom(
+            argument1, argument2, argument3, argument4, argument5, argument6,
+        ),
+        SYS_GETSOCKNAME => sys_getsockname(argument1, argument2, argument3),
+        SYS_SETSOCKOPT => sys_setsockopt(argument1),
+        SYS_SHUTDOWN => sys_shutdown(argument1),
         SYS_NANOSLEEP => sys_nanosleep(argument1, argument2),
         SYS_CLOCK_NANOSLEEP => sys_nanosleep(argument3, argument4),
         SYS_GETRUSAGE => sys_getrusage(argument2),
@@ -625,6 +663,253 @@ fn sys_poll(descriptors: u64, count: u64) -> i64 {
         }
     }
     ready
+}
+
+/// `socket`: create one internet datagram socket.
+///
+/// The kernel has one address family and one socket type: a datagram socket of
+/// the internet. Every other request is refused with the error of the family
+/// or of the protocol. The type may carry the `SOCK_CLOEXEC` and
+/// `SOCK_NONBLOCK` bits, which the standard library adds.
+fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> i64 {
+    if domain != u64::from(AF_INET) {
+        return EAFNOSUPPORT;
+    }
+    if socket_type & SOCK_TYPE_MASK != u64::from(SOCK_DGRAM) || protocol != 0 {
+        return EPROTONOSUPPORT;
+    }
+    fd::socket()
+}
+
+/// `bind`: give a socket its local address and port.
+fn sys_bind(descriptor: u64, address: u64, length: u64) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let (port, address) = match read_sockaddr(address, length) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return error,
+    };
+    match net::socket_bind(index, address, port) {
+        Ok(()) => 0,
+        Err(error) => socket_errno(error),
+    }
+}
+
+/// `connect`: choose the other end of a socket.
+fn sys_connect(descriptor: u64, address: u64, length: u64) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let (port, address) = match read_sockaddr(address, length) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return error,
+    };
+    match net::socket_connect(index, address, port) {
+        Ok(()) => 0,
+        Err(error) => socket_errno(error),
+    }
+}
+
+/// `sendto`: send one datagram, with an address or to the connected peer.
+fn sys_sendto(
+    descriptor: u64,
+    buffer: u64,
+    length: u64,
+    _flags: u64,
+    address: u64,
+    address_length: u64,
+) -> i64 {
+    let Some(bytes) = user_bytes(buffer, length) else {
+        return EFAULT;
+    };
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let destination = if address_length == 0 {
+        // An address of zero length means the socket already has an other
+        // end; `net::socket_send` reports `ENOTCONN` when it does not.
+        None
+    } else {
+        match read_sockaddr(address, address_length) {
+            Ok((port, address)) => Some((address, port)),
+            Err(error) => return error,
+        }
+    };
+    match net::socket_send(index, destination, bytes) {
+        Ok(()) => i64::try_from(length).unwrap_or(i64::MAX),
+        Err(error) => socket_errno(error),
+    }
+}
+
+/// `recvfrom`: receive one datagram and report who sent it.
+///
+/// The flags are ignored. A datagram longer than the buffer is truncated and
+/// the number of bytes copied is returned, which is what Linux reports.
+fn sys_recvfrom(
+    descriptor: u64,
+    buffer: u64,
+    length: u64,
+    _flags: u64,
+    address: u64,
+    address_length: u64,
+) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+
+    // The address of the sender is optional, but a length that is present has
+    // to be large enough for the whole `sockaddr_in` before a datagram is
+    // consumed.
+    let destination = if address == 0 {
+        None
+    } else {
+        if address_length == 0 {
+            return EFAULT;
+        }
+        match read_user::<u32>(address_length) {
+            Some(size) if u64::from(size) >= SOCKADDR_IN_SIZE => Some((address, address_length)),
+            Some(_) => return EINVAL,
+            None => return EFAULT,
+        }
+    };
+
+    let Some(length) = user_range_faulted(buffer, length) else {
+        return EFAULT;
+    };
+    // SAFETY: `user_range_faulted` checked every page of the range and mapped
+    // the missing ones. The program owns the buffer for the duration of the
+    // call and the kernel holds no other reference to it.
+    let buffer = if length == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buffer as *mut u8, length) }
+    };
+
+    let received = match net::socket_receive(index, buffer) {
+        Ok(Some(received)) => received,
+        Ok(None) => return EAGAIN,
+        Err(error) => return socket_errno(error),
+    };
+
+    if let Some((address, address_length)) = destination {
+        let result = write_sockaddr(
+            address,
+            address_length,
+            received.source_address,
+            received.source_port,
+        );
+        if result != 0 {
+            return result;
+        }
+    }
+    i64::try_from(received.length).unwrap_or(i64::MAX)
+}
+
+/// `getsockname`: report the local address and port of a socket.
+fn sys_getsockname(descriptor: u64, address: u64, length: u64) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let (local_address, local_port) = match net::socket_local(index) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return socket_errno(error),
+    };
+    write_sockaddr(address, length, local_address, local_port)
+}
+
+/// `setsockopt`: accept the option and change nothing.
+///
+/// The standard library asks for a receive timeout on some paths. This kernel
+/// reports a would block from `recvfrom` instead of waiting, so there is no
+/// timeout to store and the call succeeds without changing the socket.
+fn sys_setsockopt(descriptor: u64) -> i64 {
+    match fd::socket_index(descriptor) {
+        Ok(_) => 0,
+        Err(error) => error,
+    }
+}
+
+/// `shutdown`: accept the request and change nothing.
+///
+/// A datagram socket has no half closed state in this kernel, so the call is a
+/// success once the descriptor is known to be a socket.
+fn sys_shutdown(descriptor: u64) -> i64 {
+    match fd::socket_index(descriptor) {
+        Ok(_) => 0,
+        Err(error) => error,
+    }
+}
+
+/// Read one `sockaddr_in` from user memory.
+///
+/// The family is in host order and the port in network order; the port is
+/// converted to the order of the host here. A length below sixteen is refused
+/// before a byte is read.
+fn read_sockaddr(address: u64, length: u64) -> Result<(u16, [u8; 4]), i64> {
+    if length < SOCKADDR_IN_SIZE {
+        return Err(EINVAL);
+    }
+    let Some(family) = read_user::<u16>(address) else {
+        return Err(EFAULT);
+    };
+    if family != AF_INET {
+        return Err(EAFNOSUPPORT);
+    }
+    let Some(port) = read_user::<u16>(address + 2) else {
+        return Err(EFAULT);
+    };
+    let Some(address) = read_user::<[u8; 4]>(address + 4) else {
+        return Err(EFAULT);
+    };
+    Ok((u16::from_be(port), address))
+}
+
+/// Write one `sockaddr_in` into user memory.
+///
+/// The caller passes the address of a `socklen_t` with the room of the buffer.
+/// A room below sixteen is refused with `EINVAL`; on success the whole sixteen
+/// bytes are written and the length is set to sixteen.
+fn write_sockaddr(address: u64, address_length: u64, address_value: [u8; 4], port: u16) -> i64 {
+    let Some(room) = read_user::<u32>(address_length) else {
+        return EFAULT;
+    };
+    if u64::from(room) < SOCKADDR_IN_SIZE {
+        return EINVAL;
+    }
+
+    let mut block = [0u8; SOCKADDR_IN_SIZE as usize];
+    block[0..2].copy_from_slice(&AF_INET.to_le_bytes());
+    block[2..4].copy_from_slice(&port.to_be_bytes());
+    block[4..8].copy_from_slice(&address_value);
+    if !write_user_bytes(address, &block) {
+        return EFAULT;
+    }
+    if !write_user_bytes(address_length, &(SOCKADDR_IN_SIZE as u32).to_le_bytes()) {
+        return EFAULT;
+    }
+    0
+}
+
+/// Turn the failure of a socket operation into the error number of the ABI.
+fn socket_errno(error: net::SocketError) -> i64 {
+    match error {
+        net::SocketError::NotSocket => ENOTSOCK,
+        net::SocketError::AddressInUse => EADDRINUSE,
+        net::SocketError::AddressNotAvailable => EADDRNOTAVAIL,
+        net::SocketError::NetworkUnreachable => ENETUNREACH,
+        net::SocketError::HostUnreachable => EHOSTUNREACH,
+        net::SocketError::NotConnected => ENOTCONN,
+        net::SocketError::IsConnected => EISCONN,
+        net::SocketError::Invalid => EINVAL,
+        net::SocketError::NoBuffer => EMFILE,
+        net::SocketError::Unsupported => EOPNOTSUPP,
+    }
 }
 
 /// `fstat`: describe one descriptor.

@@ -30,10 +30,12 @@ use madrust_initramfs::Entry;
 use madrust_mm::virt_to_phys;
 
 use crate::console::console;
+use crate::net;
 use crate::sync;
 
 use super::errno::{
-    EAGAIN, EBADF, EINVAL, EISDIR, EMFILE, ENODEV, ENOENT, ENOTTY, EPERM, EROFS, ESPIPE,
+    EAGAIN, EBADF, EINVAL, EISDIR, EMFILE, ENODEV, ENOENT, ENOSYS, ENOTSOCK, ENOTTY, EOPNOTSUPP,
+    EPERM, EROFS, ESPIPE,
 };
 
 /// Number of descriptors in the table.
@@ -52,6 +54,8 @@ pub const STAT_SIZE: usize = 144;
 const S_IFCHR: u32 = 0o020000;
 /// `S_IFIFO`: named pipe.
 const S_IFIFO: u32 = 0o010000;
+/// `S_IFSOCK`: socket.
+const S_IFSOCK: u32 = 0o140000;
 
 /// `O_ACCMODE`: the access mode bits of an `openat` flags word.
 const O_ACCMODE: u64 = 0o3;
@@ -102,6 +106,8 @@ enum Kind {
     PipeWrite(usize),
     /// One file of the initramfs archive.
     File(File),
+    /// A datagram socket, named by its slot in [`crate::net`].
+    Socket(usize),
 }
 
 /// One anonymous pipe.
@@ -223,6 +229,9 @@ pub fn write(descriptor: u64, bytes: &[u8]) -> i64 {
         }
         Kind::Null(_) => i64::try_from(bytes.len()).unwrap_or(i64::MAX),
         Kind::PipeRead(_) | Kind::File(_) => EBADF,
+        // A socket is driven by `sendto` and `recvfrom`, not by the stream
+        // calls; the dispatcher maps those calls onto this table.
+        Kind::Socket(_) => EOPNOTSUPP,
         Kind::PipeWrite(index) => {
             if bytes.is_empty() {
                 return 0;
@@ -265,6 +274,7 @@ pub fn read(descriptor: u64, buffer: &mut [u8]) -> i64 {
     match kind {
         Kind::Console(_) | Kind::Null(_) => 0,
         Kind::PipeWrite(_) => EBADF,
+        Kind::Socket(_) => EOPNOTSUPP,
         Kind::PipeRead(pipe_index) => {
             let pipe = &mut guard.table.pipes[pipe_index];
             if pipe.length == 0 {
@@ -351,18 +361,39 @@ pub fn file_backing(descriptor: u64) -> Result<(u64, u64), i64> {
 }
 
 /// `close`: release one descriptor.
+///
+/// A socket is released only when the last descriptor that names it goes away,
+/// because `dup` copies the slot number and both descriptors keep the same
+/// socket alive, like Linux.
 pub fn close(descriptor: u64) -> i64 {
-    let guard = lock();
-    let Ok(index) = usize::try_from(descriptor) else {
-        return EBADF;
-    };
-    let Some(slot) = guard.table.descriptors.get_mut(index) else {
-        return EBADF;
-    };
-    if slot.is_none() {
-        return EBADF;
+    let mut released = None;
+    {
+        let guard = lock();
+        let Ok(index) = usize::try_from(descriptor) else {
+            return EBADF;
+        };
+        let Some(slot) = guard.table.descriptors.get_mut(index) else {
+            return EBADF;
+        };
+        let Some(kind) = *slot else {
+            return EBADF;
+        };
+        *slot = None;
+        if let Kind::Socket(socket) = kind {
+            let shared = guard
+                .table
+                .descriptors
+                .iter()
+                .flatten()
+                .any(|kind| matches!(kind, Kind::Socket(other) if *other == socket));
+            if !shared {
+                released = Some(socket);
+            }
+        }
     }
-    *slot = None;
+    if let Some(socket) = released {
+        net::socket_close(socket);
+    }
     0
 }
 
@@ -461,6 +492,7 @@ pub fn fcntl(descriptor: u64, command: u64, argument: u64) -> i64 {
                 Some(Kind::Console(_) | Kind::Null(_) | Kind::File(_)) => 0,
                 Some(Kind::PipeWrite(_)) => O_WRONLY as i64,
                 Some(Kind::PipeRead(_)) => 0,
+                Some(Kind::Socket(_)) => 2,
                 None => EBADF,
             }
         }
@@ -478,6 +510,7 @@ pub fn stat(descriptor: u64) -> Result<[u8; STAT_SIZE], i64> {
         Kind::Console(mode) | Kind::Null(mode) => (mode, 0),
         Kind::PipeRead(_) | Kind::PipeWrite(_) => (S_IFIFO | 0o600, 0),
         Kind::File(file) => (file.entry.mode(), file.entry.data().len() as u64),
+        Kind::Socket(_) => (S_IFSOCK | 0o600, 0),
     };
     Ok(stat_block(mode, 1, size))
 }
@@ -507,23 +540,41 @@ fn stat_block(mode: u32, links: u64, size: u64) -> [u8; STAT_SIZE] {
 }
 
 /// `true` when a read of `descriptor` can return data now.
+///
+/// The descriptor is resolved under the table lock and the socket is asked
+/// after that lock is gone: the socket path polls the card, which must not
+/// happen with the table locked.
 pub fn readable(descriptor: u64) -> bool {
-    let guard = lock();
-    match descriptor_kind(&guard.table.descriptors, descriptor) {
+    let kind = {
+        let guard = lock();
+        descriptor_kind(&guard.table.descriptors, descriptor)
+    };
+    match kind {
         Some(Kind::Console(_) | Kind::Null(_) | Kind::File(_)) => true,
-        Some(Kind::PipeRead(index)) => guard.table.pipes[index].length > 0,
+        Some(Kind::PipeRead(index)) => {
+            let guard = lock();
+            guard.table.pipes[index].length > 0
+        }
         Some(Kind::PipeWrite(_)) => false,
+        Some(Kind::Socket(index)) => net::socket_readable(index),
         None => false,
     }
 }
 
 /// `true` when a write of `descriptor` can make progress now.
 pub fn writable(descriptor: u64) -> bool {
-    let guard = lock();
-    match descriptor_kind(&guard.table.descriptors, descriptor) {
+    let kind = {
+        let guard = lock();
+        descriptor_kind(&guard.table.descriptors, descriptor)
+    };
+    match kind {
         Some(Kind::Console(_) | Kind::Null(_)) => true,
-        Some(Kind::PipeWrite(index)) => guard.table.pipes[index].length < PIPE_CAPACITY,
+        Some(Kind::PipeWrite(index)) => {
+            let guard = lock();
+            guard.table.pipes[index].length < PIPE_CAPACITY
+        }
         Some(Kind::PipeRead(_) | Kind::File(_)) => false,
+        Some(Kind::Socket(index)) => net::socket_writable(index),
         None => false,
     }
 }
@@ -532,6 +583,40 @@ pub fn writable(descriptor: u64) -> bool {
 pub fn is_open(descriptor: u64) -> bool {
     let guard = lock();
     descriptor_kind(&guard.table.descriptors, descriptor).is_some()
+}
+
+/// `socket`: create a datagram socket and store it in a free descriptor.
+pub fn socket() -> i64 {
+    let index = match net::socket_open() {
+        Ok(index) => index,
+        Err(net::SocketError::NoBuffer) => return EMFILE,
+        Err(_) => return ENOSYS,
+    };
+
+    let guard = lock();
+    let Some(descriptor) = guard.table.free_from(0) else {
+        drop(guard);
+        net::socket_close(index);
+        return EMFILE;
+    };
+    guard.table.descriptors[descriptor] = Some(Kind::Socket(index));
+    i64::try_from(descriptor).unwrap_or(i64::MAX)
+}
+
+/// Slot in [`crate::net`] behind a descriptor.
+///
+/// Reports `ENOTSOCK` for an open descriptor that is not a socket, so the
+/// socket calls tell the two failures apart.
+pub fn socket_index(descriptor: u64) -> Result<usize, i64> {
+    let kind = {
+        let guard = lock();
+        descriptor_kind(&guard.table.descriptors, descriptor)
+    };
+    match kind {
+        Some(Kind::Socket(index)) => Ok(index),
+        Some(_) => Err(ENOTSOCK),
+        None => Err(EBADF),
+    }
 }
 
 /// Resolve a descriptor number, rejecting numbers outside the table.

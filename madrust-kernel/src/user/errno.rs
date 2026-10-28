@@ -45,5 +45,28 @@ pub const ENODEV: i64 = -19;
 pub const EMFILE: i64 = -24;
 /// No such process.
 pub const ESRCH: i64 = -3;
+/// Socket operation on a non-socket.
+pub const ENOTSOCK: i64 = -88;
+/// Protocol not supported.
+pub const EPROTONOSUPPORT: i64 = -93;
+/// Operation not supported.
+pub const EOPNOTSUPP: i64 = -95;
+/// Address family not supported by the protocol.
+pub const EAFNOSUPPORT: i64 = -97;
+/// Address already in use.
+pub const EADDRINUSE: i64 = -98;
+/// Cannot assign the requested address.
+pub const EADDRNOTAVAIL: i64 = -99;
+/// Network is unreachable.
+pub const ENETUNREACH: i64 = -101;
+/// Transport endpoint is already connected.
+pub const EISCONN: i64 = -106;
+/// Transport endpoint is not connected.
+pub const ENOTCONN: i64 = -107;
 /// Timed out.
 pub const ETIMEDOUT: i64 = -110;
+/// Connection refused.
+#[allow(dead_code)]
+pub const ECONNREFUSED: i64 = -111;
+/// No route to host.
+pub const EHOSTUNREACH: i64 = -113;
