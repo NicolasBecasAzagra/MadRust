@@ -1,0 +1,5 @@
+kernel,workload,iteration,value,unit,status,error
+mainline-nomitig,infer-ttft,0,22823.014,ms,ok,
+mainline-nomitig,infer-tps,0,0.210,tok/s,ok,
+mainline-nomitig,boot-seconds,0,,s,error,the guest did not finish in 3600 s
+mainline-nomitig,boot-rss-mb,0,1019.5,MiB,ok,
