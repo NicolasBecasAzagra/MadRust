@@ -76,6 +76,14 @@ AGENT_FLAGS := --manifest-path $(AGENT_DIR)/Cargo.toml \
 	--target $(USER_TARGET) \
 	--target-dir $(AGENT_TARGET_DIR)
 AGENT_INITRAMFS := $(AGENT_DIR)/initramfs.cpio
+# The archive of the network gate carries the same model and the endpoint of the
+# server of the run, which neither kernel passes to its init as an argument. The
+# variables are `?=` so the rig overrides them from the environment.
+AGENT_NET_INITRAMFS ?= $(AGENT_DIR)/initramfs-net.cpio
+AGENT_NET_STAGE ?= $(TARGET_DIR)/agent-net
+AGENT_NET_ADDRESS ?= 10.0.2.2
+AGENT_NET_PORT ?= 9999
+AGENT_NET_SELFTEST ?= 1
 
 # The reader of the cpio archive of the initramfs is a crate of its own, like
 # the other programs that are not the kernel.
@@ -95,7 +103,7 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench netclient print-kernel-path infer infer-model infer-initramfs agent agent-initramfs run-infer
+.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench netclient print-kernel-path infer infer-model infer-initramfs agent agent-initramfs agent-net-initramfs run-infer
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -161,6 +169,20 @@ agent: musl-std
 
 agent-initramfs: agent infer-model
 	EXTRA_DIR=$(INFER_MODEL_DIR) bench/mkinitramfs.sh $(AGENT_INITRAMFS) $(AGENT_ELF)
+
+# The archive of the agent with the endpoint of the server of this run. The
+# address and the port reach the program through a file because neither kernel
+# passes arguments to the program it starts as init. `selftest=1` makes the
+# agent prove the network tool before it asks the model, which is what the gate
+# needs when the model is the synthetic one.
+agent-net-initramfs: agent infer-model
+	rm -rf $(AGENT_NET_STAGE)
+	mkdir -p $(AGENT_NET_STAGE)
+	cp -R $(INFER_MODEL_DIR)/. $(AGENT_NET_STAGE)/
+	printf 'address=%s\nport=%s\nselftest=%s\n' \
+		'$(AGENT_NET_ADDRESS)' '$(AGENT_NET_PORT)' '$(AGENT_NET_SELFTEST)' \
+		> $(AGENT_NET_STAGE)/net.conf
+	EXTRA_DIR=$(AGENT_NET_STAGE) bench/mkinitramfs.sh $(AGENT_NET_INITRAMFS) $(AGENT_ELF)
 
 run-infer: infer-initramfs build
 	@$(QEMU) -M q35 -m 512M \
@@ -266,4 +288,4 @@ check: userland
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
 	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF) $(NETCLIENT_ELF) $(INFER_ELF) $(INFER_INITRAMFS) \
-		$(AGENT_ELF) $(AGENT_INITRAMFS)
+		$(AGENT_ELF) $(AGENT_INITRAMFS) $(AGENT_NET_INITRAMFS) $(AGENT_NET_STAGE)

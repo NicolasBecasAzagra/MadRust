@@ -13,6 +13,7 @@ madrust-infer/madrust-infer.elf
 madrust-infer/initramfs.cpio
 madrust-agent/madrust-agent.elf
 madrust-agent/initramfs.cpio
+madrust-agent/initramfs-net.cpio
 bench/initramfs.cpio
 bench/initramfs-net.cpio
 artifacts/

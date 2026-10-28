@@ -20,6 +20,11 @@ the server goes to `net-server.log`, which is a file of the host and not part of
 the log of the guest. A run that measures only the network round trip does not
 boot the benchmark workload, so it publishes no boot row.
 
+The agent that reaches the network has a row of its own too. Its archive carries
+the agent, the model and the endpoint of the same server, and the round trip of
+the datagram the tool sends is on the summary line of the run, measured inside
+the run. The row is `agent-net`, the same shape as the other agent rows.
+
 The QEMU flags are fixed on purpose. The CPU model is never `host`, because it
 changes between machines and invalidates the comparison, and both kernels see
 the same machine type, CPU count, memory size and initramfs.
@@ -78,6 +83,10 @@ NET_PROBE_PORT = 9999
 NETCLIENT_ELF = "madrust-netclient/madrust-netclient.elf"
 NET_INITRAMFS = "bench/initramfs-net.cpio"
 
+# The agent that reaches the network needs the model and the endpoint of the
+# server, so its archive is built per run like the archive of the client.
+AGENT_NET_INITRAMFS = "madrust-agent/initramfs-net.cpio"
+
 # Every workload the binary prints, with its unit and the number of samples one
 # boot must produce. `weights` and `weights-huge` print two lines per sample:
 # the cost per MiB and the slowest fault per page. The huge variant asks for
@@ -97,6 +106,7 @@ WORKLOADS = {
     "agent-tokens": ("tokens", AGENT_ITERATIONS),
     "agent-seconds": ("s", AGENT_ITERATIONS),
     "agent-step-ms": ("ms/step", AGENT_ITERATIONS),
+    "agent-net": ("us/roundtrip", AGENT_ITERATIONS),
     "boot-seconds": ("s", BOOT_ITERATIONS),
     "boot-rss-mb": ("MiB", BOOT_ITERATIONS),
     "net": ("us/roundtrip", NET_ITERATIONS * NET_BOOTS),
@@ -111,6 +121,7 @@ OPTIONAL_WORKLOADS = {
     "agent-tokens",
     "agent-seconds",
     "agent-step-ms",
+    "agent-net",
 }
 
 INFER_RE = re.compile(
@@ -119,10 +130,12 @@ INFER_RE = re.compile(
 
 # The agent loop reports the whole run on one line: how many steps it took, how
 # many tokens the model generated, how long it ran and how many tool calls it
-# made. The rig turns that into four measurements.
+# made. The rig turns that into four measurements, and into a fifth when the run
+# used the network tool: the round trip of its datagram is on the same line.
 AGENT_RE = re.compile(
     r"^AGENT\s+steps=(?P<steps>\d+)\s+tokens=(?P<tokens>\d+)\s+"
-    r"seconds=(?P<seconds>-?\d+(?:\.\d+)?)\s+tool_calls=(?P<tool_calls>\d+)\s*$"
+    r"seconds=(?P<seconds>-?\d+(?:\.\d+)?)\s+tool_calls=(?P<tool_calls>\d+)"
+    r"(?:\s+net_us=(?P<net_us>\d+)\s+retries=(?P<retries>\d+))?\s*$"
 )
 
 RESULT_RE = re.compile(
@@ -148,9 +161,9 @@ KERNEL_LOG_RE = re.compile(r"\s*\[[^\]]*\].*$")
 LEADING_KERNEL_LOG_RE = re.compile(r"^\[[^\]]*\]\s*")
 
 # The marker that says the run reached its end, with or without a kernel
-# prefix in front of it. The network client ends its own run with its own
-# marker, because it is a program of its own.
-BENCH_DONE_RE = re.compile(r"^\[[^\]]*\]\s*(?:BENCH|NET) DONE\s*$")
+# prefix in front of it. The network client and the agent end their own run
+# with their own marker, because each is a program of its own.
+BENCH_DONE_RE = re.compile(r"^\[[^\]]*\]\s*(?:BENCH|NET|AGENT) DONE\s*$")
 
 
 def repo_root() -> Path:
@@ -362,6 +375,8 @@ def expected_complete(text: str, expected: dict[str, int]) -> bool:
         if match:
             for name in ("agent-steps", "agent-tokens", "agent-seconds", "agent-step-ms"):
                 seen[name] = seen.get(name, 0) + 1
+            if match.group("net_us") is not None:
+                seen["agent-net"] = seen.get("agent-net", 0) + 1
             continue
         if NET_RE.match(KERNEL_LOG_RE.sub("", line)):
             seen["net"] = seen.get("net", 0) + 1
@@ -383,7 +398,7 @@ def bench_done(text: str) -> bool:
     """
     for raw_line in text.splitlines():
         line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
-        if BENCH_DONE_RE.match(line) or line in ("BENCH DONE", "NET DONE"):
+        if BENCH_DONE_RE.match(line) or line in ("BENCH DONE", "NET DONE", "AGENT DONE"):
             return True
     return False
 
@@ -648,6 +663,96 @@ def ensure_net_initramfs(path: Path, port: int, per_boot: int) -> None:
     check_initramfs(path)
 
 
+def ensure_agent_net_initramfs(path: Path, port: int) -> None:
+    """Build the archive that carries the agent, the model and the endpoint.
+
+    The model is the same synthetic checkpoint the agent gate uses, and the
+    endpoint is the server of this run. The agent reads it from `/net.conf`,
+    because neither kernel passes arguments to the program it starts as init.
+    `selftest=1` makes the agent prove the network tool before it asks the
+    model: the synthetic model decides nothing sensible, and a measurement of
+    the tool must not depend on it.
+    """
+    root = repo_root()
+    print("[rig] building the agent network initramfs", file=sys.stderr)
+    env = dict(
+        os.environ,
+        AGENT_NET_INITRAMFS=str(path),
+        AGENT_NET_ADDRESS=NET_ADDRESS,
+        AGENT_NET_PORT=str(port),
+        AGENT_NET_SELFTEST="1",
+    )
+    result = subprocess.run(
+        ["make", "-s", "--no-print-directory", "agent-net-initramfs"],
+        cwd=root,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0 or not path.is_file():
+        raise SystemExit("cannot build the agent network initramfs")
+    check_initramfs(path)
+
+
+def run_agent_net(
+    label: str,
+    image: Path,
+    initramfs: Path,
+    out_dir: Path,
+    qemu: str,
+    accel: str,
+    timeout: float,
+    append_extra: str,
+    memory: str,
+    smp: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Boot the agent once and record the round trip of its network tool.
+
+    The rows come from the summary line of the agent, so the round trip was
+    measured inside the run: the seconds of the agent already carry it. A boot
+    whose summary has no `net_us` leaves the `agent-net` row missing with the
+    reason, and never with a zero.
+    """
+    command, text, _, _, outcome = run_once(
+        label,
+        image,
+        initramfs,
+        out_dir,
+        qemu,
+        accel,
+        timeout,
+        append_extra,
+        memory,
+        smp,
+        {
+            "agent-steps": AGENT_ITERATIONS,
+            "agent-tokens": AGENT_ITERATIONS,
+            "agent-seconds": AGENT_ITERATIONS,
+            "agent-step-ms": AGENT_ITERATIONS,
+            "agent-net": AGENT_ITERATIONS,
+        },
+        True,
+        "-agent",
+    )
+    reason = outcome["reason"] or "the agent did not print its summary"
+    rows = parse_results(
+        label,
+        text,
+        {"agent-net": AGENT_ITERATIONS},
+        None,
+        reason,
+    )
+    ok = sum(1 for row in rows if row["workload"] == "agent-net" and row["status"] == "ok")
+    print(f"[rig] {label}-agent: {ok} network round trips recorded", file=sys.stderr)
+    if not ok:
+        print(
+            f"[rig] {label}-agent: the serial log has no network round trip of the agent",
+            file=sys.stderr,
+        )
+        for line in outcome["qemu"].splitlines()[-10:]:
+            print(f"[rig] {label}-agent: qemu: {line}", file=sys.stderr)
+    return rows, shlex.join(command)
+
+
 def run_net(
     label: str,
     image: Path,
@@ -788,6 +893,10 @@ def parse_results(
             "agent-seconds": seconds,
             "agent-step-ms": (seconds * 1000.0 / steps) if steps else 0.0,
         }
+        # The round trip of the network tool is on the same line, because the
+        # tool runs inside the loop and its cost is inside the seconds above.
+        if match.group("net_us") is not None:
+            values["agent-net"] = int(match.group("net_us"))
         for name, value in values.items():
             rows.append(
                 {
@@ -1118,20 +1227,30 @@ def main() -> int:
     # kernel of the run sees the same bytes, the same endpoint and the same
     # number of samples.
     net = "net" in expected
-    workload_expected = {name: count for name, count in expected.items() if name != "net"}
+    agent_net = "agent-net" in expected
+    workload_expected = {
+        name: count
+        for name, count in expected.items()
+        if name not in ("net", "agent-net")
+    }
     net_initrd = None
+    agent_net_initrd = None
     server = None
     server_log = None
     server_port = None
-    if net:
+    if net or agent_net:
         if args.initrd:
             raise SystemExit(
-                "the network measurement builds its own initramfs, because the "
+                "the network measurements build their own initramfs, because the "
                 "endpoint of the server belongs to the run: do not pass --initrd"
             )
-        net_initrd = root / NET_INITRAMFS
         server, server_port, server_log = start_server(out_dir)
+    if net:
+        net_initrd = root / NET_INITRAMFS
         ensure_net_initramfs(net_initrd, server_port, net_per_boot)
+    if agent_net:
+        agent_net_initrd = root / AGENT_NET_INITRAMFS
+        ensure_agent_net_initramfs(agent_net_initrd, server_port)
 
     if initrd is None and workload_expected:
         initrd = root / "bench" / "initramfs.cpio"
@@ -1148,15 +1267,28 @@ def main() -> int:
     }
     if initrd is not None:
         metadata["initrd"] = {"path": str(initrd), "sha256": sha256(initrd)}
-    if net:
+    if net or agent_net:
         metadata["net"] = {
             "address": NET_ADDRESS,
             "server_port": server_port,
             "server_log": str(server_log),
             "probe_port": NET_PROBE_PORT,
-            "samples_per_boot": net_per_boot,
-            "boots": NET_BOOTS,
-            "initrd": {"path": str(net_initrd), "sha256": sha256(net_initrd)},
+        }
+    if net:
+        metadata["net"].update(
+            {
+                "samples_per_boot": net_per_boot,
+                "boots": NET_BOOTS,
+                "initrd": {"path": str(net_initrd), "sha256": sha256(net_initrd)},
+            }
+        )
+    if agent_net:
+        metadata["agent_net"] = {
+            "selftest": True,
+            "initrd": {
+                "path": str(agent_net_initrd),
+                "sha256": sha256(agent_net_initrd),
+            },
         }
 
     all_rows: list[dict[str, Any]] = []
@@ -1251,6 +1383,21 @@ def main() -> int:
                 rows.extend(net_rows)
                 if net_commands:
                     metadata["commands"][f"{label}-net"] = net_commands[0]
+            if agent_net:
+                agent_rows, agent_command = run_agent_net(
+                    label,
+                    image,
+                    agent_net_initrd,
+                    out_dir,
+                    args.qemu,
+                    args.accel,
+                    args.timeout,
+                    append_extra,
+                    args.memory,
+                    args.smp,
+                )
+                rows.extend(agent_rows)
+                metadata["commands"][f"{label}-agent"] = agent_command
             write_csv(out_dir / f"{label}.csv", rows)
             all_rows.extend(rows)
             ok = sum(1 for row in rows if row["status"] == "ok")
