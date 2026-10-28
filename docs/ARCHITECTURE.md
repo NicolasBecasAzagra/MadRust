@@ -151,7 +151,8 @@ The plan, in the order it has to happen:
 The first five are done, and so are the measurement (M8), the four processors
 (M9), the initramfs as a read only file system (E1), the large pages (E2 and
 E2b), the tail of the scheduler (E3a and E3b), the runtime and its measurement
-(E4 and E5) and the agent (E6). The next milestone is M10: the network.
+(E4 and E5), the agent (E6) and the network (M10). The next milestone is
+M11: quantization, so that a model fits in the memory of the machine.
 
 Two things this plan deliberately does not do:
 
@@ -426,7 +427,8 @@ done are implemented and asserted in CI.
 | M5 | `/init` busybox shell runs `ls | wc -l` with the same output as Linux | diff suite | deferred |
 | M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log | deferred |
 | M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI | deferred |
-| M10 | The kernel reaches the network: an agent calls an API and reads the answer | the networking gate in CI | next |
+| M10 | The kernel reaches the network: an agent calls an API and reads the answer | the networking gate in CI | done |
+| M12 | TCP in the kernel, so the agent can speak HTTP | the networking gate in CI, with a request and a reply over TCP | next |
 | M11 | A quantized model fits in the memory of the machine and keeps its answer | the runtime against the reference, with the digest of the checkpoint | next |
 
 The deferred milestones are not abandoned, they are sequenced behind the

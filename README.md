@@ -70,6 +70,13 @@ sides. Every number of the table comes from a committed dataset:
 | the operations | `bench/results/vps-1cpu/` |
 | the model | `bench/results/inference-native/` |
 | the agent | `bench/results/agent/` |
+| the network | `bench/results/net/` |
+
+The network is the fourth layer: the guest enumerates the bus, claims a
+network device, resolves the address of the gateway, sends a datagram to a
+server on the host and reads the answer, with the socket calls of the Linux
+ABI. The agent has a tool that does it, so the loop of the agent reaches
+the network.
 
 Three things about these numbers:
 
@@ -99,8 +106,9 @@ continuous integration. One commit per milestone.
 | M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 59 Linux system calls | done |
 | M4b | A real userland: a standard library program running unmodified | done |
 | M4c | Demand paging for anonymous mappings | done |
-| M8 | Benchmark rig, sixteen measurements, the comparison published with its raw data | done |
+| M8 | Benchmark rig, seventeen measurements, the comparison published with its raw data | done |
 | M9 | SMP: ACPI MADT, INIT-SIPI-SIPI, LAPIC and IOAPIC, IPIs, four processors | done |
+| M10 | The network: the bus PCI, a virtio device, IPv4 and UDP, the sockets of the ABI | done |
 | E1 | The initramfs as a read only file system | done |
 | E2 | A file backed mapping and large pages | done |
 | E2b | Large pages for file mappings and `mlock` residency of the weights | done |
@@ -118,7 +126,6 @@ tracker carry the same criteria.
 
 | Next | Why it is next |
 |---|---|
-| **The network** | An agent that cannot call an API is a demonstration. With it, it is a server: PCI, a virtio network device, IPv4 and UDP, and the socket calls of the ABI. |
 | **Quantization** | A model that does not fit in the memory of the machine cannot be served. A quantized checkpoint, decoded by the same runtime and checked token for token against the reference. |
 | **A checkpoint that closes the conversation** | The model of 135 million parameters reads a file and then asks for it again. The grammar is not the problem: the checkpoint is. |
 | **A host with hardware acceleration** | The only thing missing for the timings to describe a machine instead of an emulator. |
