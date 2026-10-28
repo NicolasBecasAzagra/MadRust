@@ -403,7 +403,8 @@ done are implemented and asserted in CI.
 | E4 | A Rust inference runtime generates the same tokens as the reference implementation | token for token diff against the reference | done |
 | E5 | Tokens per second and time to first token, both kernels, same machine | the rig, with the raw data published | done |
 | E6 | The agent asks the model for a tool call, runs the tool and goes on, and the call is always well formed | the agent gate in CI, and the grammar tests | done |
-| E7 | The agent is measured on both kernels: the latency of a step and the tokens of a step | the rig, with the raw data published | next |
+| E7 | The agent is measured on both kernels: the latency of a step and the tokens of a step | the rig, with the raw data published | done |
+| E8 | The agent writes a file and lists a directory: the tools need a file system the kernel serves | the tools against the same program on both kernels | next |
 | M5 | `/init` busybox shell runs `ls | wc -l` with the same output as Linux | diff suite | deferred |
 | M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log | deferred |
 | M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI | deferred |
