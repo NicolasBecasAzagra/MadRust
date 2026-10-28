@@ -8,10 +8,11 @@
 //! status register is walked, the features this milestone needs are agreed and
 //! the two queues of a network card are placed in physical memory.
 //!
-//! Once the device is ready the driver hands it one frame and waits for it to
-//! come back through the used ring. The frame is a hand built address
-//! resolution request for the gateway of the emulator, so the host has
-//! something to answer: nothing is received yet and no protocol is spoken.
+//! Once the device is ready the driver posts buffers into the receive queue,
+//! hands one frame to the transmit queue and waits for it to come back through
+//! the used ring. The frame is a hand built address resolution request for the
+//! gateway of the emulator, so the host has something to answer: the driver
+//! then reads the answer out of the receive queue and prints what arrived.
 //!
 //! The guest has no firmware, so the base address register of the card is
 //! zero and the kernel assigns the port range itself. The interrupt line of
@@ -203,6 +204,16 @@ const USED_ID: usize = 0;
 /// Offset of the number of bytes written into the entry of the used ring.
 const USED_LENGTH: usize = 4;
 
+/// Descriptor flag: the device writes into the buffer instead of reading it.
+const DESC_F_WRITE: u16 = 2;
+
+/// Buffers the driver posts into the receive queue.
+///
+/// A frame that is never read keeps its buffer, so the count is the number of
+/// frames the device may hand over before it runs out of room. The card of the
+/// `q35` machine reports 256 descriptors, so the ring is far from full.
+const RX_BUFFERS: usize = 32;
+
 /// Bytes the network device reads before the frame itself: the flags, the type
 /// of segmentation, and four half words with the header length, the size of
 /// the segmentation, the checksum start and its offset.
@@ -232,6 +243,21 @@ const ARP_IPV4: u16 = 0x0800;
 /// Operation of an address resolution request.
 const ARP_REQUEST: u16 = 1;
 
+/// Operation of an address resolution reply.
+const ARP_REPLY: u16 = 2;
+
+/// Bytes of an address resolution payload over IPv4 on an Ethernet link.
+const ARP_PAYLOAD: usize = 28;
+
+/// Offset of the operation inside an address resolution payload.
+const ARP_OPERATION: usize = 6;
+
+/// Offset of the sender hardware address inside an address resolution payload.
+const ARP_SENDER_MAC: usize = 8;
+
+/// Offset of the sender protocol address inside an address resolution payload.
+const ARP_SENDER_ADDRESS: usize = 14;
+
 /// Protocol address the emulator hands to the guest, and the one the request
 /// says it comes from.
 const GUEST_ADDRESS: [u8; 4] = [10, 0, 2, 15];
@@ -243,13 +269,21 @@ const GATEWAY_ADDRESS: [u8; 4] = [10, 0, 2, 2];
 /// Descriptor that carries the whole frame: one buffer, no chain.
 const TX_DESCRIPTOR: u32 = 0;
 
-/// How many times the poll of the used ring reads its index before it gives
+/// How many times a poll of the used ring reads its index before it gives
 /// up.
 ///
 /// The device moves the frame as soon as it is told to, so the loop is a
 /// handful of iterations in practice; the bound turns a device that never
 /// answers into a reported failure instead of a boot that hangs.
 const TX_POLL_LIMIT: u32 = 10_000_000;
+
+/// How many times the receive poll reads the index of the used ring before it
+/// gives up.
+///
+/// The host answers the address resolution request in the same turn as the
+/// transmit, so the loop is short; the bound keeps a silent host from hanging
+/// the boot.
+const RX_POLL_LIMIT: u32 = 10_000_000;
 
 /// Why a probe failed. A card that is absent is not an error: the caller
 /// boots without a network device on every machine that has none.
@@ -285,6 +319,8 @@ pub enum Error {
     QueueSizeChanged,
     /// The device never reported the transmitted frame in the used ring.
     TransmitTimeout,
+    /// The device never reported a received frame in the used ring.
+    ReceiveTimeout,
 }
 
 impl From<ConfigError> for Error {
@@ -358,16 +394,21 @@ pub fn probe() -> Result<(), Error> {
 
     // A network device has two queues, one per direction. The control queue
     // would only exist with the feature that asks for it, and it is not
-    // negotiated. The rings stay in place for the rest of the boot: the
-    // receiving one is filled by a later step of the milestone.
-    let _rx = setup_queue(QUEUE_RX)?;
+    // negotiated. The rings stay in place for the rest of the boot.
+    let rx = setup_queue(QUEUE_RX)?;
     let tx = setup_queue(QUEUE_TX)?;
 
     // The driver is ready only once both rings are in place, and the device
     // takes no work before it reads this bit.
     step(status, STATUS_DRIVER_OK)?;
 
-    transmit(&tx, &mac)
+    // The device cannot receive into a queue that holds no buffer, so the
+    // empty buffers go in before the frame that asks for an answer.
+    let posted = post_receive_buffers(&rx)?;
+    crate::kprintln!("[virtio] rx queue={} buffers={}", QUEUE_RX, posted);
+
+    transmit(&tx, &mac)?;
+    receive(&rx)
 }
 
 /// Reset the device and check that the status register reads zero.
@@ -583,6 +624,265 @@ fn transmit(queue: &Queue, mac: &[u8; 6]) -> Result<(), Error> {
 /// Give one frame back to the memory manager.
 fn free_frame(physical: u64) {
     let _ = memory::with(|manager| manager.free_frame(physical));
+}
+
+/// Post empty buffers into the receive queue and tell the device.
+///
+/// One buffer per descriptor, each a whole page of physical memory, because
+/// the descriptor holds a physical address and the device reaches it by
+/// itself. The buffers belong to the device until the frame they hold is read,
+/// so they are not returned to the allocator here.
+///
+/// Returns the number of buffers that were posted.
+fn post_receive_buffers(queue: &Queue) -> Result<usize, Error> {
+    let count = usize::from(queue.descriptors).min(RX_BUFFERS);
+    if count == 0 {
+        return Err(Error::QueueSizeUnsupported);
+    }
+
+    let avail = avail_offset(queue.descriptors);
+    for index in 0..count {
+        let buffer = memory::with(|manager| manager.alloc_zeroed_frame())
+            .flatten()
+            .ok_or(Error::OutOfMemory)?;
+
+        // The device writes into the buffer, so the descriptor carries the
+        // flag that marks it for writing, and no chain follows it.
+        // SAFETY: descriptor `index` and its four fields lie inside the ring
+        // block the driver owns, and the buffer is a page it just took from
+        // the allocator.
+        unsafe {
+            let descriptor = index * DESC_SIZE;
+            core::ptr::write_volatile(slot::<u64>(queue.base, descriptor + DESC_ADDRESS), buffer);
+            core::ptr::write_volatile(
+                slot::<u32>(queue.base, descriptor + DESC_LENGTH),
+                FRAME_SIZE as u32,
+            );
+            core::ptr::write_volatile(
+                slot::<u16>(queue.base, descriptor + DESC_FLAGS),
+                DESC_F_WRITE,
+            );
+            core::ptr::write_volatile(slot::<u16>(queue.base, descriptor + DESC_NEXT), 0);
+        }
+
+        // SAFETY: entry `index` of the available ring lies inside the ring
+        // block, and it names the descriptor that was just written.
+        unsafe {
+            core::ptr::write_volatile(
+                slot::<u16>(queue.base, avail + AVAIL_HEADER + index * AVAIL_ENTRY),
+                index as u16,
+            );
+        }
+    }
+
+    // The descriptors must be in place before the device reads the index that
+    // publishes them.
+    fence(Ordering::SeqCst);
+    // SAFETY: the index of the available ring lies inside the ring block.
+    unsafe {
+        core::ptr::write_volatile(slot::<u16>(queue.base, avail + AVAIL_INDEX), count as u16);
+    }
+    fence(Ordering::SeqCst);
+
+    outw(BAR_BASE + QUEUE_NOTIFY, QUEUE_RX);
+    Ok(count)
+}
+
+/// Read every frame the device reported in the used ring of the receive queue.
+///
+/// The device writes the descriptor it filled and the number of bytes it wrote
+/// into one entry of the used ring, and then advances the index of that ring.
+/// The entries between the old index and the new one are the frames that
+/// arrived; [`describe`] says what each one is.
+fn receive(queue: &Queue) -> Result<(), Error> {
+    let used = used_offset(queue.descriptors);
+
+    // The ring is empty when the queue is set up, so the first index the
+    // device publishes is the first frame.
+    let mut completed = 0u16;
+    let mut spins = 0u32;
+    let available = loop {
+        // SAFETY: the index of the used ring lies inside the ring block, and
+        // the read is volatile so the loop sees the word the device writes.
+        let available =
+            unsafe { core::ptr::read_volatile(slot::<u16>(queue.base, used + USED_INDEX)) };
+        if available != completed {
+            break available;
+        }
+        if spins == RX_POLL_LIMIT {
+            return Err(Error::ReceiveTimeout);
+        }
+        spins += 1;
+        core::hint::spin_loop();
+    };
+
+    while completed != available {
+        describe(queue, used, completed);
+        completed = completed.wrapping_add(1);
+    }
+    Ok(())
+}
+
+/// Say what one completed entry of the receive queue holds.
+///
+/// A frame the driver cannot make sense of is reported with the reason instead
+/// of being dropped without a word.
+fn describe(queue: &Queue, used: usize, entry: u16) {
+    let count = queue.descriptors;
+    // The index of the used ring counts completions, not slots, so the entry
+    // wraps with the size of the ring.
+    let offset = used + USED_HEADER + usize::from(entry % count) * USED_ENTRY;
+
+    // SAFETY: the entry lies inside the used ring, which lies inside the ring
+    // block the driver owns.
+    let (descriptor, moved) = unsafe {
+        (
+            core::ptr::read_volatile(slot::<u32>(queue.base, offset + USED_ID)),
+            core::ptr::read_volatile(slot::<u32>(queue.base, offset + USED_LENGTH)),
+        )
+    };
+
+    if descriptor >= u32::from(count) {
+        crate::kprintln!(
+            "[virtio] rx queue={} desc={} len={} ignored: the descriptor is not one of the queue",
+            QUEUE_RX,
+            descriptor,
+            moved
+        );
+        return;
+    }
+
+    // SAFETY: the descriptor index is inside the descriptor array, and its
+    // first field is the address of the buffer it names.
+    let buffer = unsafe {
+        core::ptr::read_volatile(slot::<u64>(
+            queue.base,
+            descriptor as usize * DESC_SIZE + DESC_ADDRESS,
+        ))
+    };
+
+    let length = moved as usize;
+    if length > FRAME_SIZE {
+        crate::kprintln!(
+            "[virtio] rx queue={} desc={} len={} ignored: longer than the buffer of its descriptor",
+            QUEUE_RX,
+            descriptor,
+            moved
+        );
+        return;
+    }
+
+    let mut frame = [0u8; ETHERNET_HEADER];
+    if !copy_frame(buffer, length, 0, &mut frame) {
+        crate::kprintln!(
+            "[virtio] rx queue={} desc={} len={} ignored: shorter than the network and Ethernet headers",
+            QUEUE_RX,
+            descriptor,
+            moved
+        );
+        return;
+    }
+
+    let ether_type = u16::from_be_bytes([frame[12], frame[13]]);
+    crate::kprintln!(
+        "[virtio] rx queue={} desc={} len={} type=0x{:04x} src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        QUEUE_RX,
+        descriptor,
+        moved,
+        ether_type,
+        frame[6],
+        frame[7],
+        frame[8],
+        frame[9],
+        frame[10],
+        frame[11]
+    );
+
+    if ether_type != ARP_TYPE {
+        return;
+    }
+
+    // The reply of the gateway is the first answer this machine ever
+    // received, so it is worth a line of its own.
+    match gateway_reply(buffer, length) {
+        Ok(Some(address)) => crate::kprintln!(
+            "[virtio] arp reply from {}.{}.{}.{} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            GATEWAY_ADDRESS[0],
+            GATEWAY_ADDRESS[1],
+            GATEWAY_ADDRESS[2],
+            GATEWAY_ADDRESS[3],
+            address[0],
+            address[1],
+            address[2],
+            address[3],
+            address[4],
+            address[5]
+        ),
+        Ok(None) => {}
+        Err(reason) => crate::kprintln!(
+            "[virtio] rx queue={} desc={} len={} ignored: {}",
+            QUEUE_RX,
+            descriptor,
+            moved,
+            reason
+        ),
+    }
+}
+
+/// Read the hardware address of the sender of an address resolution reply.
+///
+/// Returns `Ok(None)` when the frame is not a reply from the gateway, and the
+/// reason when the payload cannot be read.
+fn gateway_reply(buffer: u64, length: usize) -> Result<Option<[u8; 6]>, &'static str> {
+    let mut payload = [0u8; ARP_PAYLOAD];
+    if !copy_frame(buffer, length, ETHERNET_HEADER, &mut payload) {
+        return Err("shorter than the address resolution payload");
+    }
+
+    let hardware = u16::from_be_bytes([payload[0], payload[1]]);
+    let protocol = u16::from_be_bytes([payload[2], payload[3]]);
+    let operation = u16::from_be_bytes([payload[ARP_OPERATION], payload[ARP_OPERATION + 1]]);
+    if hardware != ARP_ETHERNET
+        || protocol != ARP_IPV4
+        || payload[4] != 6
+        || payload[5] != 4
+        || operation != ARP_REPLY
+    {
+        return Ok(None);
+    }
+
+    if payload[ARP_SENDER_ADDRESS..ARP_SENDER_ADDRESS + 4] != GATEWAY_ADDRESS {
+        return Ok(None);
+    }
+
+    let mut address = [0u8; 6];
+    address.copy_from_slice(&payload[ARP_SENDER_MAC..ARP_SENDER_MAC + 6]);
+    Ok(Some(address))
+}
+
+/// Copy `into.len()` bytes of the frame at `offset` into the received buffer.
+///
+/// Returns `false` when the device reported less than the copy needs, or more
+/// than the buffer of the descriptor holds, so a short frame never reads past
+/// its end.
+fn copy_frame(buffer: u64, length: usize, offset: usize, into: &mut [u8]) -> bool {
+    let end = match offset.checked_add(into.len()) {
+        Some(end) => end,
+        None => return false,
+    };
+    if length < NET_HEADER + end || length > FRAME_SIZE {
+        return false;
+    }
+
+    // SAFETY: the buffer is a page the driver posted, the check above keeps
+    // the whole read inside the page, and every byte comes from physical
+    // memory that the device wrote and the direct map translates.
+    unsafe {
+        for (index, byte) in into.iter_mut().enumerate() {
+            *byte = core::ptr::read_volatile(slot::<u8>(buffer, NET_HEADER + offset + index));
+        }
+    }
+    true
 }
 
 /// Build the address resolution request the driver sends: it asks the gateway

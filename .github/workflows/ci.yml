@@ -138,6 +138,17 @@ jobs:
           # back through the used ring: descriptor zero, the length the device
           # chose to report and one frame moved.
           grep -qE "^\[virtio\] tx queue=1 desc=0 len=[0-9]+ used=1$" pci-boot.log
+          # The driver posts empty buffers into the receive queue before it
+          # waits for an answer, and reports how many.
+          grep -qE "^\[virtio\] rx queue=0 buffers=[0-9]+$" pci-boot.log
+          # The answer sits in the receive queue: the driver reads the entry
+          # the device completed, names the type of the frame and the hardware
+          # address of the sender.
+          grep -qE "^\[virtio\] rx queue=0 desc=[0-9]+ len=[0-9]+ type=0x0806 src=([0-9a-f]{2}:){5}[0-9a-f]{2}$" pci-boot.log
+          # The frame is the reply of the gateway to the request, so the
+          # driver prints the address of the gateway that answered and the
+          # hardware address it carries.
+          grep -qE "^\[virtio\] arp reply from 10\.0\.2\.2 mac=([0-9a-f]{2}:){5}[0-9a-f]{2}$" pci-boot.log
           grep -qxF "MadRust: boot OK" pci-boot.log
           # The frame must also leave the guest. The dump is written by the
           # emulator at the boundary of its user mode network, so it holds what
