@@ -47,7 +47,15 @@ BENCH_FLAGS := --manifest-path madrust-bench/Cargo.toml \
 	--target $(USER_TARGET) \
 	--target-dir $(TARGET_DIR)/bench
 
-# The inference runtime is a third standard library program, built exactly like
+# The network client is a third standard library program, built exactly like the
+# workload. The rig packs it into its own initramfs next to the configuration
+# that names the server, so the same bytes run on both kernels.
+NETCLIENT_ELF := madrust-netclient/madrust-netclient.elf
+NETCLIENT_FLAGS := --manifest-path madrust-netclient/Cargo.toml \
+	--target $(USER_TARGET) \
+	--target-dir $(TARGET_DIR)/netclient
+
+# The inference runtime is a fourth standard library program, built exactly like
 # the workload. Its synthetic model, vocabulary and config are packed into the
 # same kind of initramfs, so the kernel runs it unmodified.
 INFER_DIR := madrust-infer
@@ -87,7 +95,7 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench print-kernel-path infer infer-model infer-initramfs agent agent-initramfs run-infer
+.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench netclient print-kernel-path infer infer-model infer-initramfs agent agent-initramfs run-infer
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -118,6 +126,13 @@ BENCH_FEATURES ?=
 bench:
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(BENCH_FLAGS) $(if $(BENCH_FEATURES),--features $(BENCH_FEATURES),)
 	cp $(TARGET_DIR)/bench/$(USER_TARGET)/release/madrust-bench $(BENCH_ELF)
+
+# Static network client for the rig and for the gate of the pipeline. The rig
+# packs it with the configuration that names the server, so the archive is built
+# per run and not here.
+netclient: musl-std
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) build --release $(NETCLIENT_FLAGS)
+	cp $(TARGET_DIR)/netclient/$(USER_TARGET)/release/madrust-netclient $(NETCLIENT_ELF)
 
 # The inference runtime, built with the same rust-lld recipe as the workload so
 # the same bytes can run on MadRust and on mainline Linux.
@@ -195,6 +210,8 @@ test:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host
 	$(CARGO) test --manifest-path $(NET_DIR)/Cargo.toml \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/net-host
+	$(CARGO) test --manifest-path madrust-netclient/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/netclient-host
 
 
 fmt:
@@ -205,6 +222,7 @@ fmt:
 	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path $(NET_DIR)/Cargo.toml
+	$(CARGO) fmt --manifest-path madrust-netclient/Cargo.toml
 
 fmt-check:
 	$(CARGO) fmt --all -- --check
@@ -214,6 +232,7 @@ fmt-check:
 	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(NET_DIR)/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path madrust-netclient/Cargo.toml -- --check
 
 # The kernel build reads the embedded user program, so both lint targets need
 # the userland binary to exist.
@@ -224,6 +243,7 @@ clippy: userland
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(BENCH_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(INFER_FLAGS) --bins --lib -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(AGENT_FLAGS) --bins -- -D warnings
+	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(NETCLIENT_FLAGS) --bins -- -D warnings
 
 clippy-host:
 	$(CARGO) clippy --workspace --all-targets --target $(HOST_TARGET) \
@@ -236,6 +256,8 @@ clippy-host:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host -- -D warnings
 	$(CARGO) clippy --manifest-path $(NET_DIR)/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/net-host -- -D warnings
+	$(CARGO) clippy --manifest-path madrust-netclient/Cargo.toml --all-targets \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/netclient-host -- -D warnings
 
 
 check: userland
@@ -243,5 +265,5 @@ check: userland
 
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
-	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF) $(INFER_ELF) $(INFER_INITRAMFS) \
+	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF) $(NETCLIENT_ELF) $(INFER_ELF) $(INFER_INITRAMFS) \
 		$(AGENT_ELF) $(AGENT_INITRAMFS)

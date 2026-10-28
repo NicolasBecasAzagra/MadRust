@@ -12,6 +12,14 @@ ones that report an error, and writes:
   <out>/summary.json    the same table plus the run metadata
   <out>/<kernel>.log    the serial log
 
+The network round trip is a measurement of its own. It needs a server on the
+host and a network device in the guest, so it boots the guest several times with
+an archive that carries the client and the endpoint of the server of this run.
+Every boot keeps its own serial log (`<kernel>-net<n>.log`), and the output of
+the server goes to `net-server.log`, which is a file of the host and not part of
+the log of the guest. A run that measures only the network round trip does not
+boot the benchmark workload, so it publishes no boot row.
+
 The QEMU flags are fixed on purpose. The CPU model is never `host`, because it
 changes between machines and invalidates the comparison, and both kernels see
 the same machine type, CPU count, memory size and initramfs.
@@ -31,6 +39,7 @@ import statistics
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -49,6 +58,25 @@ BOOT_ITERATIONS = 1
 # needs, and every run of the same task decides the same.
 AGENT_ITERATIONS = 1
 WEIGHTS_HUGE_ITERATIONS = 10
+
+# The network round trip is one datagram of the guest to the server of the host
+# and the echo back. One sample is cheap, so a boot takes several of them, and
+# the boot is repeated: one slow boot must not decide the number, and the
+# p99 needs more than a handful of samples.
+NET_ITERATIONS = 5
+NET_BOOTS = 6
+
+# Address of the host on the user mode network of the emulator, and the port a
+# kernel uses for the demonstration exchange it makes on its own during boot.
+# The measurement is not bound to that port: the server picks a free one for it.
+NET_ADDRESS = "10.0.2.2"
+NET_PROBE_PORT = 9999
+
+# The program, the archive it is packed into, and the file the rig writes its
+# endpoint into. The archive is built per run, because the port of the server
+# belongs to the run.
+NETCLIENT_ELF = "madrust-netclient/madrust-netclient.elf"
+NET_INITRAMFS = "bench/initramfs-net.cpio"
 
 # Every workload the binary prints, with its unit and the number of samples one
 # boot must produce. `weights` and `weights-huge` print two lines per sample:
@@ -71,6 +99,7 @@ WORKLOADS = {
     "agent-step-ms": ("ms/step", AGENT_ITERATIONS),
     "boot-seconds": ("s", BOOT_ITERATIONS),
     "boot-rss-mb": ("MiB", BOOT_ITERATIONS),
+    "net": ("us/roundtrip", NET_ITERATIONS * NET_BOOTS),
 }
 
 # The inference measurements only exist when the initramfs carries the runtime,
@@ -100,6 +129,14 @@ RESULT_RE = re.compile(
     r"^RESULT\s+(?P<workload>\S+)\s+(?:(?P<error>ERR)\s+)?(?P<value>-?\d+)(?:\s+(?P<unit>\S+))?\s*$"
 )
 
+# The network client prints one line per datagram it sent and got back, and one
+# line with the reason when a run could not take a sample. The round trip is in
+# microseconds and the count is the receive attempts that found nothing yet.
+NET_RE = re.compile(
+    r"^NET OK rt=(?P<value>\d+) retries=(?P<retries>\d+) answer=(?P<answer>\S+)\s*$"
+)
+NET_FAIL_RE = re.compile(r"^NET FAIL (?P<reason>.+?)\s*$")
+
 # Mainline can print a bracketed kernel log line onto the same serial line as a
 # sample. The tail is not part of the sample, so cut it before matching.
 KERNEL_LOG_RE = re.compile(r"\s*\[[^\]]*\].*$")
@@ -111,8 +148,9 @@ KERNEL_LOG_RE = re.compile(r"\s*\[[^\]]*\].*$")
 LEADING_KERNEL_LOG_RE = re.compile(r"^\[[^\]]*\]\s*")
 
 # The marker that says the run reached its end, with or without a kernel
-# prefix in front of it.
-BENCH_DONE_RE = re.compile(r"^\[[^\]]*\]\s*BENCH DONE\s*$")
+# prefix in front of it. The network client ends its own run with its own
+# marker, because it is a program of its own.
+BENCH_DONE_RE = re.compile(r"^\[[^\]]*\]\s*(?:BENCH|NET) DONE\s*$")
 
 
 def repo_root() -> Path:
@@ -249,6 +287,7 @@ def qemu_command(
     append_extra: str = "",
     memory: str = "512M",
     smp: str = "1",
+    net: bool = False,
 ) -> list[str]:
     kernel_args = "console=ttyS0"
     if append_extra:
@@ -277,6 +316,15 @@ def qemu_command(
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
+    # The network device is only attached for the measurement that needs it, and
+    # both kernels get the same device in the same place of the command line.
+    if net:
+        command += [
+            "-device",
+            "virtio-net-pci,netdev=n0",
+            "-netdev",
+            "user,id=n0",
+        ]
     # The number of processors is only given when it is not the default, so
     # the command line that the report shows has no repeated argument.
     if smp != "1":
@@ -314,6 +362,9 @@ def expected_complete(text: str, expected: dict[str, int]) -> bool:
         if match:
             for name in ("agent-steps", "agent-tokens", "agent-seconds", "agent-step-ms"):
                 seen[name] = seen.get(name, 0) + 1
+            continue
+        if NET_RE.match(KERNEL_LOG_RE.sub("", line)):
+            seen["net"] = seen.get("net", 0) + 1
     for name, count in expected.items():
         if name in ("boot-seconds", "boot-rss-mb"):
             # The rig measures those itself, after the run.
@@ -327,11 +378,12 @@ def bench_done(text: str) -> bool:
     """Whether the log says the workload reached the end of the run.
 
     The marker can arrive with a kernel log line in front of it, because the
-    kernel and the program write to the same serial port.
+    kernel and the program write to the same serial port. The benchmark
+    workload ends with BENCH DONE and the network client with NET DONE.
     """
     for raw_line in text.splitlines():
         line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
-        if BENCH_DONE_RE.match(line) or line == "BENCH DONE":
+        if BENCH_DONE_RE.match(line) or line in ("BENCH DONE", "NET DONE"):
             return True
     return False
 
@@ -377,14 +429,18 @@ def run_once(
     memory: str = "512M",
     smp: str = "1",
     expected: dict[str, int] | None = None,
+    net: bool = False,
+    tag: str = "",
 ) -> tuple[list[str], str, float, int, dict[str, Any]]:
-    log = out_dir / f"{label}.log"
+    log = out_dir / f"{label}{tag}.log"
     # The output of QEMU itself is kept in a file of its own. When the guest
     # does not boot, the reason is in that stream and not in the serial log of
     # the guest, so throwing it away hides the only explanation there is.
-    qemu_log = out_dir / f"{label}.qemu.log"
-    command = qemu_command(qemu, image, initramfs, log, accel, append_extra, memory, smp)
-    print(f"[rig] {label}: {' '.join(shlex.quote(part) for part in command)}", file=sys.stderr)
+    qemu_log = out_dir / f"{label}{tag}.qemu.log"
+    command = qemu_command(
+        qemu, image, initramfs, log, accel, append_extra, memory, smp, net
+    )
+    print(f"[rig] {label}{tag}: {' '.join(shlex.quote(part) for part in command)}", file=sys.stderr)
 
     with log.open("wb"):
         pass
@@ -455,6 +511,201 @@ def run_once(
         "reason": reason,
         "qemu": read_log(qemu_log),
     }
+
+
+# The server of the host, as a program of its own, so its output never lands in
+# the serial log of the guest. It answers every datagram with the bytes it
+# received, so the program of the guest can tell that the answer is the one it
+# asked for. The measurement socket binds port zero: the kernel of the host
+# picks a free port and the rig reads it back, so two runs at the same time can
+# never collide. The second socket serves the demonstration exchange a kernel
+# makes on its own during boot, which a kernel sends to a fixed port; a host
+# where that port is taken still measures the round trip, one boot slower.
+NET_SERVER = r"""
+import select
+import socket
+import sys
+
+log_path, port_file, probe_port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+
+def record(message):
+    with open(log_path, "a") as handle:
+        handle.write(message + "\n")
+
+
+sockets = []
+measurement = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+measurement.bind(("127.0.0.1", 0))
+sockets.append(measurement)
+port = measurement.getsockname()[1]
+
+try:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", probe_port))
+    sockets.append(probe)
+    record("server listening on probe port %d" % probe_port)
+except OSError as error:
+    record("server cannot bind the probe port %d: %s" % (probe_port, error))
+
+record("server listening on port %d" % port)
+with open(port_file, "w") as handle:
+    handle.write("%d\n" % port)
+
+while True:
+    ready, _, _ = select.select(sockets, [], [])
+    for server in ready:
+        data, address = server.recvfrom(2048)
+        record(
+            "server got %d bytes from %s:%d on port %d: %r"
+            % (len(data), address[0], address[1], server.getsockname()[1], data)
+        )
+        server.sendto(data, address)
+"""
+
+
+def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, Path]:
+    """Start the echo server of the host and return it with its port and log.
+
+    The rig waits for the server to name the port it bound, so the archive it
+    builds next carries the port of this run and not the port of another one.
+    """
+    log = out_dir / "net-server.log"
+    port_file = out_dir / "net-server.port"
+    if port_file.exists():
+        port_file.unlink()
+    with log.open("wb") as handle:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                NET_SERVER,
+                str(log),
+                str(port_file),
+                str(NET_PROBE_PORT),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=handle,
+        )
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if port_file.is_file():
+            text = port_file.read_text().strip()
+            if text.isdigit():
+                print(f"[rig] net server on port {text}, log {log}", file=sys.stderr)
+                return process, int(text), log
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    stop_server(process)
+    raise SystemExit(
+        "the net server did not name its port: "
+        + (read_log(log).strip() or "no output")
+    )
+
+
+def stop_server(process: subprocess.Popen) -> None:
+    """Stop the echo server of the host."""
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def ensure_net_initramfs(path: Path, port: int, per_boot: int) -> None:
+    """Build the archive that carries the client and the endpoint of the server.
+
+    The archive is built for this run, because the port of the server belongs to
+    the run. Both kernels get the same bytes, the same endpoint and the same
+    number of samples, so the comparison is between the kernels and not between
+    two configurations.
+    """
+    root = repo_root()
+    binary = root / NETCLIENT_ELF
+    print("[rig] building the network client", file=sys.stderr)
+    subprocess.run(["make", "netclient"], cwd=root, check=True)
+    if not binary.is_file():
+        raise SystemExit(f"the network client was not built: {binary}")
+    with tempfile.TemporaryDirectory(prefix="madrust-net-") as directory:
+        (Path(directory) / "net.conf").write_text(
+            "# written by the rig for this run\n"
+            f"address={NET_ADDRESS}\n"
+            f"port={port}\n"
+            f"count={per_boot}\n"
+        )
+        print(f"[rig] building the network initramfs {path}", file=sys.stderr)
+        result = subprocess.run(
+            [str(root / "bench" / "mkinitramfs.sh"), str(path), str(binary)],
+            env=dict(os.environ, EXTRA_DIR=directory),
+            check=False,
+        )
+    if result.returncode != 0 or not path.is_file():
+        raise SystemExit("cannot build the network initramfs")
+    check_initramfs(path)
+
+
+def run_net(
+    label: str,
+    image: Path,
+    initramfs: Path,
+    out_dir: Path,
+    qemu: str,
+    accel: str,
+    timeout: float,
+    append_extra: str,
+    memory: str,
+    smp: str,
+    per_boot: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Boot the guest once per boot of the measurement, and record every datagram.
+
+    Each boot keeps its own serial log, and the samples of all boots are numbered
+    as one sequence, so the summary sees the samples of the whole measurement. A
+    boot that printed fewer lines than it was given leaves its missing samples in
+    the table with the reason the boot gave, and never with a zero.
+    """
+    rows: list[dict[str, Any]] = []
+    commands: list[str] = []
+    for boot in range(NET_BOOTS):
+        tag = f"-net{boot + 1}"
+        command, text, _, _, outcome = run_once(
+            label,
+            image,
+            initramfs,
+            out_dir,
+            qemu,
+            accel,
+            timeout,
+            append_extra,
+            memory,
+            smp,
+            {"net": per_boot},
+            True,
+            tag,
+        )
+        commands.append(shlex.join(command))
+        reason = outcome["reason"] or (
+            f"boot {boot + 1} of the network measurement printed fewer datagrams "
+            f"than the {per_boot} it was given"
+        )
+        boot_rows = parse_results(label, text, {"net": per_boot}, None, reason)
+        for row in boot_rows:
+            row["iteration"] += boot * per_boot
+        ok = sum(1 for row in boot_rows if row["status"] == "ok")
+        print(f"[rig] {label}{tag}: {ok} round trips recorded", file=sys.stderr)
+        if ok == 0:
+            print(
+                f"[rig] {label}{tag}: the serial log has no network round trip",
+                file=sys.stderr,
+            )
+            for line in outcome["qemu"].splitlines()[-10:]:
+                print(f"[rig] {label}{tag}: qemu: {line}", file=sys.stderr)
+        rows.extend(boot_rows)
+    return rows, commands
 
 
 def parse_results(
@@ -547,6 +798,45 @@ def parse_results(
                     "unit": WORKLOADS[name][0],
                     "status": "ok",
                     "error": "",
+                }
+            )
+
+    # The network client prints its own line per datagram, and one line with the
+    # reason when a run could not take a sample at all. A failure keeps its
+    # place in the sequence of the workload, so the iteration numbers stay one
+    # sequence per kernel.
+    for raw_line in text.splitlines():
+        line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
+        stripped = KERNEL_LOG_RE.sub("", line)
+        match = NET_RE.match(stripped)
+        if match:
+            iteration = seen["net"]
+            seen["net"] = iteration + 1
+            rows.append(
+                {
+                    "kernel": label,
+                    "workload": "net",
+                    "iteration": iteration,
+                    "value": match.group("value"),
+                    "unit": WORKLOADS["net"][0],
+                    "status": "ok",
+                    "error": "",
+                }
+            )
+            continue
+        match = NET_FAIL_RE.match(stripped)
+        if match:
+            iteration = seen["net"]
+            seen["net"] = iteration + 1
+            rows.append(
+                {
+                    "kernel": label,
+                    "workload": "net",
+                    "iteration": iteration,
+                    "value": "",
+                    "unit": WORKLOADS["net"][0],
+                    "status": "error",
+                    "error": match.group("reason"),
                 }
             )
 
@@ -800,8 +1090,7 @@ def main() -> int:
             file=sys.stderr,
         )
     else:
-        initrd = root / "bench" / "initramfs.cpio"
-        ensure_initramfs(initrd)
+        initrd = None
 
     out_dir = Path(args.out)
     if not out_dir.is_absolute():
@@ -812,6 +1101,10 @@ def main() -> int:
         name: args.iterations if args.iterations is not None else samples
         for name, (_, samples) in WORKLOADS.items()
     }
+    # The network round trip takes several samples per boot and several boots,
+    # so the samples of that workload are the product of the two.
+    net_per_boot = args.iterations if args.iterations is not None else NET_ITERATIONS
+    expected["net"] = net_per_boot * NET_BOOTS
 
     only = {name.strip() for name in args.only.split(",") if name.strip()}
     if only:
@@ -820,86 +1113,161 @@ def main() -> int:
             raise SystemExit(f"unknown workloads: {', '.join(sorted(unknown))}")
         expected = {name: count for name, count in expected.items() if name in only}
 
+    # The measurement that needs more than a boot of the workload: its own
+    # archive, its own server and its own device. It is set up once, so every
+    # kernel of the run sees the same bytes, the same endpoint and the same
+    # number of samples.
+    net = "net" in expected
+    workload_expected = {name: count for name, count in expected.items() if name != "net"}
+    net_initrd = None
+    server = None
+    server_log = None
+    server_port = None
+    if net:
+        if args.initrd:
+            raise SystemExit(
+                "the network measurement builds its own initramfs, because the "
+                "endpoint of the server belongs to the run: do not pass --initrd"
+            )
+        net_initrd = root / NET_INITRAMFS
+        server, server_port, server_log = start_server(out_dir)
+        ensure_net_initramfs(net_initrd, server_port, net_per_boot)
+
+    if initrd is None and workload_expected:
+        initrd = root / "bench" / "initramfs.cpio"
+        ensure_initramfs(initrd)
+
     metadata: dict[str, Any] = {
         "qemu": qemu_version(args.qemu),
         "accel": args.accel,
         "host": host_metadata(),
-        "initrd": {"path": str(initrd), "sha256": sha256(initrd)},
         "kernels": {},
         "commands": {},
         "iterations_expected": expected,
         "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if initrd is not None:
+        metadata["initrd"] = {"path": str(initrd), "sha256": sha256(initrd)}
+    if net:
+        metadata["net"] = {
+            "address": NET_ADDRESS,
+            "server_port": server_port,
+            "server_log": str(server_log),
+            "probe_port": NET_PROBE_PORT,
+            "samples_per_boot": net_per_boot,
+            "boots": NET_BOOTS,
+            "initrd": {"path": str(net_initrd), "sha256": sha256(net_initrd)},
+        }
 
     all_rows: list[dict[str, Any]] = []
-    for label, image, append_extra in kernels:
-        metadata["kernels"][label] = {
-            "path": str(image),
-            "sha256": sha256(image),
-            "kernel_args": append_extra or "console=ttyS0",
-        }
-        command, text, elapsed, peak_rss, outcome = run_once(
-            label,
-            image,
-            initrd,
-            out_dir,
-            args.qemu,
-            args.accel,
-            args.timeout,
-            append_extra,
-            args.memory,
-            args.smp,
-            expected,
-        )
-        metadata["commands"][label] = shlex.join(command)
-        # What a boot costs, measured from the outside: the wall clock of the
-        # whole run and the resident memory the process reached. The time is
-        # only a measurement when the run reached its end; a run that ran into
-        # the timeout says nothing about the cost of a boot.
-        measured = outcome["outcome"] != "timeout"
-        boot_rows = [
-            {
-                "kernel": label,
-                "workload": "boot-seconds",
-                "iteration": 0,
-                "value": f"{elapsed:.3f}" if measured else "",
-                "unit": "s",
-                "status": "ok" if measured else "error",
-                "error": "" if measured else outcome["reason"],
-            },
-            {
-                "kernel": label,
-                "workload": "boot-rss-mb",
-                "iteration": 0,
-                "value": f"{peak_rss / 1024:.1f}" if peak_rss else "",
-                "unit": "MiB",
-                "status": "ok" if peak_rss else "error",
-                "error": ""
-                if peak_rss
-                else "this host has no /proc, so the memory is not measured",
-            },
-        ]
-        rows = parse_results(label, text, expected, boot_rows, outcome["reason"])
-        write_csv(out_dir / f"{label}.csv", rows)
-        all_rows.extend(rows)
-        ok = sum(1 for row in rows if row["status"] == "ok")
-        errors = sum(1 for row in rows if row["status"] == "error")
-        print(
-            f"[rig] {label}: {ok} samples, {errors} errors, {len(rows)} rows recorded",
-            file=sys.stderr,
-        )
-        # The marker belongs to the benchmark workload. A run that measures the
-        # inference runtime does not print it, and its absence is not a fault.
-        if not bench_done(text) and any(
-            name in expected for name in WORKLOADS if name not in OPTIONAL_WORKLOADS
-        ):
-            print(f"[rig] {label}: serial log does not contain BENCH DONE", file=sys.stderr)
-        if outcome["reason"]:
-            # The reason the run failed belongs in the report, and the output
-            # of QEMU is where the reason usually is.
-            print(f"[rig] {label}: {outcome['reason']}", file=sys.stderr)
-            for line in outcome["qemu"].splitlines()[-20:]:
-                print(f"[rig] {label}: qemu: {line}", file=sys.stderr)
+    try:
+        for label, image, append_extra in kernels:
+            metadata["kernels"][label] = {
+                "path": str(image),
+                "sha256": sha256(image),
+                "kernel_args": append_extra or "console=ttyS0",
+            }
+            rows: list[dict[str, Any]] = []
+            if workload_expected:
+                command, text, elapsed, peak_rss, outcome = run_once(
+                    label,
+                    image,
+                    initrd,
+                    out_dir,
+                    args.qemu,
+                    args.accel,
+                    args.timeout,
+                    append_extra,
+                    args.memory,
+                    args.smp,
+                    workload_expected,
+                )
+                metadata["commands"][label] = shlex.join(command)
+                # What a boot costs, measured from the outside: the wall clock
+                # of the whole run and the resident memory the process reached.
+                # The time is only a measurement when the run reached its end; a
+                # run that ran into the timeout says nothing about the cost of a
+                # boot.
+                measured = outcome["outcome"] != "timeout"
+                boot_rows = [
+                    {
+                        "kernel": label,
+                        "workload": "boot-seconds",
+                        "iteration": 0,
+                        "value": f"{elapsed:.3f}" if measured else "",
+                        "unit": "s",
+                        "status": "ok" if measured else "error",
+                        "error": "" if measured else outcome["reason"],
+                    },
+                    {
+                        "kernel": label,
+                        "workload": "boot-rss-mb",
+                        "iteration": 0,
+                        "value": f"{peak_rss / 1024:.1f}" if peak_rss else "",
+                        "unit": "MiB",
+                        "status": "ok" if peak_rss else "error",
+                        "error": ""
+                        if peak_rss
+                        else "this host has no /proc, so the memory is not measured",
+                    },
+                ]
+                rows.extend(
+                    parse_results(
+                        label, text, workload_expected, boot_rows, outcome["reason"]
+                    )
+                )
+                # The marker belongs to the benchmark workload. A run that
+                # measures the inference runtime does not print it, and its
+                # absence is not a fault.
+                if not bench_done(text) and any(
+                    name in workload_expected
+                    for name in WORKLOADS
+                    if name not in OPTIONAL_WORKLOADS
+                ):
+                    print(
+                        f"[rig] {label}: serial log does not contain BENCH DONE",
+                        file=sys.stderr,
+                    )
+                if outcome["reason"]:
+                    # The reason the run failed belongs in the report, and the
+                    # output of QEMU is where the reason usually is.
+                    print(f"[rig] {label}: {outcome['reason']}", file=sys.stderr)
+                    for line in outcome["qemu"].splitlines()[-20:]:
+                        print(f"[rig] {label}: qemu: {line}", file=sys.stderr)
+            if net:
+                net_rows, net_commands = run_net(
+                    label,
+                    image,
+                    net_initrd,
+                    out_dir,
+                    args.qemu,
+                    args.accel,
+                    args.timeout,
+                    append_extra,
+                    args.memory,
+                    args.smp,
+                    net_per_boot,
+                )
+                rows.extend(net_rows)
+                if net_commands:
+                    metadata["commands"][f"{label}-net"] = net_commands[0]
+            write_csv(out_dir / f"{label}.csv", rows)
+            all_rows.extend(rows)
+            ok = sum(1 for row in rows if row["status"] == "ok")
+            errors = sum(1 for row in rows if row["status"] == "error")
+            print(
+                f"[rig] {label}: {ok} samples, {errors} errors, {len(rows)} rows recorded",
+                file=sys.stderr,
+            )
+    finally:
+        if server is not None:
+            stop_server(server)
+            # The output of the server is the other half of every exchange, and
+            # it belongs to a file of the host. It is echoed here so a run that
+            # failed shows what the server saw and not only what the guest said.
+            print(f"[rig] net server: {server_log}", file=sys.stderr)
+            for line in read_log(server_log).splitlines():
+                print(f"[rig] net server: {line}", file=sys.stderr)
 
     table = summarise(all_rows)
     write_summary(out_dir, table, metadata)

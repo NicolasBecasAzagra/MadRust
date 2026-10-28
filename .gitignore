@@ -8,10 +8,12 @@ target/
 *.log
 madrust-userland/madrust-userland.elf
 madrust-bench/madrust-bench.elf
+madrust-netclient/madrust-netclient.elf
 madrust-infer/madrust-infer.elf
 madrust-infer/initramfs.cpio
 madrust-agent/madrust-agent.elf
 madrust-agent/initramfs.cpio
 bench/initramfs.cpio
+bench/initramfs-net.cpio
 artifacts/
 __pycache__/

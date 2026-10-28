@@ -104,100 +104,73 @@ jobs:
           # The guest has no firmware, so the kernel enumerates the bus by
           # itself. This boot attaches a network device, runs a server on the
           # host and asserts that the guest resolves the gateway, sends one
-          # datagram to the server and reads its answer. The initramfs adds a
-          # second program, which repeats the exchange through the socket calls
-          # of the Linux ABI.
-          #
-          # The program is built here and not kept in the tree: it is a gate
-          # artifact, and the only copy is the one packed into the archive.
-          cat > "$RUNNER_TEMP/net-gate.rs" <<'RS'
-          // The network gate program: send one datagram through a socket of
-          // the ABI and print the answer. MadRust reports a would block from
-          // `recvfrom`, so the loop retries after a short sleep; Linux blocks
-          // inside the call or returns after the timeout of the socket, and
-          // the same loop covers both.
-          use std::io::ErrorKind;
-          use std::net::{SocketAddr, UdpSocket};
-          use std::time::Duration;
+          # datagram to the server and reads its answer. The same boot runs the
+          # program the rig measures with: it opens a datagram socket of the ABI,
+          # sends one datagram, waits for the echo and reports the round trip.
+          make netclient
 
-          const LOCAL_PORT: u16 = 44000;
-          const SERVER_PORT: u16 = 9999;
-          const SERVER_ADDRESS: [u8; 4] = [10, 0, 2, 2];
-
-          fn main() {
-              let socket = match UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], LOCAL_PORT))) {
-                  Ok(socket) => socket,
-                  Err(error) => {
-                      println!("NET SOCKET FAIL bind: {error}");
-                      std::process::exit(1);
-                  }
-              };
-              // Accepted and ignored by MadRust; on Linux it bounds each try.
-              let _ = socket.set_read_timeout(Some(Duration::from_millis(100)));
-
-              let peer = SocketAddr::from((SERVER_ADDRESS, SERVER_PORT));
-              if let Err(error) = socket.connect(peer) {
-                  println!("NET SOCKET FAIL connect: {error}");
-                  std::process::exit(1);
-              }
-              let local = match socket.local_addr() {
-                  Ok(address) => address,
-                  Err(error) => {
-                      println!("NET SOCKET FAIL getsockname: {error}");
-                      std::process::exit(1);
-                  }
-              };
-              if let Err(error) = socket.send(b"ping") {
-                  println!("NET SOCKET FAIL sendto: {error}");
-                  std::process::exit(1);
-              }
-
-              let mut buffer = [0u8; 128];
-              for _ in 0..100 {
-                  match socket.recv_from(&mut buffer) {
-                      Ok((length, source)) => {
-                          let answer = String::from_utf8_lossy(&buffer[..length]);
-                          println!(
-                              "NET SOCKET OK local={local} peer={peer} from={source} answer={answer}"
-                          );
-                          return;
-                      }
-                      Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                          std::thread::sleep(Duration::from_millis(10));
-                      }
-                      Err(error) => {
-                          println!("NET SOCKET FAIL recvfrom: {error}");
-                          std::process::exit(1);
-                      }
-                  }
-              }
-              println!("NET SOCKET FAIL recvfrom: no answer");
-              std::process::exit(1);
-          }
-          RS
-          rustc -Z unstable-options --edition 2021 -O \
-            --target x86_64-unknown-linux-musl \
-            -C linker=rust-lld -C linker-flavor=gnu-lld \
-            -o "$RUNNER_TEMP/net-gate" "$RUNNER_TEMP/net-gate.rs"
-          sh bench/mkinitramfs.sh "$RUNNER_TEMP/net-gate.cpio" "$RUNNER_TEMP/net-gate"
-          # The server answers both exchanges: the fixed one the kernel makes
-          # on its own and the one the program makes through the socket calls.
-          python3 - > net-server.log 2>&1 <<'PY' &
+          # The server answers every datagram with the bytes it received. It
+          # picks the port of the measurement itself, by binding port zero, and
+          # writes the number it got: a second job on the same runner binds a
+          # different one. The fixed port serves the demonstration exchange the
+          # kernel makes on its own during boot.
+          cat > "$RUNNER_TEMP/net-server.py" <<'PY'
+          import select
           import socket
+          import sys
 
-          server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-          server.settimeout(60)
-          server.bind(("0.0.0.0", 9999))
-          for _ in range(2):
-              data, address = server.recvfrom(2048)
-              print("server got %d bytes from %s" % (len(data), address), flush=True)
-              server.sendto(b"pong", address)
+          log_path, port_file = sys.argv[1], sys.argv[2]
+          PROBE_PORT = 9999
+
+
+          def record(message):
+              with open(log_path, "a") as handle:
+                  handle.write(message + "\n")
+
+
+          sockets = []
+          measurement = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          measurement.bind(("127.0.0.1", 0))
+          sockets.append(measurement)
+          port = measurement.getsockname()[1]
+
+          probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          probe.bind(("127.0.0.1", PROBE_PORT))
+          sockets.append(probe)
+          record("server listening on port %d and on port %d" % (port, PROBE_PORT))
+          with open(port_file, "w") as handle:
+              handle.write("%d\n" % port)
+
+          while True:
+              ready, _, _ = select.select(sockets, [], [])
+              for server in ready:
+                  data, address = server.recvfrom(2048)
+                  record(
+                      "server got %d bytes from %s:%d on port %d: %r"
+                      % (len(data), address[0], address[1], server.getsockname()[1], data)
+                  )
+                  server.sendto(data, address)
           PY
+          python3 "$RUNNER_TEMP/net-server.py" net-server.log "$RUNNER_TEMP/net-server.port" &
           server=$!
+          # The archive carries the endpoint of this run, so the gate waits for
+          # the server to name the port it bound before it packs it.
+          for _ in $(seq 300); do
+            if [ -s "$RUNNER_TEMP/net-server.port" ]; then break; fi
+            sleep 0.1
+          done
+          port="$(cat "$RUNNER_TEMP/net-server.port")"
+          test -n "$port"
+          echo "measurement port: $port"
+          mkdir -p "$RUNNER_TEMP/netconf"
+          printf 'address=10.0.2.2\nport=%s\ncount=1\n' "$port" \
+            > "$RUNNER_TEMP/netconf/net.conf"
+          EXTRA_DIR="$RUNNER_TEMP/netconf" sh bench/mkinitramfs.sh \
+            "$RUNNER_TEMP/net.cpio" madrust-netclient/madrust-netclient.elf
           set +e
           timeout 60 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 512M \
             -kernel "$(make -s print-kernel-path)" \
-            -initrd "$RUNNER_TEMP/net-gate.cpio" \
+            -initrd "$RUNNER_TEMP/net.cpio" \
             -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
             -object filter-dump,id=dump0,netdev=n0,file=net.pcap \
             -display none -monitor none -no-reboot \
@@ -206,23 +179,31 @@ jobs:
           status=$?
           echo "QEMU exit status: $status"
           set -e
-          wait "$server" || true
+          # The server answers for as long as it runs, so it is stopped here and
+          # not by itself.
+          kill "$server" 2>/dev/null || true
+          wait "$server" 2>/dev/null || true
           cat net-server.log
           cat pci.log
           test "$status" -eq 33
           tr -d '\r' < pci.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > pci-boot.log
-          # The server must have received both datagrams of the guest and the
-          # guest must have received both answers. The lines below are the two
-          # halves of each exchange, with the address and the ports the guest
-          # uses.
-          test "$(grep -c "server got 4 bytes from" net-server.log || true)" -eq 2
+          # The server echoes what it received, so it must have got the
+          # datagram of the kernel and the two of the program: the warm up that
+          # takes the cost of the address resolution out of the sample, and the
+          # sample itself.
+          test "$(grep -c "server got 4 bytes from" net-server.log || true)" -eq 1
+          grep -q "on port $port: b'ping-warmup'$" net-server.log
+          grep -q "on port $port: b'ping-0'$" net-server.log
           grep -qxF "[net] udp send 10.0.2.15:49152 -> 10.0.2.2:9999 len=4" pci-boot.log
-          grep -qxF '[net] udp recv 10.0.2.2:9999 -> 10.0.2.15:49152 len=4 data="pong"' pci-boot.log
-          grep -qxF "[net] udp send 10.0.2.15:44000 -> 10.0.2.2:9999 len=4" pci-boot.log
-          grep -qxF '[net] udp recv 10.0.2.2:9999 -> 10.0.2.15:44000 len=4 data="pong"' pci-boot.log
-          # The program binds, connects, sends and receives through the socket
-          # calls, and reports the endpoints the kernel gave it.
-          grep -qxF "NET SOCKET OK local=0.0.0.0:44000 peer=10.0.2.2:9999 from=10.0.2.2:9999 answer=pong" pci-boot.log
+          grep -qxF '[net] udp recv 10.0.2.2:9999 -> 10.0.2.15:49152 len=4 data="ping"' pci-boot.log
+          # The program opens a socket, connects it, sends and receives through
+          # the calls of the ABI, and prints the round trip in microseconds with
+          # the number of attempts it took. The gate takes one sample; the rig
+          # takes the thirty the measurement is published with.
+          grep -qE "^\[net\] udp send 10\.0\.2\.15:[0-9]+ -> 10\.0\.2\.2:$port len=11$" pci-boot.log
+          grep -qE "^\[net\] udp recv 10\.0\.2\.2:$port -> 10\.0\.2\.15:[0-9]+ len=6 data=\"ping-0\"$" pci-boot.log
+          grep -qE "^NET OK rt=[0-9]+ retries=[0-9]+ answer=ping-0$" pci-boot.log
+          grep -qxF "NET DONE" pci-boot.log
 
           # One line per function that answers, with the vendor and the device
           # id as four hexadecimal digits each.
@@ -262,7 +243,8 @@ jobs:
           # arrived there and what the host answered: the address resolution
           # request for the gateway, the reply of the gateway and the datagram
           # of the guest.
-          python3 - <<'PY'
+          PORT="$port" python3 - <<'PY'
+          import os
           import struct
           import sys
 
@@ -326,7 +308,23 @@ jobs:
           ]
           if not datagrams:
               sys.exit("the datagram of the guest did not reach the network")
-          print("NET FRAME OK sent=%d received=%d" % (len(request[0]), len(frames)))
+          # The datagram the program of the guest measured: same shape, with the
+          # port the server of this run bound and the payload of the sample.
+          port = int(os.environ["PORT"])
+          measured = [
+              frame
+              for frame in frames
+              if (len(frame) >= 48
+                  and frame[12:14] == b"\x08\x00"
+                  and frame[14] >> 4 == 4
+                  and frame[23] == 17
+                  and frame[36:38] == struct.pack(">H", port)
+                  and frame[42:48] == b"ping-0")
+          ]
+          if not measured:
+              sys.exit("the measured datagram did not reach the network")
+          print("NET FRAME OK sent=%d received=%d measured=%d"
+                % (len(request[0]), len(frames), len(measured)))
           PY
 
       - name: Boot kernel with four processors

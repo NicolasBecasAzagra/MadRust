@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-netclient"
+description = "Datagram round trip client that runs on MadRust and on mainline Linux"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+publish = false
+
+# A separate workspace, exactly like the benchmark workload: this is a normal
+# Rust program for the Linux musl target, so it shares neither the kernel
+# target nor the kernel rustflags. The Makefile builds it with rust-lld and the
+# rig packs the static binary into an uncompressed cpio initramfs, which both
+# kernels read as the same bytes.
+[workspace]
+
+[[bin]]
+name = "madrust-netclient"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false

@@ -13,11 +13,13 @@
 #
 # EXTRA_DIR, when set, adds every regular file in that directory to the archive
 # root. The inference runtime uses it for /model.safetensors, /vocab.json and
-# /config.json. The names `bench` and `init` are reserved for the workload.
+# /config.json, and the rig uses it for the /net.conf of the network client.
+# The names `bench` and `init` are reserved for the workload.
 #
-# The script builds the binary with `make bench` when it is missing. `cpio` and
-# `find` are the only external tools; the archive is not compressed, so both
-# kernels read exactly the same bytes.
+# The script builds the binary with `make bench`, or with `make netclient` when
+# the binary is the network client, if it is missing. `cpio` and `find` are the
+# only external tools; the archive is not compressed, so both kernels read
+# exactly the same bytes.
 
 set -eu
 
@@ -33,7 +35,15 @@ case $output in
 esac
 
 if [ ! -f "$binary" ]; then
-    make -C "$repo" --no-print-directory bench
+    # The script can pack the benchmark workload or the network client, and
+    # each of them has its own target. The name of the binary is what decides,
+    # so a caller that asks for a program that is not built gets the program
+    # built and not a different one.
+    target=bench
+    case ${binary##*/} in
+        madrust-netclient.elf) target=netclient ;;
+    esac
+    make -C "$repo" --no-print-directory "$target"
 fi
 
 if [ ! -f "$binary" ]; then
