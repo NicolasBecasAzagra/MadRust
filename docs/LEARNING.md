@@ -164,14 +164,19 @@ asks that model what to do.
 
 ## What to read next in this repository
 
-The roadmap issues track the remaining milestones. In order:
+The roadmap issues of the tracker carry the remaining milestones, each one
+with its exit criterion and the way it is verified:
 
-1. Issue 1, M2b: higher-half kernel with a direct map.
-2. Issue 2, M3: kernel threads and a preemptive scheduler.
-3. Issue 3, M4: the Linux system call ABI, the ELF loader and a static
-   userland.
+1. Issue 12, M10: the network, so the agent can call an API.
+2. Issue 13, M11: quantization, so a model fits in the memory of the machine.
+3. Issue 14: a checkpoint that closes the conversation, so the agent answers
+   instead of asking again.
+4. Issue 15: the tools that need a file system: `write_file` and `list_dir`.
+5. Issue 10: a host with hardware acceleration, for the published numbers.
+6. Issue 16: the deferred work, named so it is not lost: processes, signals,
+   dynamic linking and a shell test suite.
 
-M4 is the milestone where the project stops being a kernel that boots and
-becomes a kernel that runs other people's software. Everything before it is
-the preparation for that, and everything after it (the runtime, the agent)
+M4 was the milestone where the project stopped being a kernel that boots and
+became a kernel that runs other people's software. Everything before it was
+the preparation for that, and everything after it, the runtime and the agent,
 is the reason for it.

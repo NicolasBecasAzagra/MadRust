@@ -31,6 +31,22 @@ docs(boot): document the start_info layout mismatch
 Keep commits small enough to be reviewed in one sitting. Do not mix a refactor
 with a behaviour change.
 
+## What the gates cover
+
+Four gates, all of them run by the continuous integration:
+
+- `make fmt-check` and `make fmt`: the format of every crate, each one on its
+  own manifest, because every crate of the repository is a workspace of its
+  own.
+- `make clippy`: the clippy of every crate for the target it is built for.
+- `make clippy-host` and `make test`: the clippy and the unit tests of every
+  crate that can be built for the host.
+
+Two crates have no host test and cannot have one: `madrust-userland` and
+`madrust-bench` are x86_64 programs with assembly in them, so they only build
+for the target they run on. They are covered by the boot gates instead: the
+kernel boots them, and the continuous integration asserts what they print.
+
 ## Before opening a pull request
 
 ```sh

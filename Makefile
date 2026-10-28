@@ -189,6 +189,7 @@ test:
 	$(CARGO) test --manifest-path $(INITRAMFS_DIR)/Cargo.toml \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host
 
+
 fmt:
 	$(CARGO) fmt --all
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml
@@ -223,6 +224,7 @@ clippy-host:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/agent-host -- -D warnings
 	$(CARGO) clippy --manifest-path $(INITRAMFS_DIR)/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host -- -D warnings
+
 
 check: userland
 	$(CARGO) check --workspace --bins --lib $(KERNEL_FLAGS)

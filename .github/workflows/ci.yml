@@ -176,6 +176,30 @@ jobs:
           grep -qxF "USER OK exit=0" initramfs-boot.log
           grep -qxF "MadRust: boot OK" initramfs-boot.log
 
+      - name: Boot the inference runtime in the guest
+        run: |
+          # The runtime serves a model from the initramfs and prints the
+          # tokens it generated. The gate is that the runtime runs inside the
+          # guest and answers, not that the answer is good: the model of this
+          # run is the synthetic one.
+          make infer infer-model infer-initramfs
+          set +e
+          timeout 300 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 1024M \
+            -kernel "$(make -s print-kernel-path)" \
+            -initrd madrust-infer/initramfs.cpio \
+            -display none -monitor none -no-reboot \
+            -serial file:infer.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          status=$?
+          echo "QEMU exit status: $status"
+          set -e
+          cat infer.log
+          test "$status" -eq 33
+          grep -q "^INFER OK" infer.log
+          grep -q "^INFER ttft_ms " infer.log
+          grep -q "^INFER tok_per_s " infer.log
+          grep -qxF "MadRust: boot OK" infer.log
+
       - name: Run the agent loop in the guest
         run: |
           # The agent is the fourth program: it asks the model for a tool
