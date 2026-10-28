@@ -99,6 +99,31 @@ jobs:
           grep -q "DIV0" serial-clean.log
           grep -q "TICKS 100" serial-clean.log
 
+      - name: Boot kernel with a network device
+        run: |
+          # The guest has no firmware, so the kernel enumerates the bus by
+          # itself. This boot attaches a network device and asserts that the
+          # enumeration names it next to the bridge of the host.
+          set +e
+          timeout 60 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 512M \
+            -kernel "$(make -s print-kernel-path)" \
+            -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
+            -display none -monitor none -no-reboot \
+            -serial file:pci.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          status=$?
+          echo "QEMU exit status: $status"
+          set -e
+          cat pci.log
+          test "$status" -eq 33
+          tr -d '\r' < pci.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > pci-boot.log
+          # One line per function that answers, with the vendor and the device
+          # id as four hexadecimal digits each.
+          grep -qE "^\[pci\] [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] [0-9a-f]{4}:[0-9a-f]{4} class [0-9a-f]{6}$" pci-boot.log
+          grep -q "^\[pci\] 00:1f.0 8086:29c0 " pci-boot.log
+          grep -q " 1af4:1000 " pci-boot.log
+          grep -qxF "MadRust: boot OK" pci-boot.log
+
       - name: Boot kernel with four processors
         run: |
           # The multiprocessor path has its own race, so it is a gate of its

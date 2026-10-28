@@ -14,6 +14,7 @@
 extern crate std;
 
 pub mod cpu;
+pub mod pci;
 pub mod port;
 
 /// Re-export of the low level CPU helpers for convenience.

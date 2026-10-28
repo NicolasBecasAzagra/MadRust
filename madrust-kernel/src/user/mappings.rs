@@ -10,6 +10,12 @@
 //! lock there only saves and restores the interrupt flag and then spins, which
 //! cannot deadlock because no other path takes the lock with interrupts on and
 //! then blocks. Every edit is a short, allocation-free walk of the table.
+//!
+//! The table never travels through the stack: a copy of it is larger than the
+//! sixteen kilobyte kernel stack of a thread, and these paths run on that stack
+//! when the program enters the kernel from ring 3. Callers therefore look at
+//! the records through [`find`] instead of taking a copy, and the one edit that
+//! needs a working copy keeps it in static storage.
 
 use core::cell::UnsafeCell;
 
@@ -36,6 +42,20 @@ unsafe impl Sync for Storage {}
 
 static MAPPINGS: Storage = Storage(UnsafeCell::new(MappingTable::new()));
 
+/// Working copy of the table for the edits that have to be atomic.
+///
+/// It lives in static storage and not on the stack: the table holds a thousand
+/// records, so it is larger than the kernel stack a system call runs on, and a
+/// copy of it on that stack would write over whatever the linker placed after
+/// the stack.
+struct Scratch(UnsafeCell<MappingTable<CAPACITY>>);
+
+// SAFETY: the scratch is only borrowed from [`replace`], which runs inside
+// [`with`] and therefore holds [`LOCK`] for the whole edit.
+unsafe impl Sync for Scratch {}
+
+static SCRATCH: Scratch = Scratch(UnsafeCell::new(MappingTable::new()));
+
 /// Guards the table.
 static LOCK: IrqSpinLock = IrqSpinLock::new("user mappings");
 
@@ -55,25 +75,21 @@ pub fn record(mapping: Mapping) -> Result<(), MappingError> {
 
 /// Replace `[base, base + length)` with one new mapping.
 ///
-/// The edit runs on a copy of the table, so a failure leaves the old records
-/// untouched even when the range would need a split and the table is full.
+/// The edit runs on a working copy, so a failure leaves the old records
+/// untouched even when the range would need a split and the table is full. The
+/// copy is the static [`SCRATCH`], never a local: the table is larger than the
+/// kernel stack.
 pub fn replace(base: u64, length: u64, mapping: Mapping) -> Result<(), MappingError> {
     with(|table| {
-        let mut next = *table;
+        // SAFETY: `with` holds `LOCK`, and `SCRATCH` is only read or written
+        // here, so this exclusive borrow cannot overlap another one.
+        let next = unsafe { &mut *SCRATCH.0.get() };
+        *next = *table;
         next.remove_range(base, base.saturating_add(length))?;
         next.insert(mapping)?;
-        *table = next;
+        *table = *next;
         Ok(())
     })
-}
-
-/// Copy of the current table.
-///
-/// `munmap` and a `MAP_FIXED` replacement take one snapshot before they edit
-/// the table: the snapshot tells the page table walk whether a present page
-/// belongs to a file mapping, whose physical frames must not be freed.
-pub fn snapshot() -> MappingTable<CAPACITY> {
-    with(|table| *table)
 }
 
 /// Remove every record of `[base, base + length)`.

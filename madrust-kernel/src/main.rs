@@ -43,6 +43,7 @@ mod idt;
 mod ioapic;
 mod lapic;
 mod memory;
+mod pci;
 mod percpu;
 mod pic;
 mod pit;
@@ -308,6 +309,11 @@ unsafe extern "C" fn _start(
         "[cpu] vendor: {}",
         core::str::from_utf8(&vendor_text).unwrap_or("unknown")
     );
+
+    // The configuration space is reached through two ports and needs no
+    // interrupt, so the bus is enumerated before the interrupt controller is
+    // reprogrammed.
+    pci::enumerate();
 
     gdt::init();
     kprintln!("[arch] GDT and TSS loaded");

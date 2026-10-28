@@ -51,15 +51,27 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use madrust_elf::USER_SPACE_END;
-use madrust_mm::mapping::{Mapping, MappingTable, PROT_WRITE};
+use madrust_mm::mapping::{Mapping, PROT_WRITE};
 use madrust_mm::paging::{LARGE_PAGE_SIZE, PAGE_SIZE};
 use madrust_mm::pin::Pin;
 use madrust_mm::{phys_to_virt, LARGE_PAGE_ORDER};
 
 use super::errno::{EEXIST, EINVAL, ENODEV, ENOMEM, EROFS};
-use super::mappings::CAPACITY;
 use super::{fd, mappings, paging, pins};
 use crate::memory;
+
+/// Where a page table walk learns whether a present page is file backed.
+///
+/// It matters because the frames of a file page belong to the initramfs
+/// archive and must not go back to the allocator.
+#[derive(Clone, Copy)]
+enum Backing {
+    /// No record covers the range, so every present page is anonymous. The
+    /// program break and the eager mapping path use this.
+    Anonymous,
+    /// Ask the mapping table, which still holds the records of the range.
+    Records,
+}
 
 /// First address handed out by `mmap`.
 const MMAP_BASE: u64 = 0x0000_0000_1000_0000;
@@ -190,8 +202,8 @@ pub fn sys_brk(requested: u64) -> u64 {
         }
     } else if new_end < old_end {
         // The break has no mapping record, so every page it holds is
-        // anonymous and the empty table makes the walk free them all.
-        unmap_region(&MappingTable::new(), new_end, old_end - new_end);
+        // anonymous and the walk frees them all.
+        unmap_region(new_end, old_end - new_end, Backing::Anonymous);
     }
 
     PROGRAM_BREAK.store(requested, Ordering::Release);
@@ -292,12 +304,12 @@ pub fn mmap(
     };
 
     if fixed {
-        // MAP_FIXED replaces whatever the program had mapped there. The
-        // snapshot keeps the old kind of each present page, so a file page is
-        // unmapped without freeing the archive memory behind it.
-        let previous = mappings::snapshot();
+        // MAP_FIXED replaces whatever the program had mapped there. The page
+        // table walk runs first, while the records still name the old kind of
+        // each page, because a file page is unmapped without freeing the
+        // archive memory behind it.
+        unmap_region(base, length, Backing::Records);
         mappings::replace(base, length, mapping).map_err(|_| ENOMEM)?;
-        unmap_region(&previous, base, length);
     } else {
         mappings::record(mapping).map_err(|_| ENOMEM)?;
     }
@@ -334,9 +346,11 @@ pub fn munmap(address: u64, length: u64) -> Result<(), i64> {
     if end > USER_SPACE_END {
         return Err(EINVAL);
     }
-    let previous = mappings::snapshot();
+    // The walk runs before the table forgets the range: it has to know whether
+    // a present page belongs to a file mapping, whose frames stay with the
+    // archive instead of going back to the allocator.
+    unmap_region(address, length, Backing::Records);
     mappings::remove(address, length).map_err(|_| ENOMEM)?;
-    unmap_region(&previous, address, length);
     Ok(())
 }
 
@@ -865,17 +879,16 @@ fn region_is_free(address: u64, length: u64) -> bool {
 /// the whole range back, so a failed mapping never leaves a partial range
 /// behind.
 fn map_region_eager(address: u64, length: u64) -> Result<(), i64> {
-    let empty = MappingTable::new();
     let mut page = address;
     while page < address + length {
         let frame = memory::with(|manager| manager.alloc_zeroed_frame()).flatten();
         let Some(frame) = frame else {
-            unmap_region(&empty, address, page - address);
+            unmap_region(address, page - address, Backing::Anonymous);
             return Err(ENOMEM);
         };
         if paging::map_page(page, frame, true).is_none() {
             let _ = memory::with(|manager| manager.free_frame(frame));
-            unmap_region(&empty, address, page - address);
+            unmap_region(address, page - address, Backing::Anonymous);
             return Err(ENOMEM);
         }
         page += PAGE_SIZE;
@@ -883,22 +896,26 @@ fn map_region_eager(address: u64, length: u64) -> Result<(), i64> {
     Ok(())
 }
 
-/// Remove every present leaf of the range and return memory to the allocator
-/// at the order it was taken.
+/// Remove every present leaf of `[address, address + length)` and return memory
+/// to the allocator at the order it was taken.
 ///
-/// `previous` is the mapping table before the edit. A 4 KiB page that belonged
-/// to a file mapping is unmapped without a free: the archive frames are
-/// reserved and were never allocated to this mapping. A 2 MiB block under a
-/// file mapping is different: it is the copy the fault handler built, so it
-/// goes back to the buddy allocator like an anonymous block. A frame that a pin
-/// still holds is unmapped but not freed: the pin owns it until `munlock`, even
-/// though the program can no longer reach it through this mapping. Pages that
-/// were never faulted have no entry, so they cost a table walk and nothing
+/// `backing` says where the walk learns whether a page is file backed. A 4 KiB
+/// page that belongs to a file mapping is unmapped without a free: the archive
+/// frames are reserved and were never allocated to this mapping. A 2 MiB block
+/// under a file mapping is different: it is the copy the fault handler built,
+/// so it goes back to the buddy allocator like an anonymous block. A frame that
+/// a pin still holds is unmapped but not freed: the pin owns it until `munlock`,
+/// even though the program can no longer reach it through this mapping. Pages
+/// that were never faulted have no entry, so they cost a table walk and nothing
 /// else.
-fn unmap_region(previous: &MappingTable<CAPACITY>, address: u64, length: u64) {
+///
+/// The callers pass [`Backing::Records`] before they edit the table, so the
+/// records of the range are still there when the walk asks for them.
+fn unmap_region(address: u64, length: u64, backing: Backing) {
     let mut page = address;
     while page < address + length {
-        let file_backed = previous.find(page).is_some_and(|mapping| mapping.is_file());
+        let file_backed = matches!(backing, Backing::Records)
+            && mappings::find(page).is_some_and(|mapping| mapping.is_file());
         match paging::unmap(page) {
             Some(paging::Unmapped::Page(frame)) if !file_backed => {
                 if !pins::holds_physical(frame, PAGE_SIZE) {
