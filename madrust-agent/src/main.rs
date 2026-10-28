@@ -49,6 +49,14 @@ mod tools;
 /// Steps the loop may take before it gives up.
 pub const MAX_STEPS: usize = 4;
 
+/// Characters of the conversation the prompt keeps.
+///
+/// Every turn of the conversation is encoded and prefilled again on the next
+/// step, so a history without a bound makes every step cost more than the
+/// last one. The oldest turns are dropped when the budget is exceeded.
+#[cfg(target_os = "linux")]
+const MAX_HISTORY_CHARS: usize = 4096;
+
 /// Tokens one step may generate.
 ///
 /// A tool call is a short JSON object, but the grammar allows merged tokens
@@ -100,6 +108,12 @@ pub fn step_line(step: usize, tool: &str, args: &str, result: &str) -> String {
 /// The final answer line.
 pub fn answer_line(text: &str) -> String {
     format!("AGENT answer={}", sanitize(text))
+}
+
+/// Characters of the conversation the prompt would carry.
+#[cfg(target_os = "linux")]
+fn history_chars(history: &[(madrust_infer::chat::Role, String)]) -> usize {
+    history.iter().map(|(_, text)| text.len()).sum()
 }
 
 /// The summary line of a run.
@@ -178,8 +192,15 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
             step_line(step, &call.tool, &call.args_json(), &result)
         );
 
+        // The history is the prompt of the next step, and the prompt is
+        // encoded and prefilled again every time. A history without a bound
+        // makes every step cost more than the last one, so the turns that do
+        // not fit in the budget are dropped from the oldest end.
         history.push((Role::Assistant, written));
         history.push((Role::User, result));
+        while history.len() > 2 && history_chars(&history) > MAX_HISTORY_CHARS {
+            history.remove(0);
+        }
 
         if answer.is_some() {
             break;

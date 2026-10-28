@@ -94,16 +94,26 @@ fn read_file(call: &Call) -> String {
     };
     let size = file.metadata().map(|metadata| metadata.len()).ok();
     let mut content = Vec::new();
-    let read = match file.take(4096).read_to_end(&mut content) {
+    let read = match file.take(MAX_CONTENT).read_to_end(&mut content) {
         Ok(read) => read,
         Err(error) => return io_error(&error),
     };
     let bytes = size.unwrap_or(read as u64);
-    format!(
-        "bytes={bytes} read={read} content={}",
-        String::from_utf8_lossy(&content)
-    )
+    // The result of a tool goes back into the prompt, and the prompt is
+    // encoded and prefilled again on every step. A file of four kilobytes
+    // would make the next step cost four kilobytes more prefill, and the
+    // agent would spend its budget reading the same file again. The answer
+    // carries the size of the file and a short preview of it.
+    let preview = String::from_utf8_lossy(&content);
+    let preview: String = preview.chars().take(PREVIEW_CHARS).collect();
+    format!("bytes={bytes} read={read} content={preview}")
 }
+
+/// Bytes of a file the `read_file` tool reads.
+const MAX_CONTENT: u64 = 4096;
+
+/// Characters of the file the `read_file` tool puts in its answer.
+const PREVIEW_CHARS: usize = 256;
 
 /// Create or truncate a file and write the text.
 fn write_file(call: &Call) -> String {
