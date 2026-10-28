@@ -195,10 +195,13 @@ jobs:
           set -e
           cat infer.log
           test "$status" -eq 33
-          grep -q "^INFER OK" infer.log
-          grep -q "^INFER ttft_ms " infer.log
-          grep -q "^INFER tok_per_s " infer.log
-          grep -qxF "MadRust: boot OK" infer.log
+          # The kernel writes its lines with a carriage return at the end and
+          # the program writes its lines without one, so the log has both.
+          tr -d '\r' < infer.log > infer-boot.log
+          grep -q "^INFER OK" infer-boot.log
+          grep -q "^INFER ttft_ms " infer-boot.log
+          grep -q "^INFER tok_per_s " infer-boot.log
+          grep -qxF "MadRust: boot OK" infer-boot.log
 
       - name: Run the agent loop in the guest
         run: |
@@ -219,6 +222,8 @@ jobs:
           set -e
           cat agent.log
           test "$status" -eq 33
+          # The kernel writes its lines with a carriage return at the end and
+          # the program writes its lines without one, so the log has both.
           tr -d '\r' < agent.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > agent-boot.log
           # Every step of the loop reports its tool and its result, and the
           # run ends with the summary the rig reads.
