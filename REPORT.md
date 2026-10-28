@@ -318,6 +318,44 @@ the same call. A model that knew when to stop would answer instead of asking
 again; that is a property of the checkpoint, not of the kernel, and the number
 the kernel is responsible for is the one in the table.
 
+## Results: quantization
+
+A model that does not fit in the memory of the machine cannot be served, so
+the runtime reads a quantized checkpoint: a block of thirty two weights with
+one scale per block, the scale in binary16, and the weights in four bits or
+in eight. The layout is in `docs/QUANTIZATION.md`. The block is decoded
+inside the matrix by vector product, without turning the tensor into floating
+point first.
+
+Measured on the development checkpoint of the repository, the same one for
+both kernels:
+
+| Format | Size | Pinned weights | Tokens of the published prompt |
+|---|---|---|---|
+| float | 269 060 544 B | 269 058 048 B | the reference ones |
+| `Q8B32`, 8.5 bits per weight | 142 985 696 B (0.53x) | 142 983 168 B | **the same ones** |
+| `Q4B32`, 4.5 bits per weight | 75 745 552 B (0.28x) | 75 743 232 B | **different ones** |
+
+The eight bit form reproduces the reference tokens exactly, and the
+difference between the two sets of logits is published with it: a maximum of
+0.543618 and a mean of 0.093776788 over the eight steps of the published
+prompt.
+
+**The four bit form changes the answer**, and that is the result, not a
+detail: the maximum difference of the logits is 11.669730 and the mean is
+2.083776259, because the error of the weights is about 0.11 standard
+deviations and the margin between the two candidates of a step goes down to
+0.052. A reference implementation agrees: eight bits reproduces the reference
+tokens and six, five and four do not. The four bit checkpoint is a third of
+the size and it is not the same model, so it is published as a loss and not
+as a win.
+
+The memory of the guest falls with the format and the speed does not
+improve: the block kernels are scalar while the floating point path is
+vectorised, so the tokens per second go from 1.51 to 0.65 on MadRust and
+from 1.25 to 0.20 on the reference kernel. The format buys memory, and the
+rows say so.
+
 ## Losses
 
 - **The thread workload was a loss and then became a win.** With eager

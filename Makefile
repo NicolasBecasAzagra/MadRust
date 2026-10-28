@@ -80,6 +80,12 @@ AGENT_INITRAMFS := $(AGENT_DIR)/initramfs.cpio
 # server of the run, which neither kernel passes to its init as an argument. The
 # variables are `?=` so the rig overrides them from the environment.
 AGENT_NET_INITRAMFS ?= $(AGENT_DIR)/initramfs-net.cpio
+
+# The quantized checkpoint: the width, the directory it is read from and the
+# directory it is written to.
+QUANT_BITS ?= 8
+QUANT_IN ?= $(INFER_MODEL_DIR)
+QUANT_OUT ?= $(TARGET_DIR)/model-quant
 AGENT_NET_STAGE ?= $(TARGET_DIR)/agent-net
 AGENT_NET_ADDRESS ?= 10.0.2.2
 AGENT_NET_PORT ?= 9999
@@ -103,7 +109,7 @@ QEMU_FLAGS := -M q35 -m 512M \
 	-serial stdio \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench netclient print-kernel-path infer infer-model infer-initramfs agent agent-initramfs agent-net-initramfs run-infer
+.PHONY: all build run run-smp test fmt fmt-check clippy clippy-host check clean userland bench netclient print-kernel-path infer infer-model infer-initramfs agent agent-initramfs agent-net-initramfs run-infer quantize
 
 # The path of the built kernel, so the CI does not have to repeat it.
 print-kernel-path:
@@ -150,6 +156,16 @@ infer: musl-std
 
 # The synthetic model is a development tool, built and run on the host. Its
 # output lives outside the repository with the rest of the build products.
+# The tool that writes a quantized checkpoint. It reads the directory of a
+# checkpoint and writes another one, and it prints the digest of what it
+# wrote. The width is a variable, so the same command makes the four bit and
+# the eight bit form.
+quantize:
+	$(CARGO) run --release --manifest-path $(INFER_DIR)/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host \
+		--bin madrust-infer-quantize -- --bits $(QUANT_BITS) \
+		--in $(QUANT_IN) --out $(QUANT_OUT)
+
 # The development model. It is written into the directory of the model, and it
 # must never be written over a checkpoint that somebody downloaded: the
 # directory is the only copy of that checkpoint. The target refuses to write
