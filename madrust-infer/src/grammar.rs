@@ -15,15 +15,19 @@
 //! names, the keys, the values and the number of members, so a sampled
 //! sequence that stays inside the automaton is a complete, well formed call.
 //!
-//! [`Grammar::tool_call_with_requirements`] also takes the keys each tool
-//! needs. A call of such a tool is accepted only when its argument object
-//! carries every one of those keys, in any order. While a required key is
-//! missing the object offers only the missing required keys, so a key that is
-//! not required cannot take the place of one; once the requirements are met
-//! every key of [`ARGUMENT_NAMES`] stays legal. [`Grammar::tool_call`] is the
-//! same grammar with no requirements. A call that is missing an argument the
-//! tool reads is not in the language, so it never reaches the tool and never
-//! costs a step.
+//! [`Grammar::tool_call_with_requirements`] also takes the arguments each tool
+//! declares. The object of a call carries exactly those keys: the required
+//! ones first, each once, in any order, then any subset of the optional ones,
+//! each once, and nothing else. A key of [`ARGUMENT_NAMES`] the tool does not
+//! declare is not in the language, and a key that is already present cannot
+//! appear again, so the model can neither invent an argument nor repeat one.
+//! A call that is missing an argument the tool reads is not in the language
+//! either, so it never reaches the tool and never costs a step.
+//!
+//! A tool the table does not name declares no argument, so its object is `{}`.
+//! [`Grammar::tool_call`] and [`Grammar::tool_call_with_limit`] pass no table,
+//! which makes them the grammar of a call whose tools take no argument; use
+//! [`Grammar::tool_call_with_requirements`] for a tool that reads one.
 //!
 //! The strings of the arguments are bounded: [`Grammar::tool_call`] accepts at
 //! most [`DEFAULT_MAX_STRING_LENGTH`] characters in a string value, and
@@ -75,11 +79,13 @@ use std::collections::HashMap;
 use crate::error::{Error, Result};
 use crate::vocab::Vocab;
 
-/// Argument keys a tool call may carry.
+/// Argument keys a tool may declare.
 ///
 /// The list is fixed at construction so the grammar does not accept an
-/// arbitrary key. A caller that needs another key adds it here: the tool loop
-/// and the runtime both read this list.
+/// arbitrary key. A tool carries only the keys its entry in the requirements
+/// table declares, and every declaration must name a key of this list, so the
+/// grammar never accepts a key outside it. A caller that needs another key
+/// adds it here: the tool loop and the runtime both read this list.
 pub const ARGUMENT_NAMES: &[&str] = &[
     "path", "command", "query", "text", "name", "value", "limit", "count", "args",
 ];
@@ -134,23 +140,25 @@ impl<'a> Argument<'a> {
 
 /// The arguments of each tool, by tool name.
 ///
-/// A tool that is absent from the table needs no argument. Every key must be
-/// one of [`ARGUMENT_NAMES`]: the grammar cannot accept a key it does not
-/// know, so a declaration outside that list is an error at construction
-/// instead of a grammar that accepts nothing. A key the table does not declare
-/// for a tool takes any value. The table order carries no meaning: a call may
-/// list the required keys in any order, and once they are all present it may
-/// carry any accepted key.
+/// The object of a call carries exactly the keys the tool declares: the
+/// required ones first, each once, in any order, then any subset of the
+/// optional ones, each once. A key the table does not declare for the tool is
+/// not in the language of its call, and neither is a repeated key. A tool that
+/// is absent from the table declares no argument, so its object is `{}`.
+///
+/// Every key must be one of [`ARGUMENT_NAMES`]: the grammar cannot accept a
+/// key it does not know, so a declaration outside that list is an error at
+/// construction instead of a grammar that accepts nothing.
 pub type Requirements<'a> = &'a [(&'a str, &'a [Argument<'a>])];
 
-/// Characters a string value of a tool call may hold under
-/// [`Grammar::tool_call`].
+/// Characters a string value of a tool call may hold by default.
 ///
 /// A tool call carries a path, a command, a number or a short answer, never a
 /// document. 128 characters hold the longest path of the tool registry and a
 /// sentence of the `done` answer with margin, and the automaton grows by two
 /// states per character, so the default stays small. A caller that needs
-/// another bound uses [`Grammar::tool_call_with_limit`].
+/// another bound uses [`Grammar::tool_call_with_requirements_and_limit`] or
+/// [`Grammar::tool_call_with_limit`].
 pub const DEFAULT_MAX_STRING_LENGTH: usize = 128;
 
 /// A set of small non-negative integers, one bit per element.
@@ -259,13 +267,12 @@ struct TokenCache {
 }
 
 impl Grammar {
-    /// Build the grammar of one tool call over `tool_names`.
+    /// Build the grammar of one tool call over `tool_names`, where every tool
+    /// takes no argument.
     ///
-    /// The string values of the arguments hold at most
-    /// [`DEFAULT_MAX_STRING_LENGTH`] characters, and their text is printable
-    /// ASCII. Use [`Grammar::tool_call_with_limit`] to choose another bound;
-    /// the bound is what makes a call finite, because an unbounded string lets
-    /// a model sample until the token budget runs out.
+    /// No requirements table is passed, so no tool declares an argument and the
+    /// `args` object of the call is `{}`. A tool that reads an argument needs
+    /// [`Grammar::tool_call_with_requirements`], which declares its keys.
     ///
     /// A name must be plain ASCII without a quote or a backslash: it is placed
     /// literally between the quotes of the `tool` value. The list must not be
@@ -275,19 +282,24 @@ impl Grammar {
         Self::tool_call_with_requirements(tool_names, &[])
     }
 
-    /// Build the grammar of one tool call whose argument strings hold at most
+    /// Build the grammar of one tool call whose tools take no argument and
+    /// whose argument strings, if a later table declares one, hold at most
     /// `max_length` characters.
     ///
-    /// One character is one printable ASCII byte, `0x20..=0x7E`, outside `"`
-    /// and `\`, or one escape sequence (`\"`, `\\`, `\/`, `\n`, `\r`, `\t`),
-    /// which takes two bytes on the wire. A byte above `0x7E` is not in the
-    /// language, because the parser of the runtime reads the string as UTF-8
-    /// and refuses a byte that does not form UTF-8; the price is that a
-    /// character outside ASCII has no way into a call. A bound of zero accepts
-    /// only the empty string. The automaton builds the string as a chain of
-    /// `max_length` positions, so the state count grows by about two states per
-    /// character and never by subset blow up; a call whose string is one
-    /// character longer has no legal byte and generation stops.
+    /// No requirements table is passed, so the `args` object of the call is
+    /// `{}`; use [`Grammar::tool_call_with_requirements_and_limit`] to declare
+    /// the arguments and choose the bound in one call.
+    ///
+    /// One character of a string value is one printable ASCII byte,
+    /// `0x20..=0x7E`, outside `"` and `\`, or one escape sequence (`\"`, `\\`,
+    /// `\/`, `\n`, `\r`, `\t`), which takes two bytes on the wire. A byte above
+    /// `0x7E` is not in the language, because the parser of the runtime reads
+    /// the string as UTF-8 and refuses a byte that does not form UTF-8; the
+    /// price is that a character outside ASCII has no way into a call. A bound
+    /// of zero accepts only the empty string. The automaton builds the string
+    /// as a chain of `max_length` positions, so the state count grows by about
+    /// two states per character and never by subset blow up; a call whose
+    /// string is one character longer has no legal byte and generation stops.
     ///
     /// The bound applies to the string values only. The tool names and the
     /// argument keys are literals, and a number value keeps the width of the
@@ -301,24 +313,27 @@ impl Grammar {
         Self::tool_call_with_requirements_and_limit(tool_names, &[], max_length)
     }
 
-    /// Build the grammar of one tool call where each tool accepts only a call
-    /// that carries the arguments [`Requirements`] lists for it.
+    /// Build the grammar of one tool call where each tool carries exactly the
+    /// arguments [`Requirements`] declares for it.
+    ///
+    /// The object of a call carries the required keys of its tool first, each
+    /// once, in any order, then any subset of the optional keys the tool
+    /// declares, each once, and then the closing brace. A key of
+    /// [`ARGUMENT_NAMES`] the tool does not declare is not in the language, and
+    /// neither is a key that is already present. Under each key the grammar
+    /// offers only the value of the declared [`ValueType`]. A tool the table
+    /// does not name declares no argument, so its object is `{}`.
     ///
     /// The string values of the arguments hold at most
     /// [`DEFAULT_MAX_STRING_LENGTH`] characters, and their text is printable
-    /// ASCII, as [`Grammar::tool_call`] documents; use
+    /// ASCII, as [`Grammar::tool_call_with_limit`] documents; use
     /// [`Grammar::tool_call_with_requirements_and_limit`] for another bound.
-    /// The names and the rest of the construction follow [`Grammar::tool_call`].
-    ///
-    /// The object of a call lists the required keys of its tool first, in any
-    /// order, and only then any other key of [`ARGUMENT_NAMES`]; the object
-    /// cannot close before every required key is there. Under each key the
-    /// grammar offers only the value of the declared [`ValueType`], or any of
-    /// the three when the key is not declared. Every key of `requirements` must
-    /// be one of [`ARGUMENT_NAMES`]. A declaration the grammar cannot carry is
-    /// an error, not a tool that accepts nothing: an empty language would stop
-    /// every step of the loop. A tool the table does not name, and a name in
-    /// the table that is not one of `tool_names`, needs no argument.
+    /// The names and the rest of the construction follow
+    /// [`Grammar::tool_call`]. Every key of `requirements` must be one of
+    /// [`ARGUMENT_NAMES`]. A declaration the grammar cannot carry is an error,
+    /// not a tool that accepts nothing: an empty language would stop every step
+    /// of the loop. A name in the table that is not one of `tool_names` has no
+    /// effect.
     pub fn tool_call_with_requirements(
         tool_names: &[&str],
         requirements: Requirements<'_>,
@@ -336,10 +351,13 @@ impl Grammar {
     /// The text of the string values is printable ASCII, exactly as
     /// [`Grammar::tool_call_with_limit`] documents: the parser of the runtime
     /// reads the bytes as UTF-8, and a byte above `0x7E` is not in the
-    /// language. The automaton keeps one copy of the value frame per subset of
-    /// the keys a tool needs and per value type, so a tool that needs `n` keys
-    /// costs `2^n` times the value frame; the tool registry needs at most two
-    /// keys per tool, all of them strings.
+    /// language. The object carries only the declared keys, as
+    /// [`Grammar::tool_call_with_requirements`] documents. The automaton keeps
+    /// one copy of the value frame per node of the object and per value type,
+    /// and the nodes are the subsets of the required keys and of the optional
+    /// keys, so a tool that declares `r` required and `o` optional keys costs
+    /// about `2^r + 2^o` value frames; the tool registry declares at most two
+    /// required keys per tool and no optional key, all of them strings.
     pub fn tool_call_with_requirements_and_limit(
         tool_names: &[&str],
         requirements: Requirements<'_>,
@@ -352,8 +370,8 @@ impl Grammar {
         let name_start = literal_from(&mut nfa, start, b"{\"tool\":\"");
         let end = nfa.state();
         // One frame per distinct argument table. Two tools that declare the
-        // same arguments share the frame, so a grammar without requirements
-        // keeps the shape it had before the requirements existed.
+        // same arguments share the frame, so a grammar whose tools all take no
+        // argument keeps the single empty-object shape.
         let mut frames: Vec<(Vec<Argument<'_>>, usize)> = Vec::new();
         for &name in tool_names {
             let arguments = declared_arguments(requirements, name);
@@ -365,8 +383,7 @@ impl Grammar {
                 None => {
                     let suffix = nfa.state();
                     let open = literal_from(&mut nfa, suffix, b"\",\"args\":");
-                    let (object_start, object_end) =
-                        object(&mut nfa, ARGUMENT_NAMES, &arguments, max_length);
+                    let (object_start, object_end) = object(&mut nfa, &arguments, max_length);
                     nfa.epsilon(open, object_start);
                     let finish = literal_from(&mut nfa, object_end, b"}");
                     nfa.epsilon(finish, end);
@@ -790,69 +807,93 @@ fn typed_value(nfa: &mut Nfa, kind: ValueType, max_length: usize) -> (usize, usi
     }
 }
 
-/// The argument object: `{}`, or the missing required keys of `arguments`
-/// followed by any key of `names`.
+/// The argument object of a tool.
 ///
-/// A mask records which required keys the members already carried. While the
-/// mask is not full, the only members the object offers are the required keys
-/// it still misses, in any order, so a key that is not required cannot take
-/// the place of one that is. The object closes only at the full mask, and the
-/// keys of `names` stay legal from there on. The first member follows the
-/// opening brace without a comma; every later member starts with one.
+/// The object carries exactly the declared keys of `arguments`: the required
+/// ones first, each once, in any order, then any subset of the optional ones,
+/// each once, and then the closing brace. Nothing else is in the language, so
+/// a key the tool does not declare never appears, and a key that is already
+/// present cannot appear again.
 ///
-/// One value frame is built per next mask and value type: every key that lands
-/// on the same mask with the same type shares the frame, and the frame returns
-/// to the state after a value of that mask.
-fn object(
-    nfa: &mut Nfa,
-    names: &[&str],
-    arguments: &[Argument<'_>],
-    max_length: usize,
-) -> (usize, usize) {
+/// Two masks record what the object already carried: one over the required
+/// keys and, once they are all present, one over the optional keys. A node of
+/// the required phase offers the required keys it still misses; a node of the
+/// optional phase offers the optional keys it still misses and the closing
+/// brace. The first member follows the opening brace without a comma; every
+/// later member starts with one.
+///
+/// One value frame is built per next node and value type: every key that lands
+/// on the same node with the same type shares the frame, and the frame returns
+/// to the state after a value of that node.
+fn object(nfa: &mut Nfa, arguments: &[Argument<'_>], max_length: usize) -> (usize, usize) {
     let required: Vec<&str> = arguments
         .iter()
         .filter(|argument| argument.required)
         .map(|argument| argument.key)
         .collect();
+    let optional: Vec<&str> = arguments
+        .iter()
+        .filter(|argument| !argument.required)
+        .map(|argument| argument.key)
+        .collect();
     let masks = 1usize << required.len();
     let full = masks - 1;
+    let optionals = 1usize << optional.len();
     let start = nfa.state();
     let end = nfa.state();
     let first = nfa.state();
     nfa.byte(start, b'{', first);
-    let after_value: Vec<usize> = (0..masks).map(|_| nfa.state()).collect();
-    // `{}` is the whole object only when the tool needs nothing.
+    // Nodes `0..full` are the required phase, node `full` is the start of the
+    // optional phase, and `full + 1..` are the other optional subsets.
+    let after_value: Vec<usize> = (0..full + optionals).map(|_| nfa.state()).collect();
+
+    // The object closes at any subset of the optional keys, once the required
+    // keys are all present. With no required key, the opening brace is already
+    // the node that closes.
+    for &state in &after_value[full..] {
+        nfa.byte(state, b'}', end);
+    }
     if full == 0 {
         nfa.byte(first, b'}', end);
     }
 
-    for (mask, &after) in after_value.iter().enumerate() {
-        // One key position per mask, shared by the first member and by a
+    for (node, &after) in after_value.iter().enumerate() {
+        let members: Vec<(&str, usize)> = if node < full {
+            // A missing required key, and only a missing one: a key that is
+            // already present has no transition.
+            required
+                .iter()
+                .enumerate()
+                .filter(|&(bit, _)| node & (1 << bit) == 0)
+                .map(|(bit, &key)| (key, node | (1 << bit)))
+                .collect()
+        } else {
+            // A missing optional key, once the required keys are all present.
+            let mask = node - full;
+            optional
+                .iter()
+                .enumerate()
+                .filter(|&(bit, _)| mask & (1 << bit) == 0)
+                .map(|(bit, &key)| (key, full + (mask | (1 << bit))))
+                .collect()
+        };
+        if members.is_empty() {
+            // Nothing follows: the node accepts only the closing brace, which
+            // is already wired.
+            continue;
+        }
+
+        // One key position per node, shared by the first member and by a
         // member after a comma.
         let key_start = nfa.state();
-        if mask == 0 {
+        if node == 0 {
             nfa.byte(first, b'"', key_start);
         }
         let comma = nfa.state();
         nfa.byte(after, b',', comma);
         nfa.byte(comma, b'"', key_start);
-        if mask == full {
-            nfa.byte(after, b'}', end);
-        }
 
-        // While a required key is missing, it and the other missing keys are
-        // the only members. The full mask carries every accepted key.
-        let members: Vec<(&str, usize)> = if mask == full {
-            names.iter().map(|&name| (name, full)).collect()
-        } else {
-            required
-                .iter()
-                .enumerate()
-                .filter(|&(bit, _)| mask & (1 << bit) == 0)
-                .map(|(bit, &key)| (key, mask | (1 << bit)))
-                .collect()
-        };
-        // One closing quote and value frame per next mask and value type:
+        // One closing quote and value frame per next node and value type:
         // every key that lands on the same pair shares them.
         let mut frames: Vec<((usize, ValueType), usize)> = Vec::new();
         for (name, next) in members {
@@ -883,22 +924,31 @@ mod tests {
 
     const CALL: &str = r#"{"tool":"read","args":{"path":"a","limit":1}}"#;
 
-    /// A requirement table for the tests: `read` and `write` want strings,
-    /// `number` wants a number, `flag` a boolean, `listing` types an optional
-    /// key, and `plain` declares nothing.
+    /// A requirement table for the tests: `read` takes a string and declares
+    /// an optional number, `write` takes two strings and an optional number,
+    /// `number` takes a number, `flag` a boolean, `plain` and `listing` declare
+    /// an optional key only, and `any` declares a key of any value.
     const REQUIREMENTS: Requirements<'_> = &[
-        ("read", &[Argument::required("path", ValueType::String)]),
+        (
+            "read",
+            &[
+                Argument::required("path", ValueType::String),
+                Argument::optional("limit", ValueType::Number),
+            ],
+        ),
         (
             "write",
             &[
                 Argument::required("path", ValueType::String),
                 Argument::required("text", ValueType::String),
+                Argument::optional("count", ValueType::Number),
             ],
         ),
-        ("plain", &[]),
+        ("plain", &[Argument::optional("command", ValueType::String)]),
         ("number", &[Argument::required("limit", ValueType::Number)]),
         ("flag", &[Argument::required("count", ValueType::Bool)]),
         ("listing", &[Argument::optional("limit", ValueType::Number)]),
+        ("any", &[Argument::optional("query", ValueType::Any)]),
     ];
 
     fn accepts(grammar: &Grammar, bytes: &[u8]) -> bool {
@@ -931,7 +981,8 @@ mod tests {
 
     #[test]
     fn a_byte_outside_printable_ascii_is_rejected() {
-        let grammar = Grammar::tool_call(&["read"]).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("the table is accepted");
         // `0xC3 0xA9` is `é` in UTF-8: a well formed character, but not ASCII,
         // so the grammar does not offer it and the parser never sees it.
         assert!(!accepts(&grammar, &call_with_body(b"\xc3\xa9")));
@@ -943,7 +994,8 @@ mod tests {
 
     #[test]
     fn every_printable_ascii_byte_is_accepted() {
-        let grammar = Grammar::tool_call(&["read"]).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("the table is accepted");
         for byte in 0x20..=0x7Eu8 {
             if byte == b'"' || byte == b'\\' {
                 // These two are the framing and the escape byte, never a raw
@@ -959,7 +1011,8 @@ mod tests {
 
     #[test]
     fn the_escape_sequences_are_accepted_and_no_other_escape_is() {
-        let grammar = Grammar::tool_call(&["read"]).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("the table is accepted");
         for escape in [
             br#"\""#.as_slice(),
             br#"\\"#,
@@ -981,19 +1034,24 @@ mod tests {
 
     #[test]
     fn accepts_a_complete_call_and_rejects_a_malformed_one() {
-        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
+        let grammar =
+            Grammar::tool_call_with_requirements(&["read", "write", "plain"], REQUIREMENTS)
+                .expect("every declared key is an accepted key");
         assert!(accepts(&grammar, CALL.as_bytes()));
-        assert!(accepts(&grammar, br#"{"tool":"write","args":{}}"#));
+        assert!(accepts(&grammar, br#"{"tool":"plain","args":{}}"#));
         assert!(accepts(
             &grammar,
-            br#"{"tool":"read","args":{"path":"a\"b","name":true,"value":false}}"#
+            br#"{"tool":"read","args":{"path":"a\"b","limit":3}}"#
         ));
 
         // Unterminated string: every byte is still legal, but the call is not
         // complete at the end.
         assert!(!accepts(&grammar, br#"{"tool":"read","args":{"path":"a}}"#));
-        // A key outside the fixed set.
-        assert!(!accepts(&grammar, br#"{"tool":"read","args":{"bad":1}}"#));
+        // A key the tool does not declare.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","bad":1}}"#
+        ));
         // A tool name outside the choice.
         assert!(!accepts(&grammar, br#"{"tool":"list","args":{}}"#));
         // The outer brace is missing.
@@ -1009,22 +1067,20 @@ mod tests {
             &grammar,
             br#"{"tool":"write","args":{"path":"a","text":"b"}}"#
         ));
-        // Extra accepted keys do not hurt.
+        // A declared optional key does not hurt.
         assert!(accepts(
             &grammar,
-            br#"{"tool":"write","args":{"path":"a","text":"b","limit":1}}"#
+            br#"{"tool":"write","args":{"path":"a","text":"b","count":1}}"#
         ));
     }
 
     #[test]
     fn a_call_missing_a_required_key_is_rejected() {
         let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
-            .expect("every required key is an accepted key");
+            .expect("every declared key is an accepted key");
         assert!(!accepts(&grammar, br#"{"tool":"read","args":{}}"#));
-        assert!(!accepts(
-            &grammar,
-            br#"{"tool":"read","args":{"text":"a"}}"#
-        ));
+        // The declared optional key is not a substitute for the required one.
+        assert!(!accepts(&grammar, br#"{"tool":"read","args":{"limit":1}}"#));
         assert!(!accepts(
             &grammar,
             br#"{"tool":"write","args":{"path":"a"}}"#
@@ -1047,11 +1103,10 @@ mod tests {
             &grammar,
             br#"{"tool":"write","args":{"text":"b","path":"a"}}"#
         ));
-        // A key of the accepted list after the required ones, and a repeated
-        // required key, still close the call.
+        // A declared optional key follows the required ones.
         assert!(accepts(
             &grammar,
-            br#"{"tool":"write","args":{"text":"b","path":"a","count":1,"text":"c"}}"#
+            br#"{"tool":"write","args":{"text":"b","path":"a","count":1}}"#
         ));
     }
 
@@ -1108,50 +1163,97 @@ mod tests {
 
     #[test]
     fn a_member_starts_with_a_comma_only_after_another_member() {
-        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
-            .expect("path is an accepted key");
+        let grammar = Grammar::tool_call_with_requirements(&["write"], REQUIREMENTS)
+            .expect("the table is accepted");
         // A comma right after the opening brace, and a member with no comma
         // after the one before it, are the two malformed shapes of the run.
         assert!(!accepts(
             &grammar,
-            br#"{"tool":"read","args":{,"path":"a"}}"#
+            br#"{"tool":"write","args":{,"path":"a"}}"#
         ));
         assert!(!accepts(
             &grammar,
-            br#"{"tool":"read","args":{"path":"a""path":"b"}}"#
+            br#"{"tool":"write","args":{"path":"a""text":"b"}}"#
         ));
         assert!(accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a","text":"b"}}"#
+        ));
+    }
+
+    #[test]
+    fn an_optional_key_waits_for_the_required_ones() {
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("the table is accepted");
+        assert!(!accepts(&grammar, br#"{"tool":"read","args":{"limit":1}}"#));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"limit":1,"path":"a"}}"#
+        ));
+        assert!(accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","limit":1}}"#
+        ));
+    }
+
+    #[test]
+    fn a_key_the_tool_does_not_declare_is_rejected() {
+        let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
+            .expect("the table is accepted");
+        // `text` belongs to `write`, so `read` cannot carry it. The run that
+        // started this rule wrote exactly this call.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","text":"b"}}"#
+        ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"text":"b"}}"#
+        ));
+        // `limit` belongs to `read`, so `write` cannot carry it.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"write","args":{"path":"a","text":"b","limit":1}}"#
+        ));
+        // A key neither tool declares is out too.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","name":"b"}}"#
+        ));
+    }
+
+    #[test]
+    fn a_key_cannot_appear_twice() {
+        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
+            .expect("the table is accepted");
+        assert!(!accepts(
             &grammar,
             br#"{"tool":"read","args":{"path":"a","path":"b"}}"#
         ));
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read","args":{"path":"a","limit":1,"limit":2}}"#
+        ));
     }
 
     #[test]
-    fn a_key_that_is_not_required_waits_for_the_required_ones() {
-        let grammar = Grammar::tool_call_with_requirements(&["read"], REQUIREMENTS)
-            .expect("path is an accepted key");
-        assert!(!accepts(
-            &grammar,
-            br#"{"tool":"read","args":{"query":false}}"#
-        ));
-        assert!(!accepts(
-            &grammar,
-            br#"{"tool":"read","args":{"query":false,"path":"a"}}"#
-        ));
+    fn a_tool_without_required_keys_accepts_an_empty_object() {
+        let grammar = Grammar::tool_call_with_requirements(&["plain", "read"], REQUIREMENTS)
+            .expect("the table is accepted");
+        assert!(accepts(&grammar, br#"{"tool":"plain","args":{}}"#));
         assert!(accepts(
             &grammar,
-            br#"{"tool":"read","args":{"path":"a","query":false,"limit":1}}"#
+            br#"{"tool":"plain","args":{"command":"ls"}}"#
         ));
-    }
-
-    #[test]
-    fn a_tool_without_requirements_accepts_an_empty_object() {
-        let grammar = Grammar::tool_call_with_requirements(&["plain", "read"], REQUIREMENTS)
-            .expect("every required key is an accepted key");
-        assert!(accepts(&grammar, br#"{"tool":"plain","args":{}}"#));
         // The empty object stays legal for the tool that needs nothing, and
         // only for that tool.
         assert!(!accepts(&grammar, br#"{"tool":"read","args":{}}"#));
+
+        // A tool the table does not name declares no argument, so its object
+        // is `{}` too.
+        let bare = Grammar::tool_call(&["read"]).expect("the names are plain");
+        assert!(accepts(&bare, br#"{"tool":"read","args":{}}"#));
+        assert!(!accepts(&bare, br#"{"tool":"read","args":{"path":"a"}}"#));
     }
 
     #[test]
@@ -1259,18 +1361,15 @@ mod tests {
     }
 
     #[test]
-    fn a_key_with_no_type_takes_the_three() {
-        let grammar = Grammar::tool_call_with_requirements(&["plain"], REQUIREMENTS)
+    fn a_key_with_no_declared_type_takes_the_three() {
+        let grammar = Grammar::tool_call_with_requirements(&["any"], REQUIREMENTS)
             .expect("the table is accepted");
-        assert!(accepts(&grammar, br#"{"tool":"plain","args":{}}"#));
+        assert!(accepts(&grammar, br#"{"tool":"any","args":{}}"#));
+        assert!(accepts(&grammar, br#"{"tool":"any","args":{"query":"a"}}"#));
+        assert!(accepts(&grammar, br#"{"tool":"any","args":{"query":1}}"#));
         assert!(accepts(
             &grammar,
-            br#"{"tool":"plain","args":{"query":"a"}}"#
-        ));
-        assert!(accepts(&grammar, br#"{"tool":"plain","args":{"query":1}}"#));
-        assert!(accepts(
-            &grammar,
-            br#"{"tool":"plain","args":{"query":false}}"#
+            br#"{"tool":"any","args":{"query":false}}"#
         ));
     }
 
@@ -1358,7 +1457,8 @@ mod tests {
 
     #[test]
     fn every_non_complete_state_on_a_valid_call_can_continue() {
-        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
+            .expect("the table is accepted");
         let vocab = synthetic_vocab(CALL);
         let mut state = grammar.start();
         let mut position = 0usize;
@@ -1394,7 +1494,8 @@ mod tests {
 
     #[test]
     fn every_reachable_non_complete_state_can_continue() {
-        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements(&["read", "write"], REQUIREMENTS)
+            .expect("the table is accepted");
         let mut seen = vec![false; grammar.states.len()];
         let mut stack = vec![0usize];
         while let Some(index) = stack.pop() {
@@ -1417,14 +1518,16 @@ mod tests {
 
     #[test]
     fn a_string_of_exactly_the_bound_is_accepted() {
-        let grammar = Grammar::tool_call_with_limit(&["read"], 8).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements_and_limit(&["read"], REQUIREMENTS, 8)
+            .expect("the table is accepted");
         assert!(accepts(&grammar, &call_with_string(8)));
         assert!(!accepts(&grammar, &call_with_string(9)));
     }
 
     #[test]
     fn an_escape_counts_as_one_character() {
-        let grammar = Grammar::tool_call_with_limit(&["read"], 2).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements_and_limit(&["read"], REQUIREMENTS, 2)
+            .expect("the table is accepted");
         // Four wire bytes, two characters.
         assert!(accepts(
             &grammar,
@@ -1438,7 +1541,8 @@ mod tests {
 
     #[test]
     fn several_arguments_each_within_the_bound_are_accepted() {
-        let grammar = Grammar::tool_call_with_limit(&["write"], 8).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements_and_limit(&["write"], REQUIREMENTS, 8)
+            .expect("the table is accepted");
         assert!(accepts(
             &grammar,
             br#"{"tool":"write","args":{"path":"a/b.txt","text":"hola que","count":7}}"#
@@ -1451,24 +1555,29 @@ mod tests {
 
     #[test]
     fn the_bound_does_not_touch_the_tool_name_or_the_keys() {
-        // `read` and `command` are longer than the bound: both are literals,
+        // `plain` and `command` are longer than the bound: both are literals,
         // so the bound never applies to them.
-        let grammar = Grammar::tool_call_with_limit(&["read"], 3).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements_and_limit(&["plain"], REQUIREMENTS, 3)
+            .expect("the table is accepted");
         assert!(accepts(
             &grammar,
-            br#"{"tool":"read","args":{"command":"ls"}}"#
+            br#"{"tool":"plain","args":{"command":"ls"}}"#
         ));
         assert!(!accepts(
             &grammar,
-            br#"{"tool":"read","args":{"command":"ls -l"}}"#
+            br#"{"tool":"plain","args":{"command":"ls -l"}}"#
         ));
     }
 
     #[test]
     fn every_reachable_non_complete_state_reaches_a_complete_call() {
         for max_length in [0usize, 1, 4, DEFAULT_MAX_STRING_LENGTH] {
-            let grammar = Grammar::tool_call_with_limit(&["read", "write"], max_length)
-                .expect("the names are plain");
+            let grammar = Grammar::tool_call_with_requirements_and_limit(
+                &["read", "write"],
+                REQUIREMENTS,
+                max_length,
+            )
+            .expect("the table is accepted");
             let mut reverse = vec![Vec::new(); grammar.states.len()];
             for (index, state) in grammar.states.iter().enumerate() {
                 for &(_, next) in &state.transitions {
@@ -1513,15 +1622,22 @@ mod tests {
 
     #[test]
     fn the_state_count_stays_small_for_the_default_bound() {
-        let grammar = Grammar::tool_call(&["read", "write"]).expect("the names are plain");
+        let grammar = Grammar::tool_call_with_requirements_and_limit(
+            &["read"],
+            REQUIREMENTS,
+            DEFAULT_MAX_STRING_LENGTH,
+        )
+        .expect("the table is accepted");
         assert!(
             grammar.states.len() < 700,
             "{} states for the default bound of {DEFAULT_MAX_STRING_LENGTH} characters",
             grammar.states.len()
         );
-        // The bound is a chain: each character adds one position state and one
-        // escape state, never a subset blow up.
-        let limited = Grammar::tool_call_with_limit(&["read", "write"], 64).expect("names");
+        // `read` declares one string key, and the bound is a chain: each
+        // character adds one position state and one escape state, never a
+        // subset blow up.
+        let limited = Grammar::tool_call_with_requirements_and_limit(&["read"], REQUIREMENTS, 64)
+            .expect("the table is accepted");
         assert_eq!(
             grammar.states.len() - limited.states.len(),
             2 * (DEFAULT_MAX_STRING_LENGTH - 64)

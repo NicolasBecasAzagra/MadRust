@@ -399,6 +399,18 @@ mod tests {
         Value::String(value.to_string())
     }
 
+    /// `true` when `bytes` is a complete call of `grammar`.
+    fn accepts(grammar: &Grammar, bytes: &[u8]) -> bool {
+        let mut state = grammar.start();
+        for &byte in bytes {
+            match grammar.advance(state, &[byte]) {
+                Some(next) => state = next,
+                None => return false,
+            }
+        }
+        grammar.is_complete(state)
+    }
+
     #[test]
     fn every_required_key_is_an_accepted_argument() {
         for (tool, arguments) in REQUIREMENTS {
@@ -444,7 +456,7 @@ mod tests {
     #[test]
     fn the_grammar_accepts_the_keys_of_every_tool() {
         let grammar = Grammar::tool_call_with_requirements(&NAMES, REQUIREMENTS)
-            .expect("every required key is an accepted argument");
+            .expect("every declared key is an accepted argument");
         for call in [
             br#"{"tool":"read_file","args":{"path":"/a"}}"#.as_slice(),
             br#"{"tool":"list_dir","args":{"path":"/a"}}"#,
@@ -452,25 +464,28 @@ mod tests {
             br#"{"tool":"compute","args":{"value":"1+1"}}"#,
             br#"{"tool":"done","args":{"text":"ok"}}"#,
         ] {
-            let mut state = grammar.start();
-            for &byte in call {
-                let next = grammar.advance(state, &[byte]);
-                assert!(next.is_some(), "the call left the grammar");
-                state = next.expect("the byte has a transition");
-            }
-            assert!(grammar.is_complete(state), "the call is not complete");
+            assert!(accepts(&grammar, call), "the call is not complete");
         }
         // The call the table exists to refuse: an empty object for a tool that
-        // needs a path. The closing brace leaves the language, or the call
-        // reaches its end without being complete.
-        let mut state = grammar.start();
-        for &byte in br#"{"tool":"read_file","args":{}}"# {
-            match grammar.advance(state, &[byte]) {
-                Some(next) => state = next,
-                None => break,
-            }
-        }
-        assert!(!grammar.is_complete(state));
+        // needs a path.
+        assert!(!accepts(&grammar, br#"{"tool":"read_file","args":{}}"#));
+    }
+
+    #[test]
+    fn a_call_carries_only_the_keys_of_its_tool() {
+        let grammar = Grammar::tool_call_with_requirements(&NAMES, REQUIREMENTS)
+            .expect("every declared key is an accepted argument");
+        // `text` belongs to `write_file`. The run that started this rule wrote
+        // `{"tool":"read_file","args":{"path":"/vocab.json","text":...}}`.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read_file","args":{"path":"/a","text":"b"}}"#
+        ));
+        // A key cannot come twice.
+        assert!(!accepts(
+            &grammar,
+            br#"{"tool":"read_file","args":{"path":"/a","path":"/b"}}"#
+        ));
     }
 
     #[test]
