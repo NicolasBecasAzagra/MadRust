@@ -49,6 +49,19 @@ pub fn read_register(bus: u8, device: u8, function: u8, offset: u8) -> Result<u3
     }
 }
 
+/// Write one 32-bit register of the configuration space of a function.
+///
+/// The caller has already proved the function answers: the enumeration reads
+/// the vendor id first. A write aimed at an absent function is ignored by the
+/// host bridge and has no effect.
+pub fn write_register(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    outl(
+        CONFIG_ADDRESS,
+        pci::config_address(bus, device, function, offset),
+    );
+    outl(CONFIG_DATA, value);
+}
+
 /// Print one line per function that answers on bus zero.
 ///
 /// The line is fixed so the boot gate can match it:

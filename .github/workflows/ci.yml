@@ -122,6 +122,11 @@ jobs:
           grep -qE "^\[pci\] [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] [0-9a-f]{4}:[0-9a-f]{4} class [0-9a-f]{6}$" pci-boot.log
           grep -q "^\[pci\] 00:1f.0 8086:29c0 " pci-boot.log
           grep -q " 1af4:1000 " pci-boot.log
+          # The kernel claims the legacy port window of the card and reports
+          # the base it assigned, the size the device asked for, the features
+          # it offers and its hardware address. QEMU's address starts with
+          # 52:54:00, the prefix of the host side of the emulated card.
+          grep -qE "^\[virtio\] net base=0x[0-9a-f]{4} size=32 features=0x[0-9a-f]{8} mac=52:54:00(:[0-9a-f]{2}){3}$" pci-boot.log
           grep -qxF "MadRust: boot OK" pci-boot.log
 
       - name: Boot kernel with four processors

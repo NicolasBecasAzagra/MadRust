@@ -54,6 +54,7 @@ mod sync;
 mod thread;
 mod user;
 mod vectors;
+mod virtio;
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -314,6 +315,13 @@ unsafe extern "C" fn _start(
     // interrupt, so the bus is enumerated before the interrupt controller is
     // reprogrammed.
     pci::enumerate();
+
+    // Take the network card when the machine carries one. The legacy window
+    // is polled, so this stays before the interrupt controller is programmed
+    // too; a card that does not answer leaves the rest of the boot alone.
+    if let Err(error) = virtio::probe() {
+        kprintln!("[virtio] net: {:?}", error);
+    }
 
     gdt::init();
     kprintln!("[arch] GDT and TSS loaded");
