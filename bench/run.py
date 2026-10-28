@@ -663,15 +663,15 @@ def ensure_net_initramfs(path: Path, port: int, per_boot: int) -> None:
     check_initramfs(path)
 
 
-def ensure_agent_net_initramfs(path: Path, port: int) -> None:
+def ensure_agent_net_initramfs(path: Path, port: int, model: Path | None = None) -> None:
     """Build the archive that carries the agent, the model and the endpoint.
 
-    The model is the same synthetic checkpoint the agent gate uses, and the
-    endpoint is the server of this run. The agent reads it from `/net.conf`,
-    because neither kernel passes arguments to the program it starts as init.
-    `selftest=1` makes the agent prove the network tool before it asks the
-    model: the synthetic model decides nothing sensible, and a measurement of
-    the tool must not depend on it.
+    The model is the synthetic checkpoint of the repository unless the caller
+    gives one, and the endpoint is the server of this run. The agent reads it
+    from `/net.conf`, because neither kernel passes arguments to the program
+    it starts as init. `selftest=1` makes the agent prove the network tool
+    before it asks the model: the synthetic model decides nothing sensible,
+    and a measurement of the tool must not depend on it.
     """
     root = repo_root()
     print("[rig] building the agent network initramfs", file=sys.stderr)
@@ -682,6 +682,10 @@ def ensure_agent_net_initramfs(path: Path, port: int) -> None:
         AGENT_NET_PORT=str(port),
         AGENT_NET_SELFTEST="1",
     )
+    if model is not None:
+        # The archive carries the checkpoint the caller gave, and the target
+        # of the build reads it from here.
+        env["INFER_MODEL_DIR"] = str(model)
     result = subprocess.run(
         ["make", "-s", "--no-print-directory", "agent-net-initramfs"],
         cwd=root,
@@ -1089,6 +1093,14 @@ def main() -> int:
         help="run only the MadRust image, before a mainline image exists",
     )
     parser.add_argument("--initrd", help="cpio archive to hand to both kernels")
+    parser.add_argument(
+        "--agent-model",
+        help=(
+            "directory of the checkpoint the agent serves, for the run of the "
+            "agent against the network; without it the synthetic checkpoint of "
+            "the repository is used"
+        ),
+    )
     parser.add_argument("--out", default="bench/results", help="result directory")
     parser.add_argument(
         "--iterations",
@@ -1250,7 +1262,10 @@ def main() -> int:
         ensure_net_initramfs(net_initrd, server_port, net_per_boot)
     if agent_net:
         agent_net_initrd = root / AGENT_NET_INITRAMFS
-        ensure_agent_net_initramfs(agent_net_initrd, server_port)
+        agent_model = (
+            Path(args.agent_model).resolve() if args.agent_model else None
+        )
+        ensure_agent_net_initramfs(agent_net_initrd, server_port, agent_model)
 
     if initrd is None and workload_expected:
         initrd = root / "bench" / "initramfs.cpio"
