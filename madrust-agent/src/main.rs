@@ -63,7 +63,10 @@ const MAX_HISTORY_CHARS: usize = 4096;
 /// and the model can choose many one byte tokens before it closes the call.
 /// The grammar bounds every argument string, so the budget is not the only
 /// thing that ends an unterminated call.
-pub const MAX_NEW_TOKENS: usize = 256;
+///
+/// The budget is what a call needs with room to spare: a name, a key and a
+/// path of up to a hundred and twenty eight characters.
+pub const MAX_NEW_TOKENS: usize = 96;
 
 /// The task used when the program gets no argument.
 pub const DEFAULT_TASK: &str =
@@ -116,6 +119,15 @@ fn history_chars(history: &[(madrust_infer::chat::Role, String)]) -> usize {
     history.iter().map(|(_, text)| text.len()).sum()
 }
 
+/// Whether a call is the same one the model already made.
+///
+/// A model that asks for the same thing twice is not going to ask for
+/// something else, and the loop would spend its whole budget on the same
+/// call. The run stops there and says so.
+pub fn repeats(previous: Option<&str>, request: &str) -> bool {
+    previous == Some(request)
+}
+
 /// The summary line of a run.
 pub fn summary(steps: usize, tokens: usize, seconds: f64, tool_calls: usize) -> String {
     format!("AGENT steps={steps} tokens={tokens} seconds={seconds:.3} tool_calls={tool_calls}")
@@ -150,6 +162,7 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut tokens = 0usize;
     let mut steps = 0usize;
     let mut answer: Option<String> = None;
+    let mut previous: Option<String> = None;
 
     for step in 1..=MAX_STEPS {
         let prompt = chat::tool_prompt(SYSTEM, task, &tools::NAMES, &history);
@@ -179,6 +192,20 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         steps += 1;
+        // A model that asks for the same thing twice is not going to ask for
+        // something else: the loop would spend its whole budget on the same
+        // call. The run stops there and says so, instead of burning the time
+        // of the reader.
+        let request = format!("{} {}", call.tool, call.args_json());
+        if repeats(previous.as_deref(), &request) {
+            println!(
+                "{}",
+                step_line(step, &call.tool, &call.args_json(), "the model repeated the call")
+            );
+            break;
+        }
+        previous = Some(request);
+
         let outcome = tools::run(&call);
         let result = match outcome {
             Outcome::Continue(result) => result,
@@ -248,7 +275,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer_line, default_task, sanitize, step_line, summary, DEFAULT_TASK};
+    use super::{
+        answer_line, default_task, repeats, sanitize, step_line, summary, DEFAULT_TASK,
+    };
 
     #[test]
     fn no_argument_uses_the_default_task() {
@@ -263,6 +292,16 @@ mod tests {
     #[test]
     fn a_newline_is_written_as_an_escape() {
         assert_eq!(sanitize("a\nb\rc\td"), "a\\nb\\rc\\td");
+    }
+
+    #[test]
+    fn a_call_that_repeats_is_recognized() {
+        assert!(repeats(Some("read_file {\"path\":\"/a\"}"), "read_file {\"path\":\"/a\"}"));
+        assert!(!repeats(
+            Some("read_file {\"path\":\"/a\"}"),
+            "read_file {\"path\":\"/b\"}"
+        ));
+        assert!(!repeats(None, "read_file {\"path\":\"/a\"}"));
     }
 
     #[test]
