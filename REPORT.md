@@ -267,6 +267,52 @@ What still cannot be said:
   arithmetic is against the reference implementation on the same host, and
   that number is measured separately.
 
+## Results: the agent
+
+The agent is the last piece of the claim: a model that a program asks what to
+do, a tool that does it, and the model again. It runs on the same kernel, with
+the same runtime, with the same checkpoint and with the same binary as the
+reference kernel.
+
+The checkpoint is `HuggingFaceTB/SmolLM2-135M-Instruct`, revision
+`12fd25f77366fa6b3b4b768ec3050bf629380bac`, Apache-2.0. The agent has five
+tools (`read_file`, `list_dir`, `write_file`, `compute` and `done`) and the
+model chooses which one to call and with which arguments. The grammar of the
+call is not a prompt instruction but an automaton over bytes: the answer of the
+model cannot be anything but a well formed call of a declared tool, carrying
+the keys that tool needs, each of them once, with the type the tool expects.
+
+The task is to read `/vocab.json` from the initramfs and report its size. On
+the native host, one processor, 1024 MiB, the same initramfs for both kernels:
+
+| | MadRust | mainline | mainline, mitigations off |
+|---|---|---|---|
+| Steps of the loop | 2 | 2 | 2 |
+| Tokens the model generated | 39 | 39 | 39 |
+| Seconds of the loop | **821.0** | 2792.7 | 2570.1 |
+| Milliseconds of a step | **410.5 s** | 1396.4 s | 1285.0 s |
+| Boot to the last result | **1200.8 s** | 2807.6 s | 2584.3 s |
+| Resident memory of the guest | **857 MB** | 1021 MB | 1023 MB |
+
+The loop is three times faster on MadRust than on the reference kernel with the
+same binary and the same checkpoint, and the guest needs 164 megabytes less.
+The raw rows are in `bench/results/agent/`.
+
+The transcript of the run is the honest part:
+
+```text
+AGENT step=1 tool=read_file args={"path":"/vocab.json"} result=bytes=800662 read=4096 content=…
+AGENT step=2 tool=read_file args={"path":"/vocab.json"} result=the model repeated the call
+AGENT steps=2 tokens=39 seconds=821.017 tool_calls=2
+```
+
+The model of 135 million parameters reads the file and answers with its real
+size, 800662 bytes, and then asks for the same file again. The loop notices
+the repetition and stops there instead of spending the rest of its budget on
+the same call. A model that knew when to stop would answer instead of asking
+again; that is a property of the checkpoint, not of the kernel, and the number
+the kernel is responsible for is the one in the table.
+
 ## Losses
 
 - **The thread workload was a loss and then became a win.** With eager
