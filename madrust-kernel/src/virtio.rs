@@ -6,8 +6,12 @@
 //! window of input and output ports. This module claims that window, switches
 //! the function on, reads the legacy header and brings the device up: the
 //! status register is walked, the features this milestone needs are agreed and
-//! the two queues of a network card are placed in physical memory. No frame
-//! moves yet.
+//! the two queues of a network card are placed in physical memory.
+//!
+//! Once the device is ready the driver hands it one frame and waits for it to
+//! come back through the used ring. The frame is a hand built address
+//! resolution request for the gateway of the emulator, so the host has
+//! something to answer: nothing is received yet and no protocol is spoken.
 //!
 //! The guest has no firmware, so the base address register of the card is
 //! zero and the kernel assigns the port range itself. The interrupt line of
@@ -37,9 +41,11 @@
 //! four pages. The control queue only exists when the feature that asks for it
 //! is agreed, and it is not.
 
+use core::sync::atomic::{fence, Ordering};
+
 use madrust_arch::pci;
 use madrust_arch::port::{inb, inl, inw, outb, outl, outw};
-use madrust_mm::FRAME_SIZE;
+use madrust_mm::{phys_to_virt, FRAME_SIZE};
 
 use crate::memory;
 use crate::pci::{read_register, write_register, Error as ConfigError};
@@ -117,6 +123,9 @@ const QUEUE_SIZE: u16 = 12;
 /// Legacy header offset of the queue to select.
 const QUEUE_SELECT: u16 = 14;
 
+/// Legacy header offset of the queue to notify.
+const QUEUE_NOTIFY: u16 = 16;
+
 /// Legacy header offset of the device status.
 const DEVICE_STATUS: u16 = 18;
 
@@ -158,8 +167,23 @@ const QUEUE_TX: u16 = 1;
 /// and the index of the next descriptor.
 const DESC_SIZE: usize = 16;
 
+/// Descriptor offset: the physical address of the buffer.
+const DESC_ADDRESS: usize = 0;
+
+/// Descriptor offset: the number of bytes the device may read or write.
+const DESC_LENGTH: usize = 8;
+
+/// Descriptor offset: the flags of the buffer.
+const DESC_FLAGS: usize = 12;
+
+/// Descriptor offset: the index of the next descriptor of the chain.
+const DESC_NEXT: usize = 14;
+
 /// Bytes of the header of the available ring: its flags and its index.
 const AVAIL_HEADER: usize = 4;
+
+/// Offset of the index of the available ring, the number of entries ready.
+const AVAIL_INDEX: usize = 2;
 
 /// Bytes of one entry of the available ring: the head of a chain.
 const AVAIL_ENTRY: usize = 2;
@@ -167,8 +191,65 @@ const AVAIL_ENTRY: usize = 2;
 /// Bytes of the header of the used ring: its flags and its index.
 const USED_HEADER: usize = 4;
 
+/// Offset of the index of the used ring, the number of entries completed.
+const USED_INDEX: usize = 2;
+
 /// Bytes of one entry of the used ring: the head of a chain and its length.
 const USED_ENTRY: usize = 8;
+
+/// Offset of the descriptor index inside one entry of the used ring.
+const USED_ID: usize = 0;
+
+/// Offset of the number of bytes written into the entry of the used ring.
+const USED_LENGTH: usize = 4;
+
+/// Bytes the network device reads before the frame itself: the flags, the type
+/// of segmentation, and four half words with the header length, the size of
+/// the segmentation, the checksum start and its offset.
+///
+/// The device does not segment and does not checksum, so every field is zero.
+/// The header is ten bytes because the feature that adds the twelfth byte was
+/// not negotiated.
+const NET_HEADER: usize = 10;
+
+/// Bytes of an Ethernet frame before its payload: the two addresses and the
+/// type.
+const ETHERNET_HEADER: usize = 14;
+
+/// Smallest Ethernet frame without the check sequence: a shorter one is a runt
+/// and a switch drops it.
+const ETHERNET_MIN: usize = 60;
+
+/// Type of an address resolution request.
+const ARP_TYPE: u16 = 0x0806;
+
+/// Hardware type of an address resolution request on an Ethernet link.
+const ARP_ETHERNET: u16 = 1;
+
+/// Protocol type of the address an address resolution request asks about.
+const ARP_IPV4: u16 = 0x0800;
+
+/// Operation of an address resolution request.
+const ARP_REQUEST: u16 = 1;
+
+/// Protocol address the emulator hands to the guest, and the one the request
+/// says it comes from.
+const GUEST_ADDRESS: [u8; 4] = [10, 0, 2, 15];
+
+/// Protocol address of the gateway of the emulator, the one the host answers
+/// at, and the address the request asks about.
+const GATEWAY_ADDRESS: [u8; 4] = [10, 0, 2, 2];
+
+/// Descriptor that carries the whole frame: one buffer, no chain.
+const TX_DESCRIPTOR: u32 = 0;
+
+/// How many times the poll of the used ring reads its index before it gives
+/// up.
+///
+/// The device moves the frame as soon as it is told to, so the loop is a
+/// handful of iterations in practice; the bound turns a device that never
+/// answers into a reported failure instead of a boot that hangs.
+const TX_POLL_LIMIT: u32 = 10_000_000;
 
 /// Why a probe failed. A card that is absent is not an error: the caller
 /// boots without a network device on every machine that has none.
@@ -202,6 +283,8 @@ pub enum Error {
     QueueRejected,
     /// The number of descriptors changed once the page number was in place.
     QueueSizeChanged,
+    /// The device never reported the transmitted frame in the used ring.
+    TransmitTimeout,
 }
 
 impl From<ConfigError> for Error {
@@ -275,15 +358,16 @@ pub fn probe() -> Result<(), Error> {
 
     // A network device has two queues, one per direction. The control queue
     // would only exist with the feature that asks for it, and it is not
-    // negotiated. The rings stay in place for the rest of the boot: the next
-    // step of the milestone fills them with descriptors.
-    for index in [QUEUE_RX, QUEUE_TX] {
-        setup_queue(index)?;
-    }
+    // negotiated. The rings stay in place for the rest of the boot: the
+    // receiving one is filled by a later step of the milestone.
+    let _rx = setup_queue(QUEUE_RX)?;
+    let tx = setup_queue(QUEUE_TX)?;
 
-    // The driver is ready only once both rings are in place.
+    // The driver is ready only once both rings are in place, and the device
+    // takes no work before it reads this bit.
     step(status, STATUS_DRIVER_OK)?;
-    Ok(())
+
+    transmit(&tx, &mac)
 }
 
 /// Reset the device and check that the status register reads zero.
@@ -325,7 +409,7 @@ fn negotiate(offered: u32) -> Result<(), Error> {
 /// the queue is selected before anything else and the page number arrives
 /// last: an address that comes in while another queue is selected is taken
 /// for that queue.
-fn setup_queue(index: u16) -> Result<(), Error> {
+fn setup_queue(index: u16) -> Result<Queue, Error> {
     outw(BAR_BASE + QUEUE_SELECT, index);
 
     let allowed = inw(BAR_BASE + QUEUE_SIZE);
@@ -363,7 +447,185 @@ fn setup_queue(index: u16) -> Result<(), Error> {
         allowed,
         max
     );
+    Ok(Queue {
+        base,
+        descriptors: allowed,
+    })
+}
+
+/// A queue whose ring sits at `base` in physical memory.
+struct Queue {
+    /// Physical address of the block that holds the ring.
+    base: u64,
+    /// Number of descriptors the device reported for the queue.
+    descriptors: u16,
+}
+
+/// Offset of the available ring inside the block of a queue.
+///
+/// The descriptors come first, one after another, and the available ring
+/// follows them.
+fn avail_offset(descriptors: u16) -> usize {
+    usize::from(descriptors) * DESC_SIZE
+}
+
+/// Offset of the used ring inside the block of a queue.
+///
+/// The standard adds one spare word after the last entry of the available ring
+/// and then rounds the used ring up to the next page boundary, because the
+/// device derives the whole layout from the page number.
+fn used_offset(descriptors: u16) -> usize {
+    (avail_offset(descriptors)
+        + AVAIL_HEADER
+        + usize::from(descriptors) * AVAIL_ENTRY
+        + AVAIL_ENTRY)
+        .next_multiple_of(FRAME_SIZE)
+}
+
+/// Hand one frame to the device and wait until it reports that it left.
+fn transmit(queue: &Queue, mac: &[u8; 6]) -> Result<(), Error> {
+    // The buffer is a whole frame of physical memory, because the descriptor
+    // holds a physical address and the device reaches it by itself. It is
+    // zeroed, so the ten bytes in front of the frame are already the header of
+    // a frame with no segmentation and no checksum.
+    let buffer = memory::with(|manager| manager.alloc_zeroed_frame())
+        .flatten()
+        .ok_or(Error::OutOfMemory)?;
+
+    let frame = arp_request(mac);
+    // SAFETY: the buffer is a page the driver owns, the frame is `NET_HEADER`
+    // bytes shorter than the page, the source lives on the stack of this
+    // function, and the two regions cannot overlap: one is physical memory
+    // reached through the direct map and the other is the kernel stack.
+    unsafe {
+        core::ptr::copy_nonoverlapping(frame.as_ptr(), slot::<u8>(buffer, NET_HEADER), frame.len());
+    }
+
+    let length = (NET_HEADER + frame.len()) as u32;
+    let avail = avail_offset(queue.descriptors);
+    let used = used_offset(queue.descriptors);
+
+    // One descriptor carries the whole frame. The device reads it, so the flag
+    // that marks a buffer for writing stays clear, and no other descriptor
+    // follows, so the flag of the chain stays clear too.
+    // SAFETY: the offsets of every field lie inside descriptor zero, which
+    // itself lies inside the ring block the driver owns.
+    unsafe {
+        core::ptr::write_volatile(slot::<u64>(queue.base, DESC_ADDRESS), buffer);
+        core::ptr::write_volatile(slot::<u32>(queue.base, DESC_LENGTH), length);
+        core::ptr::write_volatile(slot::<u16>(queue.base, DESC_FLAGS), 0);
+        core::ptr::write_volatile(slot::<u16>(queue.base, DESC_NEXT), 0);
+    }
+
+    // The device must see the descriptor before it sees the entry that points
+    // at it. A full fence leaves no room for the compiler or the processor to
+    // reorder the two stores.
+    fence(Ordering::SeqCst);
+    // SAFETY: entry zero of the available ring is inside the ring block, and
+    // it is the descriptor the driver just wrote.
+    unsafe {
+        core::ptr::write_volatile(
+            slot::<u16>(queue.base, avail + AVAIL_HEADER),
+            TX_DESCRIPTOR as u16,
+        );
+        core::ptr::write_volatile(slot::<u16>(queue.base, avail + AVAIL_INDEX), 1);
+    }
+    fence(Ordering::SeqCst);
+
+    // The index of the available ring only says that the entry is there. The
+    // write of the queue number into the notify word is what makes the device
+    // read it.
+    outw(BAR_BASE + QUEUE_NOTIFY, QUEUE_TX);
+
+    // The device reports a frame by writing its descriptor index and length
+    // into the used ring and then advancing the index of that ring. The index
+    // is the number of frames the queue has moved, so it starts at zero and a
+    // value other than zero is the frame of this call.
+    let mut spins = 0;
+    // SAFETY: the index of the used ring lies inside the ring block, and the
+    // read is volatile so the loop sees the word the device writes.
+    while unsafe { core::ptr::read_volatile(slot::<u16>(queue.base, used + USED_INDEX)) } == 0 {
+        if spins == TX_POLL_LIMIT {
+            free_frame(buffer);
+            return Err(Error::TransmitTimeout);
+        }
+        spins += 1;
+        core::hint::spin_loop();
+    }
+
+    // SAFETY: the device advanced the used ring, so entry zero is written and
+    // its two words lie inside the ring block.
+    let (descriptor, moved, count) = unsafe {
+        (
+            core::ptr::read_volatile(slot::<u32>(queue.base, used + USED_HEADER + USED_ID)),
+            core::ptr::read_volatile(slot::<u32>(queue.base, used + USED_HEADER + USED_LENGTH)),
+            core::ptr::read_volatile(slot::<u16>(queue.base, used + USED_INDEX)),
+        )
+    };
+
+    // The length in the used ring is the one the device chose to report. A
+    // network card has nothing to report for a transmitted frame, because the
+    // buffers belong to the driver, so the card of the emulator writes zero
+    // there while the count of frames is the entry of the used ring itself.
+    crate::kprintln!(
+        "[virtio] tx queue={} desc={} len={} used={}",
+        QUEUE_TX,
+        descriptor,
+        moved,
+        count
+    );
+    // The frame is back in the used ring, so the device is done with the
+    // buffer and the page returns to the allocator.
+    free_frame(buffer);
     Ok(())
+}
+
+/// Give one frame back to the memory manager.
+fn free_frame(physical: u64) {
+    let _ = memory::with(|manager| manager.free_frame(physical));
+}
+
+/// Build the address resolution request the driver sends: it asks the gateway
+/// of the emulator for its hardware address.
+///
+/// The destination is the broadcast address because no hardware address is
+/// known yet, the source is the hardware address the device reported, and the
+/// payload follows the layout of an address resolution packet over IPv4 on an
+/// Ethernet link. The request is padded to the smallest frame an Ethernet link
+/// carries without the check sequence.
+fn arp_request(mac: &[u8; 6]) -> [u8; ETHERNET_MIN] {
+    let mut frame = [0u8; ETHERNET_MIN];
+
+    frame[0..6].copy_from_slice(&[0xff; 6]);
+    frame[6..12].copy_from_slice(mac);
+    frame[12..14].copy_from_slice(&ARP_TYPE.to_be_bytes());
+
+    // The payload starts where the header of the frame ends.
+    let arp = ETHERNET_HEADER;
+    frame[arp..arp + 2].copy_from_slice(&ARP_ETHERNET.to_be_bytes());
+    frame[arp + 2..arp + 4].copy_from_slice(&ARP_IPV4.to_be_bytes());
+    frame[arp + 4] = 6;
+    frame[arp + 5] = 4;
+    frame[arp + 6..arp + 8].copy_from_slice(&ARP_REQUEST.to_be_bytes());
+    frame[arp + 8..arp + 14].copy_from_slice(mac);
+    frame[arp + 14..arp + 18].copy_from_slice(&GUEST_ADDRESS);
+    // The hardware address of the target stays zero: that is what the request
+    // asks for.
+    frame[arp + 24..arp + 28].copy_from_slice(&GATEWAY_ADDRESS);
+
+    frame
+}
+
+/// Pointer to `offset` bytes into the block of physical memory at `base`.
+///
+/// # Safety
+///
+/// `base` must be the start of a block the caller owns for as long as the
+/// pointer is used, and `offset` plus the size of `T` must stay inside it.
+unsafe fn slot<T>(base: u64, offset: usize) -> *mut T {
+    // SAFETY: the caller guarantees that the offset stays inside the block, so
+    // the sum stays inside the direct map and the pointer is valid.
+    unsafe { (phys_to_virt(base) as *mut u8).add(offset).cast::<T>() }
 }
 
 /// Give a ring block back to the memory manager.
@@ -378,12 +640,7 @@ fn free(base: u64, order: u8) {
 /// the next page boundary, because the device derives the whole layout from
 /// the page number of the block and aligns the used ring to the page size.
 fn ring_bytes(descriptors: u16) -> usize {
-    let count = usize::from(descriptors);
-    let avail_end = count * DESC_SIZE + AVAIL_HEADER + count * AVAIL_ENTRY;
-    // The standard adds one spare word after the last entry of the available
-    // ring before it rounds the used ring up to the page.
-    let used = (avail_end + AVAIL_ENTRY).next_multiple_of(FRAME_SIZE);
-    used + USED_HEADER + count * USED_ENTRY
+    used_offset(descriptors) + USED_HEADER + usize::from(descriptors) * USED_ENTRY
 }
 
 /// Smallest buddy order whose block holds `bytes` bytes.

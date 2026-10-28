@@ -108,6 +108,7 @@ jobs:
           timeout 60 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 512M \
             -kernel "$(make -s print-kernel-path)" \
             -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
+            -object filter-dump,id=dump0,netdev=n0,file=net.pcap \
             -display none -monitor none -no-reboot \
             -serial file:pci.log \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04
@@ -133,7 +134,64 @@ jobs:
           # line are the same.
           grep -qE "^\[virtio\] queue 0 base=0x[0-9a-f]{12} descriptors=[0-9]+ max=[0-9]+$" pci-boot.log
           grep -qE "^\[virtio\] queue 1 base=0x[0-9a-f]{12} descriptors=[0-9]+ max=[0-9]+$" pci-boot.log
+          # One frame is handed to the transmit queue and the device reports it
+          # back through the used ring: descriptor zero, the length the device
+          # chose to report and one frame moved.
+          grep -qE "^\[virtio\] tx queue=1 desc=0 len=[0-9]+ used=1$" pci-boot.log
           grep -qxF "MadRust: boot OK" pci-boot.log
+          # The frame must also leave the guest. The dump is written by the
+          # emulator at the boundary of its user mode network, so it holds what
+          # arrived there and what the host answered: the address resolution
+          # request for the gateway, and the reply of the gateway.
+          python3 - <<'PY'
+          import struct
+          import sys
+
+          with open("net.pcap", "rb") as dump:
+              data = dump.read()
+
+          # A libpcap file: a magic number, then a header and the bytes of each
+          # packet. QEMU writes the little endian variant.
+          if data[:4] != b"\xd4\xc3\xb2\xa1":
+              sys.exit("net.pcap is not a little endian libpcap file")
+          offset = 24
+          frames = []
+          while offset + 16 <= len(data):
+              _, _, captured, _ = struct.unpack("<IIII", data[offset : offset + 16])
+              offset += 16
+              frames.append(data[offset : offset + captured])
+              offset += captured
+
+          def arp(frame):
+              # Broadcast destination, the type of an address resolution
+              # packet, Ethernet hardware on IPv4 and one of its two operations.
+              if len(frame) < 42 or frame[0:6] != b"\xff" * 6:
+                  return None
+              if frame[12:14] != b"\x08\x06" or frame[14:18] != b"\x00\x01\x08\x00":
+                  return None
+              return frame
+
+          request = [
+              frame
+              for frame in frames
+              if (arp(frame) is not None
+                  and frame[20:22] == b"\x00\x01"
+                  and frame[28:32] == bytes([10, 0, 2, 15])
+                  and frame[38:42] == bytes([10, 0, 2, 2]))
+          ]
+          if not request:
+              sys.exit("no address resolution request for 10.0.2.2 reached the network")
+          reply = [
+              frame
+              for frame in frames
+              if (arp(frame) is not None
+                  and frame[20:22] == b"\x00\x02"
+                  and frame[28:32] == bytes([10, 0, 2, 2]))
+          ]
+          if not reply:
+              sys.exit("the gateway did not answer the address resolution request")
+          print("NET FRAME OK sent=%d received=%d" % (len(request[0]), len(frames)))
+          PY
 
       - name: Boot kernel with four processors
         run: |
