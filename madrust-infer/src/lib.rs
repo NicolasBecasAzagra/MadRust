@@ -33,9 +33,13 @@
 //!   `bfloat16` weights, with an AVX2 and FMA path, a NEON path, and a scalar
 //!   path that all agree to floating point tolerance. It is host tested and
 //!   the `madrust-infer-matmul` binary measures it without a model.
-//! * [`quant`] is the `Q4B32` block format: four bit weights in blocks of
-//!   thirty-two with one binary16 scale, decoded inside the matrix vector
-//!   product. It is host tested and `docs/QUANTIZATION.md` describes the file.
+//! * [`quant`] is the block format of a quantized checkpoint: four or eight
+//!   bit weights in blocks of thirty-two with one binary16 scale, decoded
+//!   inside the matrix vector product. It is host tested and
+//!   `docs/QUANTIZATION.md` describes the file.
+//! * [`quantize`] rewrites a `safetensors` checkpoint in that format, with the
+//!   SHA-256 of the result. It is the code behind the `madrust-infer-quantize`
+//!   tool and behind the gate test.
 //! * [`sha256`] is the digest the quantizer prints, so the tools need no
 //!   dependency either.
 //! * [`cli`] parses the optional token count of the binary, eight by default.
@@ -47,8 +51,8 @@
 //!   leaves, so mainline Linux does not panic when PID 1 exits.
 //! * [`reference`] is the published SmolLM2-135M run the runtime checks
 //!   itself against when it serves that checkpoint.
-//! * `mapping`, `model` and `runtime` need Linux `mmap` and are only built for
-//!   the Linux target. Everything above is host tested.
+//! * `mapping`, `model`, `runtime` and `compare` need Linux `mmap` and are only
+//!   built for the Linux target. Everything above is host tested.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 

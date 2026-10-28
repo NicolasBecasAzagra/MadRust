@@ -1,0 +1,286 @@
+{
+  "metadata": {
+    "qemu": "QEMU emulator version 11.1.2",
+    "accel": "tcg",
+    "host": {
+      "hostname": "BlackCat.local",
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "system": "Darwin",
+      "release": "27.0.0",
+      "python": "3.15.0"
+    },
+    "kernels": {
+      "madrust": {
+        "path": "/Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel",
+        "sha256": "282e2ac5a81d2749a8033e66d3f36b2331c403aba72d3e8132e4b647e292bce2",
+        "kernel_args": "console=ttyS0"
+      }
+    },
+    "commands": {
+      "madrust": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 1400M -kernel /Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel -initrd /Users/nicolasbecasazagra/madrust/artifacts/rig-float.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/quantization-q4/madrust.log -device isa-debug-exit,iobase=0xf4,iosize=0x04",
+      "madrust-quant": "qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 1400M -kernel /Users/nicolasbecasazagra/.cache/madrust/target/x86_64-madrust/release/madrust-kernel -initrd /Users/nicolasbecasazagra/madrust/artifacts/rig-q4.cpio -append console=ttyS0 -display none -monitor none -no-reboot -serial file:/Volumes/PortableSSD/MadRust/bench/results/quantization-q4/madrust-quant.log -device isa-debug-exit,iobase=0xf4,iosize=0x04"
+    },
+    "iterations_expected": {
+      "infer-ttft": 1,
+      "infer-tps": 1,
+      "infer-quant-tps": 1,
+      "boot-quant-seconds": 1,
+      "boot-quant-rss-mb": 1,
+      "infer-quant-ttft": 1
+    },
+    "started": "2026-10-28T23:09:17Z",
+    "initrd": {
+      "path": "/Users/nicolasbecasazagra/madrust/artifacts/rig-float.cpio",
+      "sha256": "5c3102870ad304a743bfec811c93d6dbd10cfb415712cc8fa32b9b9379e741df"
+    },
+    "initrd_quant": {
+      "path": "/Users/nicolasbecasazagra/madrust/artifacts/rig-q4.cpio",
+      "sha256": "e4c52bc4830020957e0b20eb47e11a2268481346979bf1496dcc5cd47d83fb1b"
+    }
+  },
+  "summary": [
+    {
+      "kernel": "madrust",
+      "workload": "syscall",
+      "unit": "ns/op",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "mmap",
+      "unit": "ns/MiB",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "weights",
+      "unit": "ns/MiB",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "weights-tail",
+      "unit": "ns/page",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "weights-huge",
+      "unit": "ns/MiB",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "weights-huge-tail",
+      "unit": "ns/page",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "futex",
+      "unit": "ns/roundtrip",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "threads",
+      "unit": "ns/total",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "infer-ttft",
+      "unit": "ms",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 5861.622,
+      "p99": 5861.622,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "infer-tps",
+      "unit": "tok/s",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 0.824,
+      "p99": 0.824,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "infer-quant-ttft",
+      "unit": "ms",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 16319.968,
+      "p99": 16319.968,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "infer-quant-tps",
+      "unit": "tok/s",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 0.315,
+      "p99": 0.315,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "boot-quant-seconds",
+      "unit": "s",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 58.901,
+      "p99": 58.901,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "boot-quant-rss-mb",
+      "unit": "MiB",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 271.6,
+      "p99": 271.6,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "agent-steps",
+      "unit": "steps",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "agent-tokens",
+      "unit": "tokens",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "agent-seconds",
+      "unit": "s",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "agent-step-ms",
+      "unit": "ms/step",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "agent-net",
+      "unit": "us/roundtrip",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "boot-seconds",
+      "unit": "s",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 21.652,
+      "p99": 21.652,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "boot-rss-mb",
+      "unit": "MiB",
+      "samples": 1,
+      "errors": 0,
+      "missing": 0,
+      "median": 549.0,
+      "p99": 549.0,
+      "stddev": null
+    },
+    {
+      "kernel": "madrust",
+      "workload": "net",
+      "unit": "us/roundtrip",
+      "samples": 0,
+      "errors": 0,
+      "missing": 0,
+      "median": null,
+      "p99": null,
+      "stddev": null
+    }
+  ]
+}

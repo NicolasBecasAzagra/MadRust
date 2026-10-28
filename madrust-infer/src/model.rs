@@ -12,6 +12,12 @@
 //! is the top half of an `f32`, so the shifted bits reproduce the original
 //! `f32` with the low sixteen bits zero and no rounding step.
 //!
+//! A quantized checkpoint binds the same way. A `Q4B32` or `Q8B32` matrix is a
+//! sequence of blocks with a binary16 scale, and the kernel of [`crate::matvec`]
+//! reads a block, applies the scale and accumulates the products without
+//! expanding the tensor. The norm weights stay floating point, and the reader
+//! refuses a header whose declaration disagrees with its tensors.
+//!
 //! The matrix vector products go through [`crate::matvec`]. A tensor that lies
 //! inside the mapped prefix is handed to the blocked kernel as one contiguous
 //! `bfloat16` range; the last at most 4095 bytes of the file live in a small

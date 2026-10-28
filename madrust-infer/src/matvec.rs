@@ -642,8 +642,7 @@ mod neon {
 mod tests {
     use super::{matvec_bf16, matvec_q4, matvec_q8, matvec_scalar, COLUMN_TILE, ROW_TILE};
     use crate::quant::{
-        f32_to_half, matrix_bytes, q8_matrix_bytes, BLOCK, BLOCK_BYTES, Q8_BLOCK_BYTES,
-        SCALE_BYTES,
+        f32_to_half, matrix_bytes, q8_matrix_bytes, BLOCK, BLOCK_BYTES, Q8_BLOCK_BYTES, SCALE_BYTES,
     };
 
     /// Deterministic weights in a small range, stored as `bfloat16`.

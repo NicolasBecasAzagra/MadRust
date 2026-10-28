@@ -1477,9 +1477,9 @@ def main() -> int:
                     args.memory,
                     args.smp,
                     quant_expected,
-                    tag="-q4",
+                    tag="-quant",
                 )
-                metadata["commands"][f"{label}-q4"] = shlex.join(command)
+                metadata["commands"][f"{label}-quant"] = shlex.join(command)
                 measured = outcome["outcome"] != "timeout"
                 quant_boot_rows = [
                     {
@@ -1511,7 +1511,7 @@ def main() -> int:
                 rows.extend(quant_rows)
                 ok = sum(1 for row in quant_rows if row["status"] == "ok")
                 print(
-                    f"[rig] {label}-q4: {ok} samples recorded",
+                    f"[rig] {label}-quant: {ok} samples recorded",
                     file=sys.stderr,
                 )
             if net:

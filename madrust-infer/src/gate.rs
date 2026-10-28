@@ -233,8 +233,7 @@ fn the_quantized_development_model_generates_the_same_tokens() {
     let quant_root = temporary("gate-quant");
     let tensors = tensors();
     write_root(&float_root, &tensors).expect("the floating point root is written");
-    let report =
-        quantize::checkpoint(&float_root, &quant_root, quantize::Width::Four)
+    let report = quantize::checkpoint(&float_root, &quant_root, quantize::Width::Four)
         .expect("the checkpoint is quantized");
     assert!(report.quantized > 0, "the gate quantized no matrix");
     assert!(

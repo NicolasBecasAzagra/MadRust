@@ -230,4 +230,12 @@ by the same decoder and measured by the same rig, so the choice is a flag and
 not a second implementation.
 
 The resident memory of the guest and the token rate of both widths are in the
-rows the rig publishes under `bench/results/quantization/`.
+rows the rig publishes: `bench/results/quantization/` holds the floating point
+and `Q8B32` runs of both kernels, and `bench/results/quantization-q4/` holds
+the floating point and `Q4B32` runs of MadRust. The block kernels are scalar,
+so on a host where `bfloat16` runs on AVX2 the checkpoint is slower per token
+even though it streams fewer bytes: the format buys memory, and the rig rows
+say so next to the rate. The guest resident memory of the quantized boot is
+below the floating point one by the size of the archive it no longer carries,
+and the `INFER pinned bytes=` line of the runtime is the exact weight
+footprint of the format.

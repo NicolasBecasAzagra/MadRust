@@ -1,0 +1,9 @@
+kernel,workload,iteration,value,unit,status,error
+mainline,infer-ttft,0,4295.789,ms,ok,
+mainline,infer-tps,0,1.251,tok/s,ok,
+mainline,boot-seconds,0,14.594,s,ok,
+mainline,boot-rss-mb,0,821.9,MiB,ok,
+mainline,infer-quant-ttft,0,24850.801,ms,ok,
+mainline,infer-quant-tps,0,0.198,tok/s,ok,
+mainline,boot-quant-seconds,0,64.606,s,ok,
+mainline,boot-quant-rss-mb,0,587.7,MiB,ok,
