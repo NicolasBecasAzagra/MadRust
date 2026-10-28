@@ -105,6 +105,21 @@ serial log. The log is the instrument.
   measurement used to measure the clock, and now it measures the fault. The
   difference between those two numbers is what the rig is for.
 
+## Experiments
+
+One of them is worth repeating, because the kernel that fails it looks
+perfectly healthy until a symbol moves:
+
+- Put a structure that is larger than the stack of a ring 3 thread on the
+  path of a system call. The stack is sixteen kilobytes. Watch what the
+  linker put above it with `nm` and the map of the build: the interrupt
+  descriptor table and the tables of the direct map are in the same
+  section, and the overflow reaches them. The boot fails with a general
+  protection fault in a place that has nothing to do with what changed, and
+  the fault is in the delivery of the interrupt, not in the code that
+  overflowed. A hardware watchpoint on the write that does it names the
+  copy in one shot.
+
 ## Debugging
 
 - Serial log first: it is deterministic, and the kernel prints enough to
