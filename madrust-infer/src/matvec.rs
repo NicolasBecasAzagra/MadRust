@@ -119,6 +119,51 @@ pub fn matvec_scalar(weights: &[u8], rows: usize, columns: usize, input: &[f32],
     }
 }
 
+/// Multiply a `Q4B32` matrix by `input`, writing one value per row.
+///
+/// The weights are never expanded into a floating point matrix: the kernel
+/// reads one block of [`crate::quant::BLOCK_BYTES`] bytes, applies the scale of
+/// that block to the sum of its thirty-two products, and moves on. The memory
+/// traffic is 18 bytes for 32 weights, against 64 bytes for the same weights in
+/// `bfloat16`, which is what the format buys.
+///
+/// The nibble is sign extended before the product and the block sum is scaled
+/// once, so the rounding of the scale is not repeated thirty-two times.
+pub fn matvec_q4(
+    weights: &[u8],
+    rows: usize,
+    columns: usize,
+    input: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    validate_q4(weights, rows, columns, input, out)?;
+    let row_bytes = crate::quant::row_bytes(columns)?;
+    let blocks = crate::quant::blocks(columns);
+    for (row, slot) in out.iter_mut().enumerate().take(rows) {
+        let base = row * row_bytes;
+        let mut sum = 0.0f32;
+        for block in 0..blocks {
+            let offset = base + block * crate::quant::BLOCK_BYTES;
+            let scale = crate::quant::half_to_f32(u16::from_le_bytes([
+                weights[offset],
+                weights[offset + 1],
+            ]));
+            let mut accumulator = 0.0f32;
+            let mut column = block * crate::quant::BLOCK;
+            for pair in 0..crate::quant::PACKED_BYTES {
+                let packed = weights[offset + crate::quant::SCALE_BYTES + pair];
+                let low = ((packed & 0x0f) as i32) << 28 >> 28;
+                let high = ((packed >> 4) as i32) << 28 >> 28;
+                accumulator += low as f32 * input[column] + high as f32 * input[column + 1];
+                column += 2;
+            }
+            sum += accumulator * scale;
+        }
+        *slot = sum;
+    }
+    Ok(())
+}
+
 /// Name of the vector kernel this build selects, for the serial log.
 #[cfg(target_arch = "x86_64")]
 pub fn kernel_name() -> &'static str {
@@ -141,7 +186,46 @@ pub fn kernel_name() -> &'static str {
     "scalar"
 }
 
-/// Check every length the kernels index.
+/// Multiply an eight bit block matrix by `input`, writing one value per row.
+///
+/// The loop is the four bit one with a wider payload: the block is read, its
+/// scale is applied to the sum of the thirty-two products, and the weights are
+/// never expanded into a floating point matrix. The reason the eight bit form
+/// exists is fidelity, not speed: it costs 34 bytes per 32 weights instead of
+/// 18, and it is the width that keeps the tokens of the reference checkpoint.
+pub fn matvec_q8(
+    weights: &[u8],
+    rows: usize,
+    columns: usize,
+    input: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    validate_q8(weights, rows, columns, input, out)?;
+    let row_bytes = crate::quant::q8_row_bytes(columns)?;
+    let blocks = crate::quant::blocks(columns);
+    for (row, slot) in out.iter_mut().enumerate().take(rows) {
+        let base = row * row_bytes;
+        let mut sum = 0.0f32;
+        for block in 0..blocks {
+            let offset = base + block * crate::quant::Q8_BLOCK_BYTES;
+            let scale = crate::quant::half_to_f32(u16::from_le_bytes([
+                weights[offset],
+                weights[offset + 1],
+            ]));
+            let mut accumulator = 0.0f32;
+            let column = block * crate::quant::BLOCK;
+            for index in 0..crate::quant::BLOCK {
+                let weight = weights[offset + crate::quant::SCALE_BYTES + index] as i8 as f32;
+                accumulator += weight * input[column + index];
+            }
+            sum += accumulator * scale;
+        }
+        *slot = sum;
+    }
+    Ok(())
+}
+
+/// Check every length the `bfloat16` kernel indexes.
 fn validate(weights: &[u8], rows: usize, columns: usize, input: &[f32], out: &[f32]) -> Result<()> {
     if rows == 0 || columns == 0 {
         return Err(Error::new("matvec: an empty matrix has no product"));
@@ -160,6 +244,74 @@ fn validate(weights: &[u8], rows: usize, columns: usize, input: &[f32], out: &[f
         .ok_or_else(|| Error::new("matvec: matrix byte length overflow"))?;
     if weights.len() < needed {
         return Err(Error::new("matvec: weights are shorter than the matrix"));
+    }
+    Ok(())
+}
+
+/// Check every length and the block alignment the `Q4B32` kernel indexes.
+fn validate_q4(
+    weights: &[u8],
+    rows: usize,
+    columns: usize,
+    input: &[f32],
+    out: &[f32],
+) -> Result<()> {
+    if rows == 0 || columns == 0 {
+        return Err(Error::new("matvec: an empty matrix has no product"));
+    }
+    if input.len() != columns {
+        return Err(Error::new(
+            "matvec: input length disagrees with the columns",
+        ));
+    }
+    if out.len() < rows {
+        return Err(Error::new("matvec: output is shorter than the rows"));
+    }
+    if !columns.is_multiple_of(crate::quant::BLOCK) {
+        return Err(Error::new(format!(
+            "matvec: {columns} columns is not a multiple of the {} weight block",
+            crate::quant::BLOCK
+        )));
+    }
+    let needed = crate::quant::matrix_bytes(rows, columns)?;
+    if weights.len() < needed {
+        return Err(Error::new(
+            "matvec: quantized weights are shorter than the matrix",
+        ));
+    }
+    Ok(())
+}
+
+/// Check every length and the block alignment the `Q8B32` kernel indexes.
+fn validate_q8(
+    weights: &[u8],
+    rows: usize,
+    columns: usize,
+    input: &[f32],
+    out: &[f32],
+) -> Result<()> {
+    if rows == 0 || columns == 0 {
+        return Err(Error::new("matvec: an empty matrix has no product"));
+    }
+    if input.len() != columns {
+        return Err(Error::new(
+            "matvec: input length disagrees with the columns",
+        ));
+    }
+    if out.len() < rows {
+        return Err(Error::new("matvec: output is shorter than the rows"));
+    }
+    if !columns.is_multiple_of(crate::quant::BLOCK) {
+        return Err(Error::new(format!(
+            "matvec: {columns} columns is not a multiple of the {} weight block",
+            crate::quant::BLOCK
+        )));
+    }
+    let needed = crate::quant::q8_matrix_bytes(rows, columns)?;
+    if weights.len() < needed {
+        return Err(Error::new(
+            "matvec: quantized weights are shorter than the matrix",
+        ));
     }
     Ok(())
 }
@@ -488,7 +640,11 @@ mod neon {
 
 #[cfg(test)]
 mod tests {
-    use super::{matvec_bf16, matvec_scalar, COLUMN_TILE, ROW_TILE};
+    use super::{matvec_bf16, matvec_q4, matvec_q8, matvec_scalar, COLUMN_TILE, ROW_TILE};
+    use crate::quant::{
+        f32_to_half, matrix_bytes, q8_matrix_bytes, BLOCK, BLOCK_BYTES, Q8_BLOCK_BYTES,
+        SCALE_BYTES,
+    };
 
     /// Deterministic weights in a small range, stored as `bfloat16`.
     fn weights(count: usize) -> Vec<u8> {
@@ -593,5 +749,176 @@ mod tests {
         let mut out = [0.0f32];
         assert!(matvec_bf16(&[0u8; 8], 2, 2, &input, &mut out).is_err());
         assert!(matvec_bf16(&[0u8; 4], 2, 2, &input, &mut out).is_err());
+    }
+
+    /// Pack one block from a binary16 scale and thirty-two quantized weights.
+    fn q4_block(scale: f32, values: &[i32; BLOCK]) -> Vec<u8> {
+        let mut block = vec![0u8; BLOCK_BYTES];
+        block[..SCALE_BYTES].copy_from_slice(&f32_to_half(scale).to_le_bytes());
+        for (index, &value) in values.iter().enumerate() {
+            block[SCALE_BYTES + index / 2] |= ((value & 0x0f) as u8) << (4 * (index % 2));
+        }
+        block
+    }
+
+    #[test]
+    fn the_quantized_kernel_matches_the_reference_product() {
+        // Five rows of two blocks with an exact scale per block. The quantized
+        // weights and the input are dyadic and every product and partial sum is
+        // exact in `f32`, so the expected values below are the ones the
+        // reference implementation (numpy, float64) gives for the dequantized
+        // matrix. A lane or a nibble that is read in the wrong order moves one
+        // of them.
+        let columns = 2 * BLOCK;
+        let rows = 5usize;
+        let scales = [0.5f32, 1.5];
+        let mut weights = Vec::with_capacity(matrix_bytes(rows, columns).unwrap());
+        for row in 0..rows {
+            for (block, &scale) in scales.iter().enumerate() {
+                let mut values = [0i32; BLOCK];
+                for (index, slot) in values.iter_mut().enumerate() {
+                    *slot = ((row * 37 + (block * 32 + index) * 11) % 16) as i32 - 8;
+                }
+                weights.extend_from_slice(&q4_block(scale, &values));
+            }
+        }
+        let mut input = [0.0f32; 2 * BLOCK];
+        for (index, slot) in input.iter_mut().enumerate() {
+            *slot = [0.25f32, -0.5, 0.75, 1.0, 1.25][index % 5];
+        }
+        let mut out = [0.0f32; 5];
+        matvec_q4(&weights, rows, columns, &input, &mut out).unwrap();
+        // The product computed in float64 from the dequantized weights.
+        assert_eq!(out, [-24.0, -22.5, -21.0, -19.5, -2.0]);
+    }
+
+    #[test]
+    fn the_quantized_kernel_agrees_with_the_expanded_product() {
+        let rows = 3usize;
+        let columns = 5 * BLOCK;
+        let values: Vec<f32> = (0..rows * columns)
+            .map(|index| ((index as f32) * 0.071 - 0.9).sin())
+            .collect();
+        let mut weights = vec![0u8; matrix_bytes(rows, columns).unwrap()];
+        for (block, chunk) in values.as_chunks::<BLOCK>().0.iter().enumerate() {
+            crate::quant::quantize_block(
+                chunk,
+                &mut weights[block * BLOCK_BYTES..(block + 1) * BLOCK_BYTES],
+            )
+            .unwrap();
+        }
+        let input: Vec<f32> = (0..columns)
+            .map(|index| ((index as f32) * 0.13).cos())
+            .collect();
+        let mut out = vec![0.0f32; rows];
+        matvec_q4(&weights, rows, columns, &input, &mut out).unwrap();
+        let row_bytes = matrix_bytes(1, columns).unwrap();
+        for (row, actual) in out.iter().enumerate() {
+            // The expected value is the sum over the dequantized row, read
+            // back through the format itself.
+            let mut decoded = vec![0.0f32; columns];
+            crate::quant::dequantize_row(
+                &weights[row * row_bytes..(row + 1) * row_bytes],
+                &mut decoded,
+            )
+            .unwrap();
+            let expected: f64 = decoded
+                .iter()
+                .zip(&input)
+                .map(|(weight, input)| *weight as f64 * *input as f64)
+                .sum();
+            assert!(
+                (*actual as f64 - expected).abs() < 1e-4,
+                "row {row}: {actual} against {expected}"
+            );
+        }
+    }
+
+    /// Pack one eight bit block from a binary16 scale and signed weights.
+    fn q8_block(scale: f32, values: &[i32; BLOCK]) -> Vec<u8> {
+        let mut block = vec![0u8; Q8_BLOCK_BYTES];
+        block[..SCALE_BYTES].copy_from_slice(&f32_to_half(scale).to_le_bytes());
+        for (index, &value) in values.iter().enumerate() {
+            block[SCALE_BYTES + index] = (value as i8) as u8;
+        }
+        block
+    }
+
+    #[test]
+    fn the_eight_bit_kernel_matches_the_reference_product() {
+        // The same shape as the four bit golden: five rows, two blocks, one
+        // exact scale per block. The expected values are the ones a float64
+        // reference gives for the dequantized matrix.
+        let columns = 2 * BLOCK;
+        let rows = 5usize;
+        let mut weights = Vec::with_capacity(q8_matrix_bytes(rows, columns).unwrap());
+        for row in 0..rows {
+            for (block, &scale) in [1.0f32, 2.0].iter().enumerate() {
+                let mut values = [0i32; BLOCK];
+                for (index, slot) in values.iter_mut().enumerate() {
+                    *slot = ((row * 53 + (block * 32 + index) * 17) % 255) as i32 - 127;
+                }
+                weights.extend_from_slice(&q8_block(scale, &values));
+            }
+        }
+        let mut input = [0.0f32; 2 * BLOCK];
+        for (index, slot) in input.iter_mut().enumerate() {
+            *slot = [0.25f32, -0.5, 0.75, 1.0, 1.25][index % 5];
+        }
+        let mut out = [0.0f32; 5];
+        matvec_q8(&weights, rows, columns, &input, &mut out).unwrap();
+        assert_eq!(out, [406.75, -1387.5, -121.75, 761.5, -777.75]);
+    }
+
+    #[test]
+    fn the_eight_bit_kernel_agrees_with_the_expanded_product() {
+        let rows = 3usize;
+        let columns = 5 * BLOCK;
+        let values: Vec<f32> = (0..rows * columns)
+            .map(|index| ((index as f32) * 0.067 - 0.4).sin())
+            .collect();
+        let mut weights = vec![0u8; q8_matrix_bytes(rows, columns).unwrap()];
+        for (block, chunk) in values.as_chunks::<BLOCK>().0.iter().enumerate() {
+            crate::quant::quantize_block_q8(
+                chunk,
+                &mut weights[block * Q8_BLOCK_BYTES..(block + 1) * Q8_BLOCK_BYTES],
+            )
+            .unwrap();
+        }
+        let input: Vec<f32> = (0..columns)
+            .map(|index| ((index as f32) * 0.11).cos())
+            .collect();
+        let mut out = vec![0.0f32; rows];
+        matvec_q8(&weights, rows, columns, &input, &mut out).unwrap();
+        let row_bytes = q8_matrix_bytes(1, columns).unwrap();
+        for (row, actual) in out.iter().enumerate() {
+            let mut decoded = vec![0.0f32; columns];
+            crate::quant::dequantize_row_q8(
+                &weights[row * row_bytes..(row + 1) * row_bytes],
+                &mut decoded,
+            )
+            .unwrap();
+            let expected: f64 = decoded
+                .iter()
+                .zip(&input)
+                .map(|(weight, input)| *weight as f64 * *input as f64)
+                .sum();
+            assert!(
+                (*actual as f64 - expected).abs() < 1e-3,
+                "row {row}: {actual} against {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_quantized_kernel_rejects_a_bad_shape() {
+        let input = [1.0f32; BLOCK];
+        let mut out = [0.0f32; 1];
+        // Columns that are not a multiple of the block.
+        assert!(matvec_q4(&[0u8; 64], 1, BLOCK - 1, &input[..BLOCK - 1], &mut out).is_err());
+        // A matrix shorter than its shape.
+        assert!(matvec_q4(&[0u8; BLOCK_BYTES - 1], 1, BLOCK, &input, &mut out).is_err());
+        // An input that disagrees with the columns.
+        assert!(matvec_q4(&[0u8; BLOCK_BYTES], 1, BLOCK, &input[..1], &mut out).is_err());
     }
 }

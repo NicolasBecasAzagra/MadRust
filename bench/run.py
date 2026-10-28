@@ -59,6 +59,19 @@ WEIGHTS_ITERATIONS = 5
 # sample from being a single host preemption.
 INFER_ITERATIONS = 1
 BOOT_ITERATIONS = 1
+
+# The quantized checkpoint is a second boot with the same program, the same
+# prompt and the same kernel: only the weights change. Its rows carry their own
+# names, so the floating point and the quantized measurements sit next to each
+# other in one table. The boot rows are renamed too: the resident memory of the
+# guest is the measurement the format promises to reduce.
+QUANT_RENAME = {
+    "infer-ttft": "infer-quant-ttft",
+    "infer-tps": "infer-quant-tps",
+    "boot-seconds": "boot-quant-seconds",
+    "boot-rss-mb": "boot-quant-rss-mb",
+}
+QUANT_WORKLOADS = set(QUANT_RENAME.values())
 # The agent loop answers once per run: the model decides how many steps it
 # needs, and every run of the same task decides the same.
 AGENT_ITERATIONS = 1
@@ -102,6 +115,10 @@ WORKLOADS = {
     "threads": ("ns/total", DEFAULT_ITERATIONS),
     "infer-ttft": ("ms", INFER_ITERATIONS),
     "infer-tps": ("tok/s", INFER_ITERATIONS),
+    "infer-quant-ttft": ("ms", INFER_ITERATIONS),
+    "infer-quant-tps": ("tok/s", INFER_ITERATIONS),
+    "boot-quant-seconds": ("s", BOOT_ITERATIONS),
+    "boot-quant-rss-mb": ("MiB", BOOT_ITERATIONS),
     "agent-steps": ("steps", AGENT_ITERATIONS),
     "agent-tokens": ("tokens", AGENT_ITERATIONS),
     "agent-seconds": ("s", AGENT_ITERATIONS),
@@ -117,6 +134,8 @@ WORKLOADS = {
 OPTIONAL_WORKLOADS = {
     "infer-ttft",
     "infer-tps",
+    "infer-quant-ttft",
+    "infer-quant-tps",
     "agent-steps",
     "agent-tokens",
     "agent-seconds",
@@ -421,6 +440,11 @@ def peak_rss_kb(pid: int) -> int:
     The value comes from the kernel of the host, which keeps the high water
     mark, so it is a peak and not a sample. It is what an operator sees on the
     machine, and it is the same measurement for every kernel.
+
+    A host without `/proc` (macOS) has no high water mark per process, so the
+    current resident set is read from `ps` instead. The caller samples during
+    the run and keeps the largest sample, which is the same quantity to the
+    resolution of the sample interval.
     """
     try:
         with open(f"/proc/{pid}/status", errors="replace") as handle:
@@ -428,8 +452,17 @@ def peak_rss_kb(pid: int) -> int:
                 if line.startswith("VmHWM:"):
                     return int(line.split()[1])
     except (FileNotFoundError, ProcessLookupError, ValueError, IndexError):
+        pass
+    try:
+        output = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        return int(output) if output else 0
+    except (OSError, ValueError, subprocess.SubprocessError):
         return 0
-    return 0
 
 
 def run_once(
@@ -684,7 +717,11 @@ def ensure_agent_net_initramfs(path: Path, port: int, model: Path | None = None)
     )
     if model is not None:
         # The archive carries the checkpoint the caller gave, and the target
-        # of the build reads it from here.
+        # of the build reads it from here. The development model is not built
+        # in that case: writing it into the directory of a checkpoint that was
+        # downloaded would destroy the only copy of it.
+        if not (model / "model.safetensors").is_file():
+            raise SystemExit(f"the checkpoint {model} has no model.safetensors")
         env["INFER_MODEL_DIR"] = str(model)
     result = subprocess.run(
         ["make", "-s", "--no-print-directory", "agent-net-initramfs"],
@@ -1094,6 +1131,14 @@ def main() -> int:
     )
     parser.add_argument("--initrd", help="cpio archive to hand to both kernels")
     parser.add_argument(
+        "--initrd-quant",
+        help=(
+            "cpio archive of the same runtime with the quantized checkpoint. "
+            "The rig boots it after the floating point one and records the "
+            "inference and resident memory rows as infer-q4-* and boot-q4-*"
+        ),
+    )
+    parser.add_argument(
         "--agent-model",
         help=(
             "directory of the checkpoint the agent serves, for the run of the "
@@ -1213,6 +1258,18 @@ def main() -> int:
     else:
         initrd = None
 
+    initrd_quant = None
+    if args.initrd_quant:
+        initrd_quant = Path(args.initrd_quant).resolve()
+        if not initrd_quant.is_file():
+            raise SystemExit(f"the quantized initramfs {initrd_quant} does not exist")
+        check_initramfs(initrd_quant, strict=False)
+        print(
+            f"[rig] using the quantized initramfs {initrd_quant} "
+            f"({initrd_quant.stat().st_size} bytes), as it was given",
+            file=sys.stderr,
+        )
+
     out_dir = Path(args.out)
     if not out_dir.is_absolute():
         out_dir = root / out_dir
@@ -1234,6 +1291,17 @@ def main() -> int:
             raise SystemExit(f"unknown workloads: {', '.join(sorted(unknown))}")
         expected = {name: count for name, count in expected.items() if name in only}
 
+    # The quantized rows only exist when the caller brought the quantized
+    # archive. A run without it must not report them as missing.
+    if initrd_quant is not None and "infer-ttft" in expected:
+        for name in QUANT_WORKLOADS:
+            expected.setdefault(name, 1)
+    elif initrd_quant is None:
+        expected = {
+            name: count for name, count in expected.items() if name not in QUANT_WORKLOADS
+        }
+    quant = initrd_quant is not None and bool(QUANT_WORKLOADS & set(expected))
+
     # The measurement that needs more than a boot of the workload: its own
     # archive, its own server and its own device. It is set up once, so every
     # kernel of the run sees the same bytes, the same endpoint and the same
@@ -1243,8 +1311,9 @@ def main() -> int:
     workload_expected = {
         name: count
         for name, count in expected.items()
-        if name not in ("net", "agent-net")
+        if name not in ("net", "agent-net") and name not in QUANT_WORKLOADS
     }
+    quant_expected = {"infer-ttft": 1, "infer-tps": 1}
     net_initrd = None
     agent_net_initrd = None
     server = None
@@ -1282,6 +1351,11 @@ def main() -> int:
     }
     if initrd is not None:
         metadata["initrd"] = {"path": str(initrd), "sha256": sha256(initrd)}
+    if initrd_quant is not None:
+        metadata["initrd_quant"] = {
+            "path": str(initrd_quant),
+            "sha256": sha256(initrd_quant),
+        }
     if net or agent_net:
         metadata["net"] = {
             "address": NET_ADDRESS,
@@ -1381,6 +1455,65 @@ def main() -> int:
                     print(f"[rig] {label}: {outcome['reason']}", file=sys.stderr)
                     for line in outcome["qemu"].splitlines()[-20:]:
                         print(f"[rig] {label}: qemu: {line}", file=sys.stderr)
+            if quant:
+                # The same program, the same prompt, the same kernel: only the
+                # checkpoint changed. The rows are renamed into the q4 names so
+                # the two checkpoints sit next to each other in one table.
+                (
+                    command,
+                    text,
+                    elapsed,
+                    peak_rss,
+                    outcome,
+                ) = run_once(
+                    label,
+                    image,
+                    initrd_quant,
+                    out_dir,
+                    args.qemu,
+                    args.accel,
+                    args.timeout,
+                    append_extra,
+                    args.memory,
+                    args.smp,
+                    quant_expected,
+                    tag="-q4",
+                )
+                metadata["commands"][f"{label}-q4"] = shlex.join(command)
+                measured = outcome["outcome"] != "timeout"
+                quant_boot_rows = [
+                    {
+                        "kernel": label,
+                        "workload": "boot-quant-seconds",
+                        "iteration": 0,
+                        "value": f"{elapsed:.3f}" if measured else "",
+                        "unit": "s",
+                        "status": "ok" if measured else "error",
+                        "error": "" if measured else outcome["reason"],
+                    },
+                    {
+                        "kernel": label,
+                        "workload": "boot-quant-rss-mb",
+                        "iteration": 0,
+                        "value": f"{peak_rss / 1024:.1f}" if peak_rss else "",
+                        "unit": "MiB",
+                        "status": "ok" if peak_rss else "error",
+                        "error": ""
+                        if peak_rss
+                        else "this host has no /proc, so the memory is not measured",
+                    },
+                ]
+                quant_rows = parse_results(
+                    label, text, quant_expected, quant_boot_rows, outcome["reason"]
+                )
+                for row in quant_rows:
+                    row["workload"] = QUANT_RENAME.get(row["workload"], row["workload"])
+                rows.extend(quant_rows)
+                ok = sum(1 for row in quant_rows if row["status"] == "ok")
+                print(
+                    f"[rig] {label}-q4: {ok} samples recorded",
+                    file=sys.stderr,
+                )
             if net:
                 net_rows, net_commands = run_net(
                     label,

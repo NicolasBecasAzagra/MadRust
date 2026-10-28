@@ -33,17 +33,22 @@ pub enum DType {
     Bf16,
     /// Single precision floating point.
     F32,
+    /// Four bit weights in blocks of [`crate::quant::BLOCK`].
+    Q4B32,
+    /// Eight bit weights in blocks of the same size.
+    Q8B32,
     /// A type the reader keeps in the directory but the runtime must not use.
     Other,
 }
 
 impl DType {
-    /// Bytes per element, or `None` for a type the runtime cannot read.
+    /// Bytes per element, or `None` for a type the runtime cannot read or one
+    /// whose size is per block rather than per element.
     pub fn element_size(self) -> Option<usize> {
         match self {
             Self::Bf16 => Some(2),
             Self::F32 => Some(4),
-            Self::Other => None,
+            Self::Q4B32 | Self::Q8B32 | Self::Other => None,
         }
     }
 
@@ -52,6 +57,8 @@ impl DType {
         match name {
             "BF16" => Self::Bf16,
             "F32" => Self::F32,
+            "Q4B32" => Self::Q4B32,
+            "Q8B32" => Self::Q8B32,
             _ => Self::Other,
         }
     }
@@ -61,9 +68,27 @@ impl DType {
         match self {
             Self::Bf16 => "BF16",
             Self::F32 => "F32",
+            Self::Q4B32 => "Q4B32",
+            Self::Q8B32 => "Q8B32",
             Self::Other => "unsupported",
         }
     }
+}
+
+/// The `__metadata__` object of a header, as far as this runtime reads it.
+///
+/// A `safetensors` file may carry string to string metadata. The runtime does
+/// not need it for a floating point checkpoint, but a quantized one has to say
+/// which block format wrote it, so the reader can refuse a file whose tensors
+/// and whose declaration disagree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Metadata {
+    /// Name of the tensor format, for example `madrust-q4b32`.
+    pub format: Option<String>,
+    /// Weights per block of the quantized format.
+    pub block: Option<String>,
+    /// Element type of the block scale.
+    pub scale: Option<String>,
 }
 
 /// One tensor as the header describes it.
@@ -103,6 +128,7 @@ impl TensorInfo {
 pub struct Header {
     names: String,
     tensors: Vec<TensorInfo>,
+    metadata: Option<Metadata>,
 }
 
 impl Header {
@@ -120,6 +146,18 @@ impl Header {
     pub fn tensors(&self) -> &[TensorInfo] {
         &self.tensors
     }
+
+    /// The `__metadata__` object, when the header carries one.
+    pub fn metadata(&self) -> Option<&Metadata> {
+        self.metadata.as_ref()
+    }
+
+    /// `true` when at least one tensor uses a quantized format.
+    pub fn has_quantized_tensors(&self) -> bool {
+        self.tensors
+            .iter()
+            .any(|tensor| matches!(tensor.dtype, DType::Q4B32 | DType::Q8B32))
+    }
 }
 
 /// Parse the JSON header.
@@ -132,6 +170,7 @@ pub fn parse(bytes: &[u8], data_len: usize) -> Result<Header> {
     let mut scratch = Vec::with_capacity(64);
     let mut shape = Vec::new();
     let mut offsets = Vec::new();
+    let mut metadata = None;
     // One allocation for the directory. A model with a few hundred tensors
     // stays well inside this estimate, so the vector does not grow through
     // `realloc` on a kernel whose `mremap` is absent.
@@ -142,7 +181,11 @@ pub fn parse(bytes: &[u8], data_len: usize) -> Result<Header> {
     scanner.skip_whitespace();
     if scanner.peek() == Some(b'}') {
         scanner.expect(b'}')?;
-        return Ok(Header { names, tensors });
+        return Ok(Header {
+            names,
+            tensors,
+            metadata,
+        });
     }
 
     loop {
@@ -157,7 +200,7 @@ pub fn parse(bytes: &[u8], data_len: usize) -> Result<Header> {
         scanner.skip_whitespace();
         scanner.expect(b':')?;
         if name == "__metadata__" {
-            scanner.skip_value()?;
+            metadata = Some(parse_metadata(&mut scanner)?);
         } else {
             tensors.push(parse_tensor(
                 &mut scanner,
@@ -180,7 +223,55 @@ pub fn parse(bytes: &[u8], data_len: usize) -> Result<Header> {
     if !scanner.at_end() {
         return Err(Error::new("safetensors: trailing bytes after the header"));
     }
-    Ok(Header { names, tensors })
+    Ok(Header {
+        names,
+        tensors,
+        metadata,
+    })
+}
+
+/// Read the `__metadata__` object.
+///
+/// The specification makes every value a string. A value that is not a string is
+/// skipped instead of refused, so a header written by another tool still parses
+/// and the fields this runtime needs are simply absent.
+fn parse_metadata(scanner: &mut Scanner<'_>) -> Result<Metadata> {
+    let mut metadata = Metadata::default();
+    scanner.skip_whitespace();
+    scanner.expect(b'{')?;
+    scanner.skip_whitespace();
+    if scanner.peek() == Some(b'}') {
+        scanner.expect(b'}')?;
+        return Ok(metadata);
+    }
+    loop {
+        scanner.skip_whitespace();
+        let key = scanner.parse_string()?;
+        scanner.skip_whitespace();
+        scanner.expect(b':')?;
+        scanner.skip_whitespace();
+        if scanner.peek() != Some(b'"') {
+            scanner.skip_value()?;
+        } else {
+            let value = scanner.parse_string()?;
+            match key.as_str() {
+                "format" => metadata.format = Some(value),
+                "block" => metadata.block = Some(value),
+                "scale" => metadata.scale = Some(value),
+                _ => {}
+            }
+        }
+        scanner.skip_whitespace();
+        match scanner.bump()? {
+            b',' => continue,
+            b'}' => return Ok(metadata),
+            _ => {
+                return Err(Error::new(
+                    "safetensors: expected ',' or '}' in __metadata__",
+                ))
+            }
+        }
+    }
 }
 
 /// Parse one tensor object.
@@ -309,6 +400,43 @@ mod tests {
         let header = br#"{"a": {"dtype": "I64", "shape": [1], "data_offsets": [0, 8]}}"#;
         let parsed = parse(header, 8).unwrap();
         assert_eq!(parsed.find("a").unwrap().dtype, DType::Other);
+    }
+
+    #[test]
+    fn reads_the_quantized_dtype_and_the_format_metadata() {
+        let header = br#"{
+            "__metadata__": {"format": "madrust-q4b32", "block": "32", "scale": "f16"},
+            "a": {"dtype": "Q4B32", "shape": [2, 32], "data_offsets": [0, 36]}
+        }"#;
+        let parsed = parse(header, 36).unwrap();
+        let tensor = parsed.find("a").unwrap();
+        assert_eq!(tensor.dtype, DType::Q4B32);
+        assert!(parsed.has_quantized_tensors());
+        let metadata = parsed.metadata().unwrap();
+        assert_eq!(metadata.format.as_deref(), Some("madrust-q4b32"));
+        assert_eq!(metadata.block.as_deref(), Some("32"));
+        assert_eq!(metadata.scale.as_deref(), Some("f16"));
+    }
+
+    #[test]
+    fn a_plain_header_has_no_quantized_tensor_and_no_metadata() {
+        let header = br#"{"a": {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]}}"#;
+        let parsed = parse(header, 2).unwrap();
+        assert!(!parsed.has_quantized_tensors());
+        assert!(parsed.metadata().is_none());
+    }
+
+    #[test]
+    fn a_metadata_value_that_is_not_a_string_is_skipped() {
+        let header = br#"{
+            "__metadata__": {"format": "madrust-q4b32", "nested": {"a": 1}},
+            "a": {"dtype": "Q4B32", "shape": [1, 32], "data_offsets": [0, 18]}
+        }"#;
+        let parsed = parse(header, 18).unwrap();
+        assert_eq!(
+            parsed.metadata().unwrap().format.as_deref(),
+            Some("madrust-q4b32")
+        );
     }
 
     #[test]

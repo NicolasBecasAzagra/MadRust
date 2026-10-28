@@ -33,6 +33,11 @@
 //!   `bfloat16` weights, with an AVX2 and FMA path, a NEON path, and a scalar
 //!   path that all agree to floating point tolerance. It is host tested and
 //!   the `madrust-infer-matmul` binary measures it without a model.
+//! * [`quant`] is the `Q4B32` block format: four bit weights in blocks of
+//!   thirty-two with one binary16 scale, decoded inside the matrix vector
+//!   product. It is host tested and `docs/QUANTIZATION.md` describes the file.
+//! * [`sha256`] is the digest the quantizer prints, so the tools need no
+//!   dependency either.
 //! * [`cli`] parses the optional token count of the binary, eight by default.
 //! * [`paths`] resolves the model root: the initramfs root in the guest, or
 //!   `MADRUST_INFER_ROOT` when a native host process sets it.
@@ -59,13 +64,21 @@ pub mod matvec;
 pub mod paths;
 pub mod power_off;
 pub mod prompt;
+pub mod quant;
+pub mod quantize;
 pub mod reference;
 pub mod safetensors;
+pub mod sha256;
 pub mod vocab;
 
+#[cfg(target_os = "linux")]
+pub mod compare;
 #[cfg(target_os = "linux")]
 pub mod mapping;
 #[cfg(target_os = "linux")]
 pub mod model;
 #[cfg(target_os = "linux")]
 pub mod runtime;
+
+#[cfg(all(test, target_os = "linux"))]
+mod gate;

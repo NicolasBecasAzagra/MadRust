@@ -28,6 +28,7 @@ use crate::error::{Error, Result};
 use crate::mapping::Mapping;
 use crate::math::{argmax, rms_norm, rope, silu, softmax};
 use crate::matvec;
+use crate::quant;
 use crate::safetensors::{self, DType, TensorInfo};
 
 /// The dimensions the runtime read from the config and derived for the model.
@@ -119,6 +120,11 @@ impl ModelFile {
         self.mapping.mapped_len()
     }
 
+    /// Total size of the checkpoint file.
+    pub fn file_len(&self) -> usize {
+        self.mapping.file_len()
+    }
+
     /// `true` when the kernel accepted the large page advice on the mapping.
     pub fn huge_pages_requested(&self) -> bool {
         self.mapping.huge_pages_requested()
@@ -143,6 +149,74 @@ impl ModelFile {
         let tensor_name = self.header.name(info);
         Tensor::new(info, tensor_name, &self.mapping, self.data_start)
     }
+
+    /// `true` when at least one tensor uses the quantized format.
+    pub fn has_quantized_tensors(&self) -> bool {
+        self.header.has_quantized_tensors()
+    }
+
+    /// Check that the header declares the format of every quantized tensor.
+    ///
+    /// A quantized tensor is meaningless without the block size and the scale
+    /// type that wrote it, and a file that carries such a tensor without the
+    /// declaration is not the file this runtime reads. The error names the
+    /// field that is missing or wrong, so the serial log says why the file was
+    /// refused.
+    pub fn validate_quantization(&self) -> Result<()> {
+        if !self.header.has_quantized_tensors() {
+            return Ok(());
+        }
+        let metadata = self.header.metadata().ok_or_else(|| {
+            Error::new("model: quantized tensors without a __metadata__ declaration")
+        })?;
+        // One file carries one width. A header that mixes the two has no single
+        // format to declare, so it is refused instead of guessed.
+        let mut expected = None;
+        for tensor in self.header.tensors() {
+            match tensor.dtype {
+                DType::Q4B32 => match expected {
+                    None => expected = Some(quant::FORMAT_NAME),
+                    Some(quant::FORMAT_NAME) => {}
+                    Some(_) => {
+                        return Err(Error::new(
+                            "model: the header mixes Q4B32 and Q8B32 tensors",
+                        ))
+                    }
+                },
+                DType::Q8B32 => match expected {
+                    None => expected = Some(quant::Q8_FORMAT_NAME),
+                    Some(quant::Q8_FORMAT_NAME) => {}
+                    Some(_) => {
+                        return Err(Error::new(
+                            "model: the header mixes Q4B32 and Q8B32 tensors",
+                        ))
+                    }
+                },
+                _ => {}
+            }
+        }
+        let expected = expected.unwrap_or(quant::FORMAT_NAME);
+        if metadata.format.as_deref() != Some(expected) {
+            return Err(Error::new(format!(
+                "model: quantized tensors declare format {:?}, expected {expected}",
+                metadata.format.as_deref().unwrap_or("none"),
+            )));
+        }
+        if metadata.block.as_deref() != Some("32") {
+            return Err(Error::new(format!(
+                "model: quantized tensors declare block {:?}, expected 32",
+                metadata.block.as_deref().unwrap_or("none")
+            )));
+        }
+        if metadata.scale.as_deref() != Some(quant::SCALE_NAME) {
+            return Err(Error::new(format!(
+                "model: quantized tensors declare scale {:?}, expected {}",
+                metadata.scale.as_deref().unwrap_or("none"),
+                quant::SCALE_NAME
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// One tensor viewed through the mapping.
@@ -162,14 +236,29 @@ impl<'a> Tensor<'a> {
         mapping: &'a Mapping,
         data_start: usize,
     ) -> Result<Self> {
-        let element_size = info
-            .dtype
-            .element_size()
-            .ok_or_else(|| Error::new(format!("model: tensor {name} has unsupported dtype")))?;
-        let elements = info.element_count();
-        let bytes = elements
-            .checked_mul(element_size)
-            .ok_or_else(|| Error::new(format!("model: tensor {name} is too large")))?;
+        let shape = info.shape();
+        let bytes = match info.dtype {
+            DType::Q4B32 | DType::Q8B32 => {
+                // The format owns the byte count: one block of a scale and a
+                // packed payload per thirty-two weights, not a fixed element
+                // size.
+                if shape.len() != 2 {
+                    return Err(Error::new(format!(
+                        "model: quantized tensor {name} is not a matrix"
+                    )));
+                }
+                quantized_bytes(info.dtype, shape[0], shape[1])?
+            }
+            dtype => {
+                let element_size = dtype.element_size().ok_or_else(|| {
+                    Error::new(format!("model: tensor {name} has unsupported dtype"))
+                })?;
+                let elements = info.element_count();
+                elements
+                    .checked_mul(element_size)
+                    .ok_or_else(|| Error::new(format!("model: tensor {name} is too large")))?
+            }
+        };
         if bytes != info.byte_len() {
             return Err(Error::new(format!(
                 "model: tensor {name} has a byte length that disagrees with its shape"
@@ -183,13 +272,44 @@ impl<'a> Tensor<'a> {
                 "model: tensor {name} reaches past the file"
             )));
         }
-        Ok(Self {
+        let element_size = info.dtype.element_size().unwrap_or(0);
+        let tensor = Self {
             name,
             info,
             mapping,
             file_offset,
             element_size,
-        })
+        };
+        if matches!(info.dtype, DType::Q4B32 | DType::Q8B32) {
+            tensor.check_scales()?;
+        }
+        Ok(tensor)
+    }
+
+    /// Refuse a block whose scale is not a finite binary16.
+    ///
+    /// The decoder multiplies a whole block by its scale, so a scale that is an
+    /// infinity or a NaN would poison thirty-two weights and the serial log
+    /// would only show a wrong token. The check reads one `u16` per 18 bytes,
+    /// which is cheaper than the first token and names the block that is wrong.
+    fn check_scales(&self) -> Result<()> {
+        let columns = self.shape()[1];
+        let (row_bytes, block_bytes) = quantized_layout(self.dtype(), columns)?;
+        let blocks = quant::blocks(columns);
+        let mut half = [0u8; 2];
+        for row in 0..self.shape()[0] {
+            for block in 0..blocks {
+                let offset = self.file_offset + row * row_bytes + block * block_bytes;
+                self.mapping.copy_bytes(offset, &mut half)?;
+                if !quant::scale_is_finite(u16::from_le_bytes(half)) {
+                    return Err(Error::new(format!(
+                        "model: tensor {} has a non-finite scale in row {row} block {block}",
+                        self.name
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn shape(&self) -> &[usize] {
@@ -201,12 +321,15 @@ impl<'a> Tensor<'a> {
     }
 
     /// Read one element as `f32`.
+    ///
+    /// A quantized tensor has no element accessor: a nibble without its block
+    /// scale means nothing. Callers read a whole row instead.
     fn value(&self, index: usize) -> f32 {
         let offset = self.file_offset + index * self.element_size;
         match self.dtype() {
             DType::Bf16 => f32::from_bits((self.mapping.u16_at(offset) as u32) << 16),
             DType::F32 => f32::from_bits(self.mapping.u32_at(offset)),
-            DType::Other => 0.0,
+            DType::Q4B32 | DType::Q8B32 | DType::Other => 0.0,
         }
     }
 
@@ -225,6 +348,27 @@ impl<'a> Tensor<'a> {
         if row_bytes == 0 {
             return None;
         }
+        self.contiguous_rows(row_bytes, rows)
+    }
+
+    /// The rows of a quantized matrix that are contiguous in the mapping.
+    ///
+    /// A row is one block per thirty-two weights, so the same slicing as the
+    /// `bfloat16` path works; only the row length changes with the width.
+    fn contiguous_quantized(&self) -> Option<(&[u8], usize)> {
+        if !matches!(self.dtype(), DType::Q4B32 | DType::Q8B32) || self.shape().len() != 2 {
+            return None;
+        }
+        let rows = self.shape()[0];
+        let row_bytes = quantized_layout(self.dtype(), self.shape()[1]).ok()?.0;
+        self.contiguous_rows(row_bytes, rows)
+    }
+
+    /// Slice the whole rows of a matrix that the mapping already holds.
+    fn contiguous_rows(&self, row_bytes: usize, rows: usize) -> Option<(&[u8], usize)> {
+        if row_bytes == 0 {
+            return None;
+        }
         let available = self.mapping.bytes_from(self.file_offset);
         let mapped_rows = (available.len() / row_bytes).min(rows);
         if mapped_rows == 0 {
@@ -235,10 +379,25 @@ impl<'a> Tensor<'a> {
     }
 
     /// Dot one row of a matrix with `vector`.
-    fn dot(&self, row: usize, vector: &[f32]) -> f32 {
+    ///
+    /// This is the path for the rows that reach into the final partial page;
+    /// the mapped rows go through the blocked kernels of [`crate::matvec`].
+    fn dot(&self, row: usize, vector: &[f32]) -> Result<f32> {
         let columns = self.shape().last().copied().unwrap_or(0);
-        if vector.len() != columns {
-            return 0.0;
+        if vector.len() != columns || row >= self.shape()[0] {
+            return Err(Error::new(format!(
+                "model: cannot dot row {row} of tensor {}",
+                self.name
+            )));
+        }
+        if matches!(self.dtype(), DType::Q4B32 | DType::Q8B32) {
+            let mut decoded = vec![0.0f32; columns];
+            self.read_row(row, &mut decoded)?;
+            return Ok(decoded
+                .iter()
+                .zip(vector)
+                .map(|(weight, input)| weight * input)
+                .sum());
         }
         let base = row * columns;
         let start = self.file_offset + base * self.element_size;
@@ -269,12 +428,17 @@ impl<'a> Tensor<'a> {
                     sum += f32::from_bits(bits) * input;
                 }
             }
-            DType::Other => return 0.0,
+            DType::Q4B32 | DType::Q8B32 | DType::Other => {
+                return Err(Error::new(format!(
+                    "model: tensor {} has no scalar element accessor",
+                    self.name
+                )))
+            }
         }
         for (index, &input) in vector.iter().enumerate().skip(in_prefix) {
             sum += self.value(base + index) * input;
         }
-        sum
+        Ok(sum)
     }
 
     /// Copy one row of a matrix into `out`.
@@ -285,6 +449,16 @@ impl<'a> Tensor<'a> {
                 "model: cannot read row {row} of tensor {}",
                 self.name
             )));
+        }
+        if matches!(self.dtype(), DType::Q4B32 | DType::Q8B32) {
+            let row_bytes = quantized_layout(self.dtype(), columns)?.0;
+            let mut blocks = vec![0u8; row_bytes];
+            self.mapping
+                .copy_bytes(self.file_offset + row * row_bytes, &mut blocks)?;
+            return match self.dtype() {
+                DType::Q8B32 => quant::dequantize_row_q8(&blocks, out),
+                _ => quant::dequantize_row(&blocks, out),
+            };
         }
         let base = row * columns;
         for (index, slot) in out.iter_mut().enumerate() {
@@ -298,6 +472,12 @@ impl<'a> Tensor<'a> {
         if self.shape().len() != 1 || self.shape()[0] != out.len() {
             return Err(Error::new(format!(
                 "model: tensor {} is not a vector of the expected length",
+                self.name
+            )));
+        }
+        if matches!(self.dtype(), DType::Q4B32 | DType::Q8B32) {
+            return Err(Error::new(format!(
+                "model: normalisation weight {} is quantized, expected a floating point vector",
                 self.name
             )));
         }
@@ -339,6 +519,9 @@ impl<'a> Model<'a> {
     /// together, so a mismatch would otherwise silently compute a different
     /// model.
     pub fn new(file: &'a ModelFile, config: &Config) -> Result<Self> {
+        // A quantized checkpoint has to say which block format wrote it before
+        // a single tensor is bound.
+        file.validate_quantization()?;
         let hidden = config.hidden_size;
         let layer_count = config.num_hidden_layers;
         let q_heads = config.num_attention_heads;
@@ -694,7 +877,15 @@ fn project(matrix: &Tensor<'_>, input: &[f32], out: &mut [f32]) -> Result<u64> {
         )));
     }
     let mut mapped_rows = 0;
-    if let Some((weights, rows_in_mapping)) = matrix.contiguous_bf16() {
+    if let Some((weights, rows_in_mapping)) = matrix.contiguous_quantized() {
+        let rows_slice = &mut out[..rows_in_mapping];
+        if matrix.dtype() == DType::Q8B32 {
+            matvec::matvec_q8(weights, rows_in_mapping, columns, input, rows_slice)?;
+        } else {
+            matvec::matvec_q4(weights, rows_in_mapping, columns, input, rows_slice)?;
+        }
+        mapped_rows = rows_in_mapping;
+    } else if let Some((weights, rows_in_mapping)) = matrix.contiguous_bf16() {
         let length = rows_in_mapping
             .checked_mul(columns)
             .and_then(|elements| elements.checked_mul(2))
@@ -712,9 +903,25 @@ fn project(matrix: &Tensor<'_>, input: &[f32], out: &mut [f32]) -> Result<u64> {
         mapped_rows = rows_in_mapping;
     }
     for (row, slot) in out.iter_mut().enumerate().take(rows).skip(mapped_rows) {
-        *slot = matrix.dot(row, input);
+        *slot = matrix.dot(row, input)?;
     }
     Ok(matvec::macs(rows, columns))
+}
+
+/// Bytes a quantized matrix occupies.
+fn quantized_bytes(dtype: DType, rows: usize, columns: usize) -> Result<usize> {
+    match dtype {
+        DType::Q8B32 => quant::q8_matrix_bytes(rows, columns),
+        _ => quant::matrix_bytes(rows, columns),
+    }
+}
+
+/// Bytes of one row and of one block of a quantized tensor.
+fn quantized_layout(dtype: DType, columns: usize) -> Result<(usize, usize)> {
+    match dtype {
+        DType::Q8B32 => Ok((quant::q8_row_bytes(columns)?, quant::Q8_BLOCK_BYTES)),
+        _ => Ok((quant::row_bytes(columns)?, quant::BLOCK_BYTES)),
+    }
 }
 
 /// Count the decoder layers by the highest `model.layers.N` in the directory.
@@ -756,6 +963,11 @@ fn require_vector(tensor: &Tensor<'_>, length: usize, name: &str) -> Result<()> 
         return Err(Error::new(format!(
             "model: {name} has shape {:?}, expected [{length}]",
             tensor.shape()
+        )));
+    }
+    if matches!(tensor.dtype(), DType::Q4B32 | DType::Q8B32) {
+        return Err(Error::new(format!(
+            "model: {name} is quantized, a norm weight stays floating point"
         )));
     }
     Ok(())

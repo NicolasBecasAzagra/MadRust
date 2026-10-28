@@ -251,6 +251,22 @@ impl Mapping {
         Ok(out)
     }
 
+    /// Copy a byte range into `out`.
+    ///
+    /// The range may straddle the end of the mapping, which is where a block of
+    /// a quantized tensor can land: the packed block is bytes, not an aligned
+    /// element, so the element accessors cannot read it.
+    pub fn copy_bytes(&self, offset: usize, out: &mut [u8]) -> Result<()> {
+        let end = offset
+            .checked_add(out.len())
+            .ok_or_else(|| Error::new("mapping: byte range overflow"))?;
+        if end > self.file_len {
+            return Err(Error::new("mapping: byte range past the end of the file"));
+        }
+        self.copy_from_file(offset, out);
+        Ok(())
+    }
+
     /// Little endian `u16` at a file offset.
     pub fn u16_at(&self, offset: usize) -> u16 {
         if offset + 2 <= self.mapped_len {

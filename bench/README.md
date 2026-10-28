@@ -82,6 +82,39 @@ generated, the seconds the run lasted, and the milliseconds of a step. The
 initramfs of the agent carries 270 megabytes of weights, so the guest needs
 at least a gigabyte of memory.
 
+### The quantized checkpoint
+
+The runtime carries a quantized checkpoint of the same model. The tool writes
+it, and the rig boots it next to the floating point one:
+
+```sh
+cargo run --release --manifest-path madrust-infer/Cargo.toml \
+    --bin madrust-infer-quantize -- \
+    --in ~/madrust/artifacts/model --out ~/madrust/artifacts/model-q4
+
+# One archive per checkpoint: the runtime opens /model.safetensors under the
+# root, so the quantized archive replaces the weights and keeps the rest.
+make infer
+EXTRA_DIR=~/madrust/artifacts/model \
+    bench/mkinitramfs.sh ~/madrust/artifacts/float.cpio madrust-infer/madrust-infer.elf
+EXTRA_DIR=~/madrust/artifacts/model-q4 \
+    bench/mkinitramfs.sh ~/madrust/artifacts/quant.cpio madrust-infer/madrust-infer.elf
+
+bench/run.py --madrust-only \
+    --initrd ~/madrust/artifacts/float.cpio \
+    --initrd-quant ~/madrust/artifacts/quant.cpio \
+    --only infer-ttft,infer-tps --memory 1200M
+```
+
+`--initrd-quant` boots the same image a second time with the quantized archive
+and records `infer-quant-ttft`, `infer-quant-tps`, `boot-quant-seconds` and
+`boot-quant-rss-mb` next to the floating point rows of the same CSV. `boot-rss-mb`
+is the resident memory of the QEMU process, so the pair shows what the format
+saves in the guest.
+
+The quantized rows exist only when the option is given, so a run without it
+does not report them as missing.
+
 ## What an archive holds
 
 `bench/initramfs-entries.py` prints every entry of an archive with its type,

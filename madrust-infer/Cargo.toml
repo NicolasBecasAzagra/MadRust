@@ -42,6 +42,18 @@ path = "src/bin/matmul.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "madrust-infer-quantize"
+path = "src/bin/quantize.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "madrust-infer-compare"
+path = "src/bin/compare.rs"
+test = false
+bench = false
+
 [profile.release]
 panic = "abort"
 opt-level = 2

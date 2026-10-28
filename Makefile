@@ -150,10 +150,20 @@ infer: musl-std
 
 # The synthetic model is a development tool, built and run on the host. Its
 # output lives outside the repository with the rest of the build products.
+# The development model. It is written into the directory of the model, and it
+# must never be written over a checkpoint that somebody downloaded: the
+# directory is the only copy of that checkpoint. The target refuses to write
+# into a directory that already holds a checkpoint with more than a megabyte,
+# which is what a real one weighs and what the development one does not.
 infer-model:
-	$(CARGO) run --release --manifest-path $(INFER_DIR)/Cargo.toml \
-		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host \
-		--bin madrust-infer-gen -- --out $(INFER_MODEL_DIR)
+	@if [ -d "$(INFER_MODEL_DIR)" ] && \
+		[ "$$(wc -c < "$(INFER_MODEL_DIR)/model.safetensors" 2>/dev/null || echo 0)" -gt 1048576 ]; then \
+		echo "infer-model: $(INFER_MODEL_DIR) holds a real checkpoint, not writing over it"; \
+	else \
+		$(CARGO) run --release --manifest-path $(INFER_DIR)/Cargo.toml \
+			--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/infer-host \
+			--bin madrust-infer-gen -- --out $(INFER_MODEL_DIR); \
+	fi
 
 # One uncompressed cpio archive carrying the runtime at /bench and /init, plus
 # the model, vocabulary and config the runtime opens by path.
@@ -175,7 +185,7 @@ agent-initramfs: agent infer-model
 # passes arguments to the program it starts as init. `selftest=1` makes the
 # agent prove the network tool before it asks the model, which is what the gate
 # needs when the model is the synthetic one.
-agent-net-initramfs: agent infer-model
+agent-net-initramfs: agent
 	rm -rf $(AGENT_NET_STAGE)
 	mkdir -p $(AGENT_NET_STAGE)
 	cp -R $(INFER_MODEL_DIR)/. $(AGENT_NET_STAGE)/

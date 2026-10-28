@@ -1,0 +1,7 @@
+kernel,workload,iteration,value,unit,status,error
+madrust,infer-ttft,0,10301.203,ms,ok,
+madrust,infer-tps,0,0.468,tok/s,ok,
+madrust,boot-seconds,0,32.450,s,ok,
+madrust,boot-rss-mb,0,644.3,MiB,ok,
+madrust,boot-quant-seconds,0,1.294,s,ok,
+madrust,boot-quant-rss-mb,0,321.6,MiB,ok,
