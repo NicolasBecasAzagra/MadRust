@@ -1,0 +1,7 @@
+kernel,workload,iteration,value,unit,status,error
+mainline-nomitig,agent-steps,0,2,steps,ok,
+mainline-nomitig,agent-tokens,0,39,tokens,ok,
+mainline-nomitig,agent-seconds,0,2570.049,s,ok,
+mainline-nomitig,agent-step-ms,0,1285024.500,ms/step,ok,
+mainline-nomitig,boot-seconds,0,2584.306,s,ok,
+mainline-nomitig,boot-rss-mb,0,1023.2,MiB,ok,

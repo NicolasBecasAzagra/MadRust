@@ -1,0 +1,7 @@
+kernel,workload,iteration,value,unit,status,error
+mainline,agent-steps,0,2,steps,ok,
+mainline,agent-tokens,0,39,tokens,ok,
+mainline,agent-seconds,0,2792.706,s,ok,
+mainline,agent-step-ms,0,1396353.000,ms/step,ok,
+mainline,boot-seconds,0,2807.579,s,ok,
+mainline,boot-rss-mb,0,1020.7,MiB,ok,
