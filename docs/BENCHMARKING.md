@@ -16,14 +16,19 @@ decide.
 4. **Same boot path.** Both kernels are booted with the same QEMU invocation:
    the same `-initrd`, the same `-append`, the same memory size. Only the
    kernel image differs.
-5. **Measure the workload, never the boot.** The boot paths differ; boot time
-   is not a kernel property worth comparing.
+5. **The boot is recorded, and it is not a comparison of the kernel.** The two
+   kernels reach the first result by different paths, and the reference kernel
+   panics when its PID 1 leaves, so the wall clock of the boot is published
+   with that caveat and never read as a kernel property. The workload
+   measurements are the ones that compare.
 6. **Mitigation configurations are always published.** Mainline Linux is
    measured twice: with its default configuration, and with
    `mitigations=off`. Reporting only the default, or only the mitigated-off
    run, is cherry-picking.
-7. **N >= 30 iterations.** Report median, p99 and standard deviation. Commit
-   the raw per-iteration data as CSV.
+7. **The number of samples is fixed by the workload.** Thirty for the four
+   operation workloads, five for `weights`, ten for `weights-huge`, and one for
+   the model, the agent and the boot rows. Report median, p99 and standard
+   deviation. Commit the raw per-iteration data as CSV.
 8. **Every loss is published too.** The report includes the benchmarks where
    mainline wins, with the same rigour.
 9. **QEMU results are labelled as QEMU results.** No claim about physical
@@ -38,10 +43,10 @@ decide.
   and never compared against accelerated runs.
 - Host metadata (kernel, CPU, memory, QEMU version) stored next to the raw
   data.
-- The guest size is currently capped by the kernel itself: the frame metadata
-  is a static buffer, so the kernel refuses a guest with more than 1 GiB of
-  RAM. Until the metadata becomes dynamic, both kernels must run with a
-  guest size the kernel supports, and the same size for both.
+- The guest size is capped by the kernel itself: the frame metadata is carved
+  out of the memory it describes, so the kernel refuses a guest with more than
+  32 GiB of RAM. Both kernels must run with a guest size the kernel supports,
+  and with the same size for both.
 
 ### What a host without KVM means
 
@@ -130,8 +135,9 @@ five, because every sample faults 65536 pages.
 
 ### Protocol
 
-- At least 30 iterations per workload per kernel, and five for the two
-  workloads that fault 65536 pages each.
+- Thirty iterations for the four operation workloads per kernel, five for
+  `weights`, ten for `weights-huge`, and one for the model, the agent and the
+  boot rows.
 - Every iteration is recorded, including the ones that failed. Nothing is
   discarded, nothing is retried until it looks good.
 - The raw data is one CSV per kernel, with one row per iteration: workload,
@@ -195,7 +201,7 @@ per MiB faulted in with 4 KiB pages, a tenth as expensive per MiB faulted in
 with 2 MiB pages, seven times as cheap per futex round trip and four times as
 fast in the thread workload. The tails are further apart still: the slowest
 single fault is 264 microseconds on MadRust against 2.55 milliseconds on the
-reference, and with 2 MiB pages 14.5 microseconds per fault against 1.67
+reference, and with 2 MiB pages 28.2 microseconds per fault against 1.67
 milliseconds.
 
 Those differences come from doing less work per operation: no page table

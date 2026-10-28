@@ -60,15 +60,17 @@ with the same binary and the same checkpoint.
 | seconds of an agent loop | **821** | 2793 | 2570 |
 | resident memory with the model | **857 MB** | 1021 MB | 1023 MB |
 
-One processor, 1024 MiB, QEMU 8.2.2, Linux 7.3.0 built from the mainline
-tree by `bench/prepare-mainline.sh`, the same initramfs and the same binary on
-both sides. The raw rows are in `bench/results/vps-1cpu/` and in
+One processor, 512 MiB for the operations and 1024 MiB for the model and the
+agent, QEMU 8.2.2, Linux 7.3.0 built from the mainline tree by
+`bench/prepare-mainline.sh`, the same initramfs and the same binary on both
+sides. The raw rows are in `bench/results/vps-1cpu/` and in
 `bench/results/agent/`.
 
 Three things about these numbers:
 
-- **The ratios are the claim.** Two to three times cheaper per operation, three
-  times faster in the agent loop, a fifth of the memory of the guest.
+- **The ratios are the claim.** Between 1.3 and 7.4 times cheaper per
+  operation, three times faster in the agent loop, two thirds of the memory of
+  the guest.
 - **The absolute numbers describe an emulator.** There is no hardware
   acceleration on the host, so a wall clock statement about a processor is not
   supported yet. A host with KVM is the open issue for that.
@@ -89,10 +91,10 @@ continuous integration. One commit per milestone.
 | M2b | The kernel reaches physical memory only through the direct map | done |
 | M2c | Frame metadata carved out of the memory it describes, 32 GiB of guests | done |
 | M3 | Kernel threads, preemptive round robin scheduler, interrupt safe locks | done |
-| M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 58 Linux system calls | done |
+| M4 | Ring 3, `SYSCALL`/`SYSRET`, ELF64 loader, 59 Linux system calls | done |
 | M4b | A real userland: a standard library program running unmodified | done |
 | M4c | Demand paging for anonymous mappings | done |
-| M8 | Benchmark rig, eight workloads, the comparison published with its raw data | done |
+| M8 | Benchmark rig, sixteen measurements, the comparison published with its raw data | done |
 | M9 | SMP: ACPI MADT, INIT-SIPI-SIPI, LAPIC and IOAPIC, IPIs, four processors | done |
 | E1 | The initramfs as a read only file system | done |
 | E2 | A file backed mapping and large pages | done |
@@ -135,20 +137,22 @@ rustup toolchain install nightly-2026-10-24 \
 make build          # the kernel
 make run            # boot it in QEMU, serial on stdout
 make test           # host unit tests of every crate
-make check          # format and clippy of every crate
+make fmt-check      # the format of every crate
+make clippy         # the clippy of every crate, for its target
+make clippy-host    # the clippy of every crate, for the host
 ```
 
 Boot directly with QEMU:
 
 ```sh
 qemu-system-x86_64 -M q35 -m 512M \
-    -kernel target/x86_64-madrust/release/madrust-kernel \
+    -kernel "$(make -s print-kernel-path)" \
     -display none -monitor none -no-reboot -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04
 ```
 
 Debugging: add `-s -S` to QEMU (gdbstub on port 1234, CPU halted), then attach
-`lldb target/x86_64-madrust/release/madrust-kernel` with `gdb-remote 1234`
+`lldb "$(make -s print-kernel-path)"` with `gdb-remote 1234`
 (macOS) or `gdb` with `target remote :1234` (Linux).
 
 ### The comparison against mainline
@@ -195,7 +199,7 @@ madrust-infer/      the inference runtime, the grammar, the merge encoder
 madrust-agent/      the agent loop: model, tool call, tool result
 bench/              the rig, the workloads, the reference build, the datasets
 docs/               architecture, boot protocol, benchmarking, VM setup
-scripts/            ISO and CI helper scripts
+scripts/            the generator of the interrupt stubs
 ```
 
 Dependencies policy: kernel crates may only use MIT, BSD or ISC licensed code.

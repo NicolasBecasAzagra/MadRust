@@ -82,6 +82,23 @@ generated, the seconds the run lasted, and the milliseconds of a step. The
 initramfs of the agent carries 270 megabytes of weights, so the guest needs
 at least a gigabyte of memory.
 
+## What an archive holds
+
+`bench/initramfs-entries.py` prints every entry of an archive with its type,
+its mode and, for a device, its major and minor numbers:
+
+```sh
+python3 bench/initramfs-entries.py bench/initramfs.cpio
+```
+
+It exists because of a failure that cost an afternoon: the archive was built
+by a `cpio` that writes the name of an entry without the leading `./`, the
+patch that turns the two empty files into device nodes did not match, and
+`/dev/console` stayed a plain file. The program of the guest then wrote its
+output into a file that nobody read, and the run looked like a guest that
+says nothing. The rig now refuses an archive whose console is not the
+console device, and this tool shows what the archive really holds.
+
 ## QEMU configuration
 
 Both kernels always run with the same flags:
@@ -121,7 +138,11 @@ numbers in the finished `newc` archive, because creating a device node needs
 root on both macOS and Linux.
 
 The binary runs eight measurements, prints one `RESULT <workload> <value> <unit>`
-line per measured quantity and sample, and ends with `BENCH DONE`:
+line per measured quantity and sample, and ends with `BENCH DONE`. The rig
+adds eight more rows of its own, taken from the emulator rather than from the
+guest: the time to the first token and the tokens per second of the runtime,
+the four measurements of the agent loop, and the wall clock and the resident
+memory of the whole boot.
 
 | Workload | What it measures | Unit |
 |---|---|---|
@@ -210,5 +231,8 @@ numbers describe the emulator. A TCG run still supports a relative statement
 because both kernels see identical emulation. `summary.json` records the
 accelerator, and the report must state it.
 
-Boot time is not measured: the boot paths differ, and boot time is not the
-kernel property this rig compares.
+The boot is timed and recorded, as `boot-seconds` and `boot-rss-mb`, but it is
+not a comparison of the kernel alone: the two kernels reach the first result
+by different paths, and the reference kernel panics when its PID 1 leaves.
+The number is published with that caveat, next to the measurements that are
+comparisons.

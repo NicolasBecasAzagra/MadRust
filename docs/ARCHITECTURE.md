@@ -24,25 +24,25 @@ of hiding.
 Implemented:
 
 ```text
-read 0                  write 1                 close 3                 fstat 5
-poll 7                  lseek 8                 mmap 9                  mprotect 10
-munmap 11               brk 12                  rt_sigaction 13         rt_sigprocmask 14
-ioctl 16                sched_yield 24          mremap 25               madvise 28
-dup 32                  dup2 33                 nanosleep 35            getpid 39
-clone 56                exit 60                 kill 62                 uname 63
-fcntl 72                getcwd 79               readlink 89             gettimeofday 96
+read 0                  write 1                 open 2                  close 3
+fstat 5                 poll 7                  lseek 8                 mmap 9
+mprotect 10             munmap 11               brk 12                  rt_sigaction 13
+rt_sigprocmask 14       ioctl 16                sched_yield 24          mremap 25
+madvise 28              dup 32                  dup2 33                 nanosleep 35
+getpid 39               clone 56                exit 60                 kill 62
+uname 63                fcntl 72                getcwd 79               gettimeofday 96
 getrusage 98            getuid 102              getgid 104              geteuid 107
 getegid 108             getppid 110             sigaltstack 131         mlock 149
 munlock 150             prctl 157               arch_prctl 158          gettid 186
-futex 202               sched_getaffinity 204   getdents64 217          set_tid_address 218
-clock_gettime 228       clock_nanosleep 230     exit_group 231          tgkill 234
-openat 257              newfstatat 262          set_robust_list 273     dup3 292
-pipe2 293               prlimit64 302           getrandom 318           membarrier 324
-statx 332               rseq 334
+futex 202               sched_getaffinity 204   set_tid_address 218     clock_gettime 228
+clock_nanosleep 230     exit_group 231          tgkill 234              openat 257
+newfstatat 262          set_robust_list 273     dup3 292                pipe2 293
+prlimit64 302           getrandom 318           membarrier 324         rseq 334
 ```
 
-Not implemented yet, and they return `-ENOSYS`: `lseek` 8, `clone` 56,
-`execve` 59, `wait4` 61, and everything that needs sockets or a file system.
+Not implemented yet, and they return `-ENOSYS`: `readlink` 89, `getdents64`
+217, `statx` 332, `execve` 59, `wait4` 61, and everything that needs sockets
+or a file system.
 
 ### What the implementations do not do yet
 
@@ -87,9 +87,9 @@ Milestones M0 to M3 are implemented, verified locally and asserted in CI:
   Linux musl target, runs unmodified: the loader learned position independent
   executables and the system call table grew to what `std` needs.
 
-The next milestone is M5: a file system, an initramfs and process support, so
-the kernel can run a distribution init instead of a single program. Before the
-benchmark phase, the frame metadata has to become dynamic so the kernel can
+The next milestone in that plan was M5: a file system, an initramfs and process
+support, so the kernel can run a distribution init instead of a single
+program. Before the benchmark phase, the frame metadata has to become dynamic so the kernel can
 use more than 1 GiB of RAM (see the limits below).
 
 ## The endgame: serving a real model
@@ -133,7 +133,10 @@ The plan, in the order it has to happen:
 6. **The measurement.** Tokens per second, time to the first token, and the
    cost of the page faults that stream the weights, for both kernels.
 
-The first five are done. The measurement is running.
+The first five are done, and so are the measurement (M8), the four processors
+(M9), the initramfs as a read only file system (E1), the large pages (E2 and
+E2b), the tail of the scheduler (E3a and E3b), the runtime and its measurement
+(E4 and E5) and the agent (E6). The next milestone is M10: the network.
 
 Two things this plan deliberately does not do:
 
@@ -159,16 +162,16 @@ A cargo workspace with one crate per concern:
 |---|---|
 | `madrust-arch` | x86_64 hardware access: port I/O, control registers, MSRs, the boot trampoline. The only crate allowed to be architecture-specific. |
 | `madrust-bootinfo` | Pure parsing of the boot handover structures (PVH `start_info`, memory map). Host-testable, no hardware access. |
-| `madrust-drivers` | Device drivers: 16550A UART, PIT, PIC, later PCI/IDE/VirtIO. |
-| `madrust-kernel` | The `no_std` kernel binary: entry, memory management, scheduler, VFS, syscall layer. |
-| `madrust-abi` | System call numbers, `errno` values, user-visible structure layouts. Shared by kernel and test userland. |
+| `madrust-drivers` | Device drivers: the 16550A UART and the isa-debug-exit device. |
+| `madrust-kernel` | The `no_std` kernel binary: entry, memory management, scheduler, the PIC, the PIT and the syscall layer. |
 | `madrust-elf` | ELF parser. Pure, host-testable. |
 | `madrust-mm` | Physical frame allocator (buddy), kernel heap (slab), virtual memory. |
 | `madrust-sched` | Kernel threads, wait queues, scheduler. |
-| `madrust-vfs` | VFS interfaces, ramfs/tmpfs, cpio initramfs. |
 | `madrust-userland` | Static test binaries used as kernel test fixtures. |
 | `madrust-initramfs` | Parser for uncompressed `cpio` archives in the `newc` format. Pure, host-testable, no `unsafe`. |
 | `madrust-bench` | The benchmark workload binary: a static Linux program that runs on both kernels. |
+| `madrust-infer` | The inference runtime: the reader of the weights, the decoder, the merge encoder, the grammar of a tool call and the chat prompt. |
+| `madrust-agent` | The agent loop: model, tool call, tool result, and the five tools it can call. |
 
 Crates are added when the milestone that needs them arrives, not before. A
 crate with one function does not exist yet.

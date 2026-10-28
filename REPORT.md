@@ -1,7 +1,7 @@
 # MadRust: a Linux-ABI kernel in Rust, measured against mainline
 
 **Repository**: <https://github.com/NicolasBecasAzagra/MadRust>
-**Status**: milestones M0 to M4c, E1, E2, E2b and E4 are implemented and
+**Status**: milestones M0 to M4c, M8, M9, E1, E2, E2b, E3a, E3b, E4, E5 and E6 are implemented and
 asserted in CI. The measurement below was produced by the rig in this
 repository, from the raw rows in `bench/results/`.
 
@@ -42,7 +42,7 @@ publish the losses as carefully as the wins. Three findings came out of it:
   from the higher half with a direct map of physical memory, manages physical
   memory with a buddy allocator whose metadata is carved out of the memory it
   describes, faults user pages in on demand, backs anonymous and file
-  mappings with 2 MiB pages, serves 58 Linux system calls, exposes the
+  mappings with 2 MiB pages, serves 59 Linux system calls, exposes the
   initramfs as a read only file system, and runs preemptive kernel threads.
 - **A runtime** (`madrust-infer`): reads a model in the `safetensors` format,
   maps it through the initramfs without copying it, and generates tokens with
@@ -290,7 +290,7 @@ the native host, one processor, 1024 MiB, the same initramfs for both kernels:
 | Steps of the loop | 2 | 2 | 2 |
 | Tokens the model generated | 39 | 39 | 39 |
 | Seconds of the loop | **821.0** | 2792.7 | 2570.1 |
-| Milliseconds of a step | **410.5 s** | 1396.4 s | 1285.0 s |
+| Seconds of a step | **410.5** | 1396.4 | 1285.0 |
 | Boot to the last result | **1200.8 s** | 2807.6 s | 2584.3 s |
 | Resident memory of the guest | **857 MB** | 1021 MB | 1023 MB |
 

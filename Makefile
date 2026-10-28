@@ -194,6 +194,8 @@ fmt:
 	$(CARGO) fmt --manifest-path madrust-userland/Cargo.toml
 	$(CARGO) fmt --manifest-path madrust-bench/Cargo.toml
 	$(CARGO) fmt --manifest-path $(INFER_DIR)/Cargo.toml
+	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml
+	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml
 
 fmt-check:
 	$(CARGO) fmt --all -- --check
@@ -227,4 +229,5 @@ check: userland
 
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
-	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF) $(INFER_ELF) $(INFER_INITRAMFS)
+	rm -rf $(TARGET_DIR) $(USERLAND_ELF) $(BENCH_ELF) $(INFER_ELF) $(INFER_INITRAMFS) \
+		$(AGENT_ELF) $(AGENT_INITRAMFS)
