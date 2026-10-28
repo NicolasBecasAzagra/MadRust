@@ -62,6 +62,21 @@ task for the next milestone:
 - `FUTEX_WAIT_BITSET` timeouts are treated as relative.
 - The futex wait table holds eight waiters.
 
+## The stack of a ring 3 thread
+
+The stack of a user thread inside the kernel is the sixteen kilobytes that the
+task state installs for it, and it is the same stack that an interrupt uses.
+Nothing large may travel through it: a copy of the mapping table of a user
+program is fifty six kilobytes, and writing that much over a stack that is
+sixteen kilobytes long overwrites whatever the linker put above it, which is
+the interrupt descriptor table and the tables of the direct map. The defect
+was invisible because the layout of the image decided what the overflow
+reached, and it stayed invisible until a change moved a symbol.
+
+The rule the kernel follows now: the tables live in their own place, an edit
+of one happens where it lives, and a function that has to hand a structure to
+another one hands a reference or a selector, never the structure.
+
 ## Current state
 
 Milestones M0 to M3 are implemented, verified locally and asserted in CI:
