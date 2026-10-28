@@ -200,7 +200,12 @@ fn run(task: &str) -> Result<(), Box<dyn std::error::Error>> {
         if repeats(previous.as_deref(), &request) {
             println!(
                 "{}",
-                step_line(step, &call.tool, &call.args_json(), "the model repeated the call")
+                step_line(
+                    step,
+                    &call.tool,
+                    &call.args_json(),
+                    "the model repeated the call"
+                )
             );
             break;
         }
@@ -275,9 +280,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        answer_line, default_task, repeats, sanitize, step_line, summary, DEFAULT_TASK,
-    };
+    use super::{answer_line, default_task, repeats, sanitize, step_line, summary, DEFAULT_TASK};
 
     #[test]
     fn no_argument_uses_the_default_task() {
@@ -296,7 +299,10 @@ mod tests {
 
     #[test]
     fn a_call_that_repeats_is_recognized() {
-        assert!(repeats(Some("read_file {\"path\":\"/a\"}"), "read_file {\"path\":\"/a\"}"));
+        assert!(repeats(
+            Some("read_file {\"path\":\"/a\"}"),
+            "read_file {\"path\":\"/a\"}"
+        ));
         assert!(!repeats(
             Some("read_file {\"path\":\"/a\"}"),
             "read_file {\"path\":\"/b\"}"
