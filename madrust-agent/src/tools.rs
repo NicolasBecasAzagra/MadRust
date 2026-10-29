@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The tool registry.
 //!
-//! Six tools, exactly the names in [`NAMES`], each with the argument keys the
+//! Seven tools, exactly the names in [`NAMES`], each with the argument keys the
 //! system prompt explains. [`REQUIREMENTS`] states the keys a call has to
 //! carry, so the grammar of the call refuses a tool call that cannot work
 //! before the loop spends a step on it. Every tool returns one line of text:
@@ -10,7 +10,7 @@
 //! model sees the failure and can choose another call instead of the loop
 //! going silent.
 //!
-//! `read_file`, `write_file` and `net_send` use the standard library, which
+//! `read_file`, `write_file`, `net_send` and `http_get` use the standard library, which
 //! reaches the kernel through the Linux calls both kernels implement.
 //! `list_dir` uses the raw `openat` and `getdents64` calls the benchmark
 //! workload uses, because MadRust answers `getdents64` with `ENOSYS`: the same
@@ -32,12 +32,22 @@
 //! makes the calls and reports what the kernel answered, and the result of the
 //! tool carries that report as `link=`, so a kernel that refuses the setup says
 //! so on the line of the tool.
+//!
+//! `http_get` makes the request of a client of an API: one `GET` over a stream
+//! socket, the `Host` header included, through [`madrust_http`]. The argument is
+//! a whole address in the form a person writes it, `http://HOST:PORT/PATH`, and
+//! the result carries the status, the headers that matter and a bounded body
+//! with the number of characters the bound left out. The read is retried for
+//! the same reason as the datagram: a kernel with nothing to read answers a
+//! would block, and the server of the host can be slower than the guest.
 
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
+
+use madrust_http::{write_request, MessageReader, Method, Progress, Url};
 
 use crate::call::Call;
 use crate::expression;
@@ -45,12 +55,13 @@ use crate::expression;
 use madrust_infer::grammar::{Argument, ValueType};
 
 /// The tool names, in the order the system prompt lists them.
-pub const NAMES: [&str; 6] = [
+pub const NAMES: [&str; 7] = [
     "read_file",
     "list_dir",
     "write_file",
     "compute",
     "net_send",
+    "http_get",
     "done",
 ];
 
@@ -82,6 +93,10 @@ pub const REQUIREMENTS: &[(&str, &[Argument<'static>])] = &[
             Argument::required("text", ValueType::String),
         ],
     ),
+    (
+        "http_get",
+        &[Argument::required("query", ValueType::String)],
+    ),
     ("done", &[Argument::required("text", ValueType::String)]),
 ];
 
@@ -108,10 +123,35 @@ pub struct RoundTrip {
 pub struct Step {
     /// The text for the history, or the final answer.
     pub outcome: Outcome,
-    /// The sample of a network call, when the call was `net_send` and it got
-    /// an answer. The loop reports it in the summary line, so the rig can
-    /// publish the round trip of the run beside the cost of the run.
-    pub round_trip: Option<RoundTrip>,
+    /// The sample of the datagram, when the call was `net_send` and it got an
+    /// answer. The loop reports it in the summary line, so the rig can publish
+    /// the round trip of the run beside the cost of the run.
+    pub net: Option<RoundTrip>,
+    /// The sample of the HTTP call, when the call was `http_get` and it got an
+    /// answer. It has a key of its own on the summary line, because a datagram
+    /// and a request over a stream are two different measurements.
+    pub http: Option<RoundTrip>,
+}
+
+/// The samples one run took, one per kind of call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Samples {
+    /// Round trip of the datagram, when the run sent one.
+    pub net: Option<RoundTrip>,
+    /// Round trip of the HTTP call, when the run made one.
+    pub http: Option<RoundTrip>,
+}
+
+impl Samples {
+    /// Keep the sample a call produced, if it produced one.
+    pub fn absorb(&mut self, step: &Step) {
+        if step.net.is_some() {
+            self.net = step.net;
+        }
+        if step.http.is_some() {
+            self.http = step.http;
+        }
+    }
 }
 
 /// Run one parsed call.
@@ -119,7 +159,8 @@ pub struct Step {
 /// A grammar bug can still produce an unknown name or a missing argument, so
 /// those become an error text too. Only `done` ends the loop.
 pub fn run(call: &Call) -> Step {
-    let mut round_trip = None;
+    let mut net = None;
+    let mut http = None;
     let outcome = match call.tool.as_str() {
         "read_file" => Outcome::Continue(read_file(call)),
         "list_dir" => Outcome::Continue(list_dir(call)),
@@ -127,7 +168,12 @@ pub fn run(call: &Call) -> Step {
         "compute" => Outcome::Continue(compute(call)),
         "net_send" => {
             let (text, sample) = net_send(call);
-            round_trip = sample;
+            net = sample;
+            Outcome::Continue(text)
+        }
+        "http_get" => {
+            let (text, sample) = http_get(call);
+            http = sample;
             Outcome::Continue(text)
         }
         "done" => match string_arg(call, "text") {
@@ -136,10 +182,7 @@ pub fn run(call: &Call) -> Step {
         },
         other => Outcome::Continue(format!("error unknown tool {other}")),
     };
-    Step {
-        outcome,
-        round_trip,
-    }
+    Step { outcome, net, http }
 }
 
 /// Open a path read only, read up to 4096 bytes and report the size.
@@ -309,6 +352,181 @@ fn with_link(mut result: String, link: &crate::link::Link) -> String {
     let _ = write!(result, " link={}", link.report());
     result
 }
+
+/// Make one HTTP request and report the answer of the server.
+///
+/// The argument is the address in the form a person writes it,
+/// `http://HOST:PORT/PATH`, and [`Url`] takes it apart. The request line and
+/// the `Host` header come from [`write_request`], so a request of this tool
+/// always names the server it connects to. The answer is read through
+/// [`MessageReader`], which joins the pieces a socket hands over and decodes a
+/// chunked body, and the read is retried because MadRust answers a socket with
+/// nothing to read at once with the error of a would block.
+///
+/// The body goes back into the prompt of the next step, so it is cut to
+/// [`ANSWER_CHARS`] characters and the result says how many were left out. A
+/// body the server did not send and a body of zero bytes are different results:
+/// `body=none` and `bytes=0`.
+fn http_get(call: &Call) -> (String, Option<RoundTrip>) {
+    let query = match string_arg(call, "query") {
+        Ok(query) => query,
+        Err(error) => return (error, None),
+    };
+    let url = match Url::parse(query) {
+        Ok(url) => url,
+        Err(error) => return (format!("error {error}"), None),
+    };
+    let host = url
+        .host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(url.host);
+    let authority = format!("{}:{}", url.host, url.port);
+    let (path, query_part) = url.target_parts();
+    let target = format!("{path}{query_part}");
+
+    let mut request = [0u8; REQUEST_BYTES];
+    let written = match write_request(
+        &mut request,
+        Method::Get,
+        &target,
+        &authority,
+        &[
+            ("accept", "*/*"),
+            ("user-agent", "madrust-agent/0.1"),
+            ("connection", "close"),
+        ],
+        None,
+    ) {
+        Ok(written) => written,
+        Err(error) => return (format!("error {error}"), None),
+    };
+
+    let link = crate::link::ensure();
+    let mut socket = match TcpStream::connect((host, url.port)) {
+        Ok(socket) => socket,
+        Err(error) => return (with_link(io_error(&error), link), None),
+    };
+    // A kernel that does not implement the timeout of a socket refuses the
+    // option; the loop below then relies on the retries alone.
+    let _ = socket.set_read_timeout(Some(READ_TIMEOUT));
+    if let Err(error) = socket.write_all(&request[..written]) {
+        return (with_link(io_error(&error), link), None);
+    }
+
+    let started = Instant::now();
+    let mut input = [0u8; RESPONSE_BYTES];
+    let mut body = [0u8; BODY_BYTES];
+    let mut reader = MessageReader::for_response(&mut input, &mut body);
+    let mut chunk = [0u8; 1024];
+    let mut retries = 0u32;
+    loop {
+        match socket.read(&mut chunk) {
+            Ok(0) => {
+                return (
+                    with_link(
+                        format!(
+                        "error the peer closed before the answer was complete retries={retries}"
+                    ),
+                        link,
+                    ),
+                    None,
+                )
+            }
+            Ok(length) => match reader.feed(&chunk[..length]) {
+                Ok(Progress::Complete) => break,
+                Ok(Progress::NeedMore) => {}
+                Err(error) => {
+                    return (
+                        with_link(format!("error {error} retries={retries}"), link),
+                        None,
+                    )
+                }
+            },
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                retries = retries.saturating_add(1);
+                if started.elapsed() >= ANSWER_TIMEOUT {
+                    return (
+                        with_link(format!("error no answer retries={retries}"), link),
+                        None,
+                    );
+                }
+            }
+            Err(error) => return (with_link(io_error(&error), link), None),
+        }
+    }
+    let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+    let response = match reader.response() {
+        Ok(response) => response,
+        Err(error) => return (with_link(format!("error {error}"), link), None),
+    };
+    let selected = selected_headers(&response.head.headers);
+    let (bytes, text) = match response.body {
+        Some(body) => (
+            body.len().to_string(),
+            String::from_utf8_lossy(body).into_owned(),
+        ),
+        None => ("none".to_string(), String::new()),
+    };
+    let total = text.chars().count();
+    let content: String = text.chars().take(ANSWER_CHARS).collect();
+    let mut result = format!(
+        "status={} reason={} bytes={bytes} headers={selected} content={content} retries={retries} rt_us={micros}",
+        response.head.status.as_u16(),
+        response.head.reason_text(),
+    );
+    if total > ANSWER_CHARS {
+        // The prompt of the next step carries this text, so the tool says what
+        // it did not carry instead of silently cutting the body.
+        let _ = write!(result, " omitted={}", total - ANSWER_CHARS);
+    }
+    (with_link(result, link), Some(RoundTrip { micros, retries }))
+}
+
+/// The headers of an answer that matter to a reader, as one token.
+///
+/// The list is the one a caller acts on: the type and the length of the body,
+/// the coding, the server and a redirect. A header outside it is dropped before
+/// the result goes back into the prompt; the full body is in the log anyway.
+fn selected_headers(headers: &madrust_http::Headers<'_>) -> String {
+    const WANTED: [&str; 5] = [
+        "content-type",
+        "content-length",
+        "transfer-encoding",
+        "server",
+        "location",
+    ];
+    let mut out = String::new();
+    for name in WANTED {
+        if let Some(value) = headers.get(name) {
+            if !out.is_empty() {
+                out.push(',');
+            }
+            out.push_str(name);
+            out.push(':');
+            out.push_str(&String::from_utf8_lossy(value));
+        }
+    }
+    if out.is_empty() {
+        out.push('-');
+    }
+    out
+}
+
+/// Bytes of the request a `http_get` call writes.
+const REQUEST_BYTES: usize = 1024;
+
+/// Bytes of the head and the encoded body the HTTP tool collects.
+const RESPONSE_BYTES: usize = 8192;
+
+/// Bytes of the decoded body the HTTP tool keeps.
+const BODY_BYTES: usize = 4096;
 
 /// Parse the `ADDRESS:PORT` argument of the network tool.
 fn parse_endpoint(query: &str) -> Result<SocketAddr, String> {
@@ -563,7 +781,9 @@ unsafe fn syscall4(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     use madrust_infer::grammar::{Grammar, ARGUMENT_NAMES};
 
@@ -665,6 +885,7 @@ mod tests {
             br#"{"tool":"write_file","args":{"path":"/a","text":"b"}}"#,
             br#"{"tool":"compute","args":{"value":"1+1"}}"#,
             br#"{"tool":"net_send","args":{"query":"10.0.2.2:9999","text":"ping"}}"#,
+            br#"{"tool":"http_get","args":{"query":"http://10.0.2.2:8080/"}}"#,
             br#"{"tool":"done","args":{"text":"ok"}}"#,
         ] {
             assert!(accepts(&grammar, call), "the call is not complete");
@@ -692,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_lists_the_six_tools() {
+    fn the_registry_lists_the_seven_tools() {
         assert_eq!(
             NAMES,
             [
@@ -701,6 +922,7 @@ mod tests {
                 "write_file",
                 "compute",
                 "net_send",
+                "http_get",
                 "done"
             ]
         );
@@ -828,7 +1050,7 @@ mod tests {
             "the answer carries the state of the link: {result}"
         );
         assert!(
-            step.round_trip.is_some(),
+            step.net.is_some(),
             "the tool measured its datagram: {result}"
         );
     }
@@ -862,13 +1084,149 @@ mod tests {
         assert!(result.starts_with("error errno=101 link="), "{result}");
     }
 
+    /// A server on the host that answers one HTTP request.
+    ///
+    /// The worker returns the bytes of the request it read, so the test can
+    /// check the line and the headers the tool sent.
+    fn http_once(reply: Vec<u8>) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<u8>>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("the test server binds a free port");
+        let address = listener
+            .local_addr()
+            .expect("the test server has an address");
+        let worker = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("the client connects");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("the test server waits for its request");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 512];
+            loop {
+                let length = socket.read(&mut buffer).expect("the request arrives");
+                if length == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..length]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket.write_all(&reply).expect("the answer leaves");
+            request
+        });
+        (address, worker)
+    }
+
+    #[test]
+    fn requests_a_resource_and_reports_the_status_the_headers_and_the_body() {
+        let reply = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nhello world\n".to_vec();
+        let (address, worker) = http_once(reply);
+        let query = format!("http://{address}/index.html?q=1");
+        let step = run(&call("http_get", &[("query", text(&query))]));
+        let request = worker.join().expect("the test server finishes");
+        let request = String::from_utf8_lossy(&request);
+        assert!(
+            request.starts_with("GET /index.html?q=1 HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains(&format!("Host: 127.0.0.1:{}\r\n", address.port())),
+            "{request}"
+        );
+        assert!(
+            request.contains("user-agent: madrust-agent/0.1\r\n"),
+            "{request}"
+        );
+        let Outcome::Continue(result) = step.outcome else {
+            panic!("http_get must not end the loop");
+        };
+        assert!(
+            result.starts_with("status=200 reason=OK bytes=12 headers=content-type:text/plain,content-length:12 content=hello world"),
+            "{result}"
+        );
+        assert!(result.contains(" rt_us="), "{result}");
+        assert!(result.contains(" link="), "{result}");
+        assert!(
+            step.http.is_some(),
+            "the tool measured its request: {result}"
+        );
+        assert!(step.net.is_none());
+    }
+
+    #[test]
+    fn a_body_longer_than_the_window_says_how_much_was_left_out() {
+        let body = "a".repeat(300);
+        let reply = format!("HTTP/1.1 200 OK\r\nContent-Length: 300\r\n\r\n{body}").into_bytes();
+        let (address, worker) = http_once(reply);
+        let query = format!("http://{address}/");
+        let step = run(&call("http_get", &[("query", text(&query))]));
+        worker.join().expect("the test server finishes");
+        let Outcome::Continue(result) = step.outcome else {
+            panic!("http_get must not end the loop");
+        };
+        assert!(result.contains("omitted=44"), "{result}");
+    }
+
+    #[test]
+    fn a_body_that_is_absent_is_not_a_body_of_zero_bytes() {
+        let (address, worker) = http_once(b"HTTP/1.1 204 No Content\r\n\r\n".to_vec());
+        let step = run(&call(
+            "http_get",
+            &[("query", text(&format!("http://{address}/")))] as &[(&str, Value)],
+        ));
+        worker.join().expect("the test server finishes");
+        let Outcome::Continue(result) = step.outcome else {
+            panic!("http_get must not end the loop");
+        };
+        assert!(result.contains("bytes=none"), "{result}");
+
+        let (address, worker) = http_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec());
+        let step = run(&call(
+            "http_get",
+            &[("query", text(&format!("http://{address}/")))],
+        ));
+        worker.join().expect("the test server finishes");
+        let Outcome::Continue(result) = step.outcome else {
+            panic!("http_get must not end the loop");
+        };
+        assert!(result.contains("bytes=0"), "{result}");
+    }
+
+    #[test]
+    fn a_chunked_answer_is_decoded() {
+        let reply = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n".to_vec();
+        let (address, worker) = http_once(reply);
+        let step = run(&call(
+            "http_get",
+            &[("query", text(&format!("http://{address}/")))],
+        ));
+        worker.join().expect("the test server finishes");
+        let Outcome::Continue(result) = step.outcome else {
+            panic!("http_get must not end the loop");
+        };
+        assert!(result.contains("content=Wikipedia"), "{result}");
+    }
+
+    #[test]
+    fn a_bad_address_is_a_reason_and_not_a_default() {
+        let step = run(&call(
+            "http_get",
+            &[("query", text("10.0.2.2:8080/index.html"))],
+        ));
+        assert!(step.http.is_none());
+        assert!(matches!(
+            step.outcome,
+            Outcome::Continue(error) if error.starts_with("error the address is invalid")
+        ));
+    }
+
     #[test]
     fn a_bad_endpoint_is_a_reason_and_not_a_default() {
         let step = run(&call(
             "net_send",
             &[("query", text("10.0.2.2")), ("text", text("ping"))],
         ));
-        assert!(step.round_trip.is_none());
+        assert!(step.net.is_none());
         assert!(matches!(
             step.outcome,
             Outcome::Continue(error) if error.starts_with("error endpoint is not ADDRESS:PORT")

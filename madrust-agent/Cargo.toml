@@ -15,6 +15,7 @@ publish = false
 
 [dependencies]
 madrust-infer = { path = "../madrust-infer" }
+madrust-http = { path = "../madrust-http" }
 
 [[bin]]
 name = "madrust-agent"

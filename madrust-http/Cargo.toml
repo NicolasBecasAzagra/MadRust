@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "madrust-http"
+description = "HTTP/1.1 messages for the agent client: lines, headers, framing, an incremental reader and a URL"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+publish = false
+
+# A workspace of its own, exactly like the protocols of the network path. The
+# crate is pure: no dependency, no `unsafe`, and no standard library on the
+# kernel target. The agent reaches it through a path dependency, and the host
+# tests build it with the standard library only because `cfg(test)` says so.
+[workspace]
+
+[dependencies]

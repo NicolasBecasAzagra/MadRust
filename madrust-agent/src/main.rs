@@ -7,10 +7,10 @@
 //! the call, runs the tool, and appends the assistant turn and the result to
 //! the history. [`tools::NAMES`] is the whole registry.
 //!
-//! The default task, used when the guest passes no argument, sends one
-//! datagram to the server of the host and reports the answer: the tool of the
-//! network is what closes the goal of the project. The loop stops at the `done`
-//! tool or after [`MAX_STEPS`] steps.
+//! The default task, used when the guest passes no argument, asks the server of
+//! the host for a resource over HTTP and reports the status and the body: the
+//! call of an API is what closes the goal of the project. The loop stops at the
+//! `done` tool or after [`MAX_STEPS`] steps.
 //!
 //! [`link`] configures the interface of the guest before the first datagram of
 //! the network tool. MadRust brings the card up with the address of the
@@ -27,15 +27,20 @@
 //! ```text
 //! address=10.0.2.2
 //! port=43512
+//! http_port=43513
+//! path=/index.html
 //! selftest=1
 //! ```
 //!
-//! `selftest=1` makes the agent call the network tool once before it asks the
-//! model, with the same code path the model uses, and print the result as an
+//! `port` is the server of the datagram and `http_port` the server of the
+//! request; `path` is the resource the default task asks for. The scheme is
+//! `http` and the parser refuses any other, because the client has no TLS.
+//!
+//! `selftest=1` makes the agent call the network tools once before it asks the
+//! model, with the same code path the model uses, and print each result as an
 //! `AGENT selftest` line. The gate of the pipeline uses it: the model of that
 //! run is the synthetic one, which decides nothing sensible, so a gate that
-//! waited for it to choose the network tool would test the model and not the
-//! kernel.
+//! waited for it to choose a tool would test the model and not the kernel.
 //!
 //! The grammar bounds the strings of the call: an argument string holds at
 //! most `madrust_infer::grammar::DEFAULT_MAX_STRING_LENGTH` characters (128 by
@@ -59,8 +64,9 @@
 //! ```text
 //! AGENT step=<n> tool=<name> args=<json> result=<text>
 //! AGENT selftest tool=net_send args=<json> result=<text>
+//! AGENT selftest tool=http_get args=<json> result=<text>
 //! AGENT answer=<text>
-//! AGENT steps=<n> tokens=<n> seconds=<f64> tool_calls=<n> [net_us=<n> retries=<n>]
+//! AGENT steps=<n> tokens=<n> seconds=<f64> tool_calls=<n> [net_us=<n> retries=<n>] [http_us=<n> http_retries=<n>]
 //! AGENT DONE
 //! ```
 
@@ -101,12 +107,12 @@ pub const MAX_NEW_TOKENS: usize = 96;
 
 /// The task used when the program gets no argument.
 ///
-/// `{endpoint}` is replaced with the address and the port of the server, read
-/// from `/net.conf`, so the model calls the tool with the endpoint of this run.
-pub const DEFAULT_TASK: &str = "Send the datagram \"ping\" to the server at {endpoint} with the net_send tool, then call done with the answer of the server.";
+/// `{endpoint}` is replaced with the whole address of the resource, built from
+/// `/net.conf`, so the model calls the tool with the address of this run.
+pub const DEFAULT_TASK: &str = "Ask the server at {endpoint} for its resource with the http_get tool, then call done with the status and the body the server answered.";
 
 /// The system text: the protocol and the tool list.
-pub const SYSTEM: &str = "You are a tool using agent. Answer with exactly one JSON tool call and nothing else, in the form {\"tool\":\"NAME\",\"args\":{...}}. The arguments are read_file(path), list_dir(path), write_file(path,text), compute(value), net_send(query,text) and done(text). net_send sends the text as one datagram of UDP to the server named by query as ADDRESS:PORT and returns its answer. Call done with the final answer when the task is complete.";
+pub const SYSTEM: &str = "You are a tool using agent. Answer with exactly one JSON tool call and nothing else, in the form {\"tool\":\"NAME\",\"args\":{...}}. The arguments are read_file(path), list_dir(path), write_file(path,text), compute(value), net_send(query,text), http_get(query) and done(text). net_send sends the text as one datagram of UDP to the server named by query as ADDRESS:PORT and returns its answer. http_get requests the URL query, which is written as http://HOST:PORT/PATH, and returns the status, the headers and the body. Call done with the final answer when the task is complete.";
 
 /// Path of the file that carries the endpoint of the server.
 pub const CONFIG_PATH: &str = "/net.conf";
@@ -117,14 +123,23 @@ pub const DEFAULT_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
 /// Port of the server when the initramfs does not name one.
 pub const DEFAULT_PORT: u16 = 9999;
 
+/// Port of the HTTP server when the initramfs does not name one.
+pub const DEFAULT_HTTP_PORT: u16 = 80;
+
 /// Where the server of the run listens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     /// Address of the server.
     pub address: Ipv4Addr,
-    /// Port of the server.
+    /// Port of the datagram server.
     pub port: u16,
-    /// Whether the agent sends its own datagram before it asks the model.
+    /// Port of the HTTP server.
+    pub http_port: u16,
+    /// Scheme of the resource, always `http`.
+    pub scheme: String,
+    /// Path of the resource the default task asks for.
+    pub path: String,
+    /// Whether the agent proves the network tools before it asks the model.
     pub selftest: bool,
 }
 
@@ -133,6 +148,9 @@ impl Default for Endpoint {
         Self {
             address: DEFAULT_ADDRESS,
             port: DEFAULT_PORT,
+            http_port: DEFAULT_HTTP_PORT,
+            scheme: "http".to_string(),
+            path: "/".to_string(),
             selftest: false,
         }
     }
@@ -174,6 +192,23 @@ impl Endpoint {
                         .parse()
                         .map_err(|_| format!("config: port: {value}"))?
                 }
+                "http_port" => {
+                    endpoint.http_port = value
+                        .parse()
+                        .map_err(|_| format!("config: http_port: {value}"))?
+                }
+                "scheme" => {
+                    if !value.eq_ignore_ascii_case("http") {
+                        return Err(format!("config: scheme: {value}"));
+                    }
+                    endpoint.scheme = "http".to_string();
+                }
+                "path" => {
+                    if !value.starts_with('/') {
+                        return Err(format!("config: path: {value}"));
+                    }
+                    endpoint.path = value.to_string();
+                }
                 "selftest" => endpoint.selftest = parse_flag(value)?,
                 other => return Err(format!("config: unknown key: {other}")),
             }
@@ -181,12 +216,23 @@ impl Endpoint {
         if endpoint.port == 0 {
             return Err("config: port must be positive".to_string());
         }
+        if endpoint.http_port == 0 {
+            return Err("config: http_port must be positive".to_string());
+        }
         Ok(endpoint)
     }
 
-    /// The endpoint in the `ADDRESS:PORT` form the tool takes.
+    /// The endpoint of the datagram in the `ADDRESS:PORT` form the tool takes.
     pub fn query(&self) -> String {
         format!("{}:{}", self.address, self.port)
+    }
+
+    /// The whole address of the resource, in the form the HTTP tool takes.
+    pub fn url(&self) -> String {
+        format!(
+            "{}://{}:{}{}",
+            self.scheme, self.address, self.http_port, self.path
+        )
     }
 }
 
@@ -256,18 +302,25 @@ pub fn repeats(previous: Option<&str>, request: &str) -> bool {
 ///
 /// The round trip of a network call is on the same line as the cost of the
 /// run, because it happens inside the run: the rig publishes it as a row of its
-/// own and the seconds of the agent already carry it.
+/// own and the seconds of the agent already carry it. The datagram and the
+/// request have a key each, because they measure two different exchanges.
 pub fn summary(
     steps: usize,
     tokens: usize,
     seconds: f64,
     tool_calls: usize,
-    net: Option<tools::RoundTrip>,
+    samples: tools::Samples,
 ) -> String {
     let mut line =
         format!("AGENT steps={steps} tokens={tokens} seconds={seconds:.3} tool_calls={tool_calls}");
-    if let Some(net) = net {
+    if let Some(net) = samples.net {
         line.push_str(&format!(" net_us={} retries={}", net.micros, net.retries));
+    }
+    if let Some(http) = samples.http {
+        line.push_str(&format!(
+            " http_us={} http_retries={}",
+            http.micros, http.retries
+        ));
     }
     line
 }
@@ -285,31 +338,29 @@ use madrust_infer::runtime::Server;
 #[cfg(target_os = "linux")]
 use crate::tools::Outcome;
 
-/// Send one datagram with the network tool, outside the model.
+/// Call the network tools once, outside the model.
 ///
 /// This is the deterministic proof the gate uses: the same [`tools::run`] the
 /// loop calls, the same grammar arguments, and a line of the transcript with
-/// the tool name and the answer. It runs before the model is asked, so a model
-/// whose answers are arbitrary cannot hide a broken tool. The configuration
-/// file decides whether it runs.
+/// the tool name and the answer for each call. It runs before the model is
+/// asked, so a model whose answers are arbitrary cannot hide a broken tool.
+/// The configuration file decides whether it runs.
 #[cfg(target_os = "linux")]
-fn selftest(endpoint: &Endpoint) -> Option<tools::RoundTrip> {
+fn selftest(endpoint: &Endpoint) -> tools::Samples {
     use std::collections::BTreeMap;
+
+    use crate::call::{Call, Value};
 
     /// Text the agent sends on its own, so the answer from the server names
     /// this call and not a datagram of the model.
     const SELFTEST_TEXT: &str = "ping-agent";
 
+    let mut samples = tools::Samples::default();
+
     let mut args = BTreeMap::new();
-    args.insert(
-        "query".to_string(),
-        crate::call::Value::String(endpoint.query()),
-    );
-    args.insert(
-        "text".to_string(),
-        crate::call::Value::String(SELFTEST_TEXT.to_string()),
-    );
-    let call = crate::call::Call {
+    args.insert("query".to_string(), Value::String(endpoint.query()));
+    args.insert("text".to_string(), Value::String(SELFTEST_TEXT.to_string()));
+    let call = Call {
         tool: "net_send".to_string(),
         args,
     };
@@ -322,7 +373,26 @@ fn selftest(endpoint: &Endpoint) -> Option<tools::RoundTrip> {
         call.args_json(),
         sanitize(&text)
     );
-    step.round_trip
+    samples.absorb(&step);
+
+    let mut args = BTreeMap::new();
+    args.insert("query".to_string(), Value::String(endpoint.url()));
+    let call = Call {
+        tool: "http_get".to_string(),
+        args,
+    };
+    let step = tools::run(&call);
+    let text = match &step.outcome {
+        Outcome::Continue(text) | Outcome::Done(text) => text.clone(),
+    };
+    println!(
+        "AGENT selftest tool=http_get args={} result={}",
+        call.args_json(),
+        sanitize(&text)
+    );
+    samples.absorb(&step);
+
+    samples
 }
 
 /// Drive the loop until `done` or [`MAX_STEPS`].
@@ -344,10 +414,10 @@ fn run(task: &str, endpoint: &Endpoint) -> Result<(), Box<dyn std::error::Error>
     let mut previous: Option<String> = None;
     // The clock of the run starts before the selftest, so the round trip of the
     // network is inside the seconds of the agent and not beside them.
-    let mut net = if endpoint.selftest {
+    let mut samples = if endpoint.selftest {
         selftest(endpoint)
     } else {
-        None
+        tools::Samples::default()
     };
 
     for step in 1..=MAX_STEPS {
@@ -398,9 +468,7 @@ fn run(task: &str, endpoint: &Endpoint) -> Result<(), Box<dyn std::error::Error>
         previous = Some(request);
 
         let run = tools::run(&call);
-        if run.round_trip.is_some() {
-            net = run.round_trip;
-        }
+        samples.absorb(&run);
         let result = match run.outcome {
             Outcome::Continue(result) => result,
             Outcome::Done(result) => {
@@ -433,7 +501,13 @@ fn run(task: &str, endpoint: &Endpoint) -> Result<(), Box<dyn std::error::Error>
     }
     println!(
         "{}",
-        summary(steps, tokens, started.elapsed().as_secs_f64(), steps, net)
+        summary(
+            steps,
+            tokens,
+            started.elapsed().as_secs_f64(),
+            steps,
+            samples
+        )
     );
     // The rig stops the guest on this marker, so it does not wait for the
     // machine to leave and does not depend on the exit status of the program.
@@ -463,7 +537,7 @@ fn main() {
             leave(1);
         }
     };
-    let task = default_task(&arguments, &endpoint.query());
+    let task = default_task(&arguments, &endpoint.url());
     if let Err(error) = run(&task, &endpoint) {
         eprintln!("AGENT ERR {error}");
         leave(1);
@@ -481,9 +555,9 @@ fn main() {
 mod tests {
     use super::{
         answer_line, default_task, repeats, sanitize, step_line, summary, Endpoint,
-        DEFAULT_ADDRESS, DEFAULT_PORT, DEFAULT_TASK,
+        DEFAULT_ADDRESS, DEFAULT_HTTP_PORT, DEFAULT_PORT, DEFAULT_TASK,
     };
-    use crate::tools::RoundTrip;
+    use crate::tools::{RoundTrip, Samples};
 
     #[test]
     fn no_argument_uses_the_default_task_with_the_endpoint() {
@@ -513,9 +587,21 @@ mod tests {
         assert_eq!(endpoint.port, 43512);
         assert!(endpoint.selftest);
         assert_eq!(endpoint.query(), "10.0.2.2:43512");
+        assert_eq!(endpoint.url(), "http://10.0.2.2:80/");
         assert_eq!(Endpoint::from_text(""), Ok(Endpoint::default()));
         assert_eq!(Endpoint::default().port, DEFAULT_PORT);
+        assert_eq!(Endpoint::default().http_port, DEFAULT_HTTP_PORT);
         assert!(!Endpoint::default().selftest);
+    }
+
+    #[test]
+    fn the_file_carries_the_address_of_the_resource() {
+        let endpoint =
+            Endpoint::from_text("address=10.0.2.2\nhttp_port=43513\npath=/index.html?q=1\n")
+                .expect("the file is valid");
+        assert_eq!(endpoint.http_port, 43513);
+        assert_eq!(endpoint.path, "/index.html?q=1");
+        assert_eq!(endpoint.url(), "http://10.0.2.2:43513/index.html?q=1");
     }
 
     #[test]
@@ -525,6 +611,10 @@ mod tests {
         assert!(Endpoint::from_text("address\n").is_err());
         assert!(Endpoint::from_text("port=0\n").is_err());
         assert!(Endpoint::from_text("selftest=perhaps\n").is_err());
+        assert!(Endpoint::from_text("http_port=0\n").is_err());
+        assert!(Endpoint::from_text("http_port=70000\n").is_err());
+        assert!(Endpoint::from_text("scheme=https\n").is_err());
+        assert!(Endpoint::from_text("path=index.html\n").is_err());
     }
 
     #[test]
@@ -553,7 +643,7 @@ mod tests {
         );
         assert_eq!(answer_line("done\nnow"), "AGENT answer=done\\nnow");
         assert_eq!(
-            summary(2, 17, 1.5, 2, None),
+            summary(2, 17, 1.5, 2, Samples::default()),
             "AGENT steps=2 tokens=17 seconds=1.500 tool_calls=2"
         );
         assert_eq!(
@@ -562,12 +652,18 @@ mod tests {
                 17,
                 1.5,
                 2,
-                Some(RoundTrip {
-                    micros: 420,
-                    retries: 3
-                })
+                Samples {
+                    net: Some(RoundTrip {
+                        micros: 420,
+                        retries: 3
+                    }),
+                    http: Some(RoundTrip {
+                        micros: 900,
+                        retries: 1
+                    }),
+                }
             ),
-            "AGENT steps=2 tokens=17 seconds=1.500 tool_calls=2 net_us=420 retries=3"
+            "AGENT steps=2 tokens=17 seconds=1.500 tool_calls=2 net_us=420 retries=3 http_us=900 http_retries=1"
         );
     }
 }

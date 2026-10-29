@@ -22,10 +22,12 @@ output of the server goes to `net-server.log`, which is a file of the host and
 not part of the log of the guest. A run that measures only the network round
 trip does not boot the benchmark workload, so it publishes no boot row.
 
-The agent that reaches the network has a row of its own too. Its archive carries
-the agent, the model and the endpoint of the same server, and the round trip of
-the datagram the tool sends is on the summary line of the run, measured inside
-the run. The row is `agent-net`, the same shape as the other agent rows.
+The agent that reaches the network has rows of its own too. Its archive carries
+the agent, the model and the endpoints of the same server, and the round trips of
+the datagram and of the HTTP request the tools send are on the summary line of
+the run, measured inside the run. The rows are `agent-net` and `agent-http`, the
+same shape as the other agent rows; the HTTP server answers one request with a
+body of a known length and logs the request line and the headers it read.
 
 The QEMU flags are fixed on purpose. The CPU model is never `host`, because it
 changes between machines and invalidates the comparison, and both kernels see
@@ -113,6 +115,10 @@ NET_STREAM_INITRAMFS = "bench/initramfs-net-stream.cpio"
 # server, so its archive is built per run like the archive of the client.
 AGENT_NET_INITRAMFS = "madrust-agent/initramfs-net.cpio"
 
+# Resource the agent asks the HTTP server for. It is a path, not a directory,
+# so the gate of the pipeline can check the request line on the server side.
+AGENT_HTTP_PATH = "/agent"
+
 # Every workload the binary prints, with its unit and the number of samples one
 # boot must produce. `weights` and `weights-huge` print two lines per sample:
 # the cost per MiB and the slowest fault per page. The huge variant asks for
@@ -137,6 +143,7 @@ WORKLOADS = {
     "agent-seconds": ("s", AGENT_ITERATIONS),
     "agent-step-ms": ("ms/step", AGENT_ITERATIONS),
     "agent-net": ("us/roundtrip", AGENT_ITERATIONS),
+    "agent-http": ("us/roundtrip", AGENT_ITERATIONS),
     "boot-seconds": ("s", BOOT_ITERATIONS),
     "boot-rss-mb": ("MiB", BOOT_ITERATIONS),
     "net": ("us/roundtrip", NET_ITERATIONS * NET_BOOTS),
@@ -155,6 +162,7 @@ OPTIONAL_WORKLOADS = {
     "agent-seconds",
     "agent-step-ms",
     "agent-net",
+    "agent-http",
 }
 
 INFER_RE = re.compile(
@@ -163,12 +171,14 @@ INFER_RE = re.compile(
 
 # The agent loop reports the whole run on one line: how many steps it took, how
 # many tokens the model generated, how long it ran and how many tool calls it
-# made. The rig turns that into four measurements, and into a fifth when the run
-# used the network tool: the round trip of its datagram is on the same line.
+# made. The rig turns that into four measurements, and into one more per network
+# tool when the run used one: the round trip of the datagram and the round trip
+# of the HTTP request are on the same line, under a key each.
 AGENT_RE = re.compile(
     r"^AGENT\s+steps=(?P<steps>\d+)\s+tokens=(?P<tokens>\d+)\s+"
     r"seconds=(?P<seconds>-?\d+(?:\.\d+)?)\s+tool_calls=(?P<tool_calls>\d+)"
-    r"(?:\s+net_us=(?P<net_us>\d+)\s+retries=(?P<retries>\d+))?\s*$"
+    r"(?:\s+net_us=(?P<net_us>\d+)\s+retries=(?P<retries>\d+))?"
+    r"(?:\s+http_us=(?P<http_us>\d+)\s+http_retries=(?P<http_retries>\d+))?\s*$"
 )
 
 RESULT_RE = re.compile(
@@ -419,6 +429,8 @@ def expected_complete(text: str, expected: dict[str, int]) -> bool:
                 seen[name] = seen.get(name, 0) + 1
             if match.group("net_us") is not None:
                 seen["agent-net"] = seen.get("agent-net", 0) + 1
+            if match.group("http_us") is not None:
+                seen["agent-http"] = seen.get("agent-http", 0) + 1
             continue
         stripped = KERNEL_LOG_RE.sub("", line)
         if NET_RE.match(stripped):
@@ -605,11 +617,12 @@ import select
 import socket
 import sys
 
-log_path, port_file, stream_port_file, probe_port = (
+log_path, port_file, stream_port_file, http_port_file, probe_port = (
     sys.argv[1],
     sys.argv[2],
     sys.argv[3],
-    int(sys.argv[4]),
+    sys.argv[4],
+    int(sys.argv[5]),
 )
 
 
@@ -635,6 +648,38 @@ stream.listen(8)
 stream_port = stream.getsockname()[1]
 connections = []
 
+# The HTTP side of the same server. It answers one request with a short body
+# and a length, so the agent reads the status, the headers and the body
+# without a chunked encoding. The request line, the Host header and the path
+# are in the log: the gate and the rig check that the client sent them.
+http = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+http.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+http.bind(("127.0.0.1", 0))
+http.listen(8)
+http_port = http.getsockname()[1]
+
+
+def answer_http(connection, address):
+    # Read the head, log the request and answer with a short body.
+    connection.settimeout(5)
+    data = b""
+    while b"\r\n\r\n" not in data and len(data) < 8192:
+        piece = connection.recv(2048)
+        if not piece:
+            break
+        data += piece
+    record(
+        "http got %d bytes from %s:%d on port %d: %r"
+        % (len(data), address[0], address[1], http_port, data)
+    )
+    body = b"madrust-agent http ok\n"
+    connection.sendall(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+        b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body)
+        + body
+    )
+    connection.close()
+
 try:
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     probe.bind(("127.0.0.1", probe_port))
@@ -645,14 +690,21 @@ except OSError as error:
 
 record("server listening on port %d" % port)
 record("server stream listening on port %d" % stream_port)
+record("server http listening on port %d" % http_port)
 with open(port_file, "w") as handle:
     handle.write("%d\n" % port)
 with open(stream_port_file, "w") as handle:
     handle.write("%d\n" % stream_port)
+with open(http_port_file, "w") as handle:
+    handle.write("%d\n" % http_port)
 
 while True:
-    ready, _, _ = select.select(sockets + [stream] + connections, [], [])
+    ready, _, _ = select.select(sockets + [stream, http] + connections, [], [])
     for server in ready:
+        if server is http:
+            connection, address = http.accept()
+            answer_http(connection, address)
+            continue
         if server is stream:
             connection, address = stream.accept()
             connections.append(connection)
@@ -688,18 +740,20 @@ while True:
 """
 
 
-def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, int, Path]:
-    """Start the echo server of the host and return it with its ports and log.
+def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, int, int, Path]:
+    """Start the server of the host and return it with its ports and log.
 
     The rig waits for the server to name the ports it bound, so the archives it
     builds next carry the endpoints of this run and not the ones of another
-    one. The server answers a datagram and a stream with the same bytes it
-    received, on a socket of each kind.
+    one. The server answers a datagram and a stream with the bytes it received,
+    on a socket of each kind, and answers one HTTP request with a short body of
+    a known length.
     """
     log = out_dir / "net-server.log"
     port_file = out_dir / "net-server.port"
     stream_port_file = out_dir / "net-server-stream.port"
-    for path in (port_file, stream_port_file):
+    http_port_file = out_dir / "net-server-http.port"
+    for path in (port_file, stream_port_file, http_port_file):
         if path.exists():
             path.unlink()
     with log.open("wb") as handle:
@@ -711,6 +765,7 @@ def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, int, Path]:
                 str(log),
                 str(port_file),
                 str(stream_port_file),
+                str(http_port_file),
                 str(NET_PROBE_PORT),
             ],
             stdout=subprocess.DEVNULL,
@@ -718,15 +773,21 @@ def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, int, Path]:
         )
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if port_file.is_file() and stream_port_file.is_file():
+        if (
+            port_file.is_file()
+            and stream_port_file.is_file()
+            and http_port_file.is_file()
+        ):
             port = port_file.read_text().strip()
             stream_port = stream_port_file.read_text().strip()
-            if port.isdigit() and stream_port.isdigit():
+            http_port = http_port_file.read_text().strip()
+            if port.isdigit() and stream_port.isdigit() and http_port.isdigit():
                 print(
-                    f"[rig] net server on ports {port} and {stream_port}, log {log}",
+                    f"[rig] net server on ports {port}, {stream_port} and "
+                    f"{http_port}, log {log}",
                     file=sys.stderr,
                 )
-                return process, int(port), int(stream_port), log
+                return process, int(port), int(stream_port), int(http_port), log
         if process.poll() is not None:
             break
         time.sleep(0.05)
@@ -783,15 +844,18 @@ def ensure_net_initramfs(
     check_initramfs(path)
 
 
-def ensure_agent_net_initramfs(path: Path, port: int, model: Path | None = None) -> None:
-    """Build the archive that carries the agent, the model and the endpoint.
+def ensure_agent_net_initramfs(
+    path: Path, port: int, http_port: int, model: Path | None = None
+) -> None:
+    """Build the archive that carries the agent, the model and the endpoints.
 
     The model is the synthetic checkpoint of the repository unless the caller
-    gives one, and the endpoint is the server of this run. The agent reads it
-    from `/net.conf`, because neither kernel passes arguments to the program
-    it starts as init. `selftest=1` makes the agent prove the network tool
-    before it asks the model: the synthetic model decides nothing sensible,
-    and a measurement of the tool must not depend on it.
+    gives one, and the endpoints are the server of this run: the datagram port
+    and the HTTP port. The agent reads them from `/net.conf`, because neither
+    kernel passes arguments to the program it starts as init. `selftest=1`
+    makes the agent prove the network tools before it asks the model: the
+    synthetic model decides nothing sensible, and a measurement of a tool must
+    not depend on it.
     """
     root = repo_root()
     print("[rig] building the agent network initramfs", file=sys.stderr)
@@ -800,6 +864,8 @@ def ensure_agent_net_initramfs(path: Path, port: int, model: Path | None = None)
         AGENT_NET_INITRAMFS=str(path),
         AGENT_NET_ADDRESS=NET_ADDRESS,
         AGENT_NET_PORT=str(port),
+        AGENT_NET_HTTP_PORT=str(http_port),
+        AGENT_NET_PATH=AGENT_HTTP_PATH,
         AGENT_NET_SELFTEST="1",
     )
     if model is not None:
@@ -857,6 +923,7 @@ def run_agent_net(
             "agent-seconds": AGENT_ITERATIONS,
             "agent-step-ms": AGENT_ITERATIONS,
             "agent-net": AGENT_ITERATIONS,
+            "agent-http": AGENT_ITERATIONS,
         },
         True,
         "-agent",
@@ -865,7 +932,7 @@ def run_agent_net(
     rows = parse_results(
         label,
         text,
-        {"agent-net": AGENT_ITERATIONS},
+        {"agent-net": AGENT_ITERATIONS, "agent-http": AGENT_ITERATIONS},
         None,
         reason,
     )
@@ -1040,6 +1107,8 @@ def parse_results(
         # tool runs inside the loop and its cost is inside the seconds above.
         if match.group("net_us") is not None:
             values["agent-net"] = int(match.group("net_us"))
+        if match.group("http_us") is not None:
+            values["agent-http"] = int(match.group("http_us"))
         for name, value in values.items():
             rows.append(
                 {
@@ -1431,13 +1500,20 @@ def main() -> int:
     server_log = None
     server_port = None
     server_stream_port = None
+    server_http_port = None
     if net or net_stream or agent_net:
         if args.initrd:
             raise SystemExit(
                 "the network measurements build their own initramfs, because the "
                 "endpoint of the server belongs to the run: do not pass --initrd"
             )
-        server, server_port, server_stream_port, server_log = start_server(out_dir)
+        (
+            server,
+            server_port,
+            server_stream_port,
+            server_http_port,
+            server_log,
+        ) = start_server(out_dir)
     if net:
         net_initrd = root / NET_INITRAMFS
         ensure_net_initramfs(
@@ -1457,7 +1533,9 @@ def main() -> int:
         agent_model = (
             Path(args.agent_model).resolve() if args.agent_model else None
         )
-        ensure_agent_net_initramfs(agent_net_initrd, server_port, agent_model)
+        ensure_agent_net_initramfs(
+            agent_net_initrd, server_port, server_http_port, agent_model
+        )
 
     if initrd is None and workload_expected:
         initrd = root / "bench" / "initramfs.cpio"
@@ -1484,6 +1562,7 @@ def main() -> int:
             "address": NET_ADDRESS,
             "server_port": server_port,
             "server_stream_port": server_stream_port,
+            "server_http_port": server_http_port,
             "server_log": str(server_log),
             "probe_port": NET_PROBE_PORT,
         }
@@ -1507,6 +1586,8 @@ def main() -> int:
     if agent_net:
         metadata["agent_net"] = {
             "selftest": True,
+            "http_port": server_http_port,
+            "path": AGENT_HTTP_PATH,
             "initrd": {
                 "path": str(agent_net_initrd),
                 "sha256": sha256(agent_net_initrd),

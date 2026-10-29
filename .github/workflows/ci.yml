@@ -559,7 +559,11 @@ jobs:
           import socket
           import sys
 
-          log_path, port_file = sys.argv[1], sys.argv[2]
+          log_path, port_file, http_port_file = (
+              sys.argv[1],
+              sys.argv[2],
+              sys.argv[3],
+          )
           PROBE_PORT = 9999
 
 
@@ -574,6 +578,15 @@ jobs:
           sockets.append(measurement)
           port = measurement.getsockname()[1]
 
+          # The HTTP side of the same server: one request, a body of a known
+          # length, and the request line and the headers in the log, so the
+          # gate checks what the agent sent and not only that it heard back.
+          http = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          http.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          http.bind(("127.0.0.1", 0))
+          http.listen(8)
+          http_port = http.getsockname()[1]
+
           try:
               probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
               probe.bind(("127.0.0.1", PROBE_PORT))
@@ -581,12 +594,37 @@ jobs:
           except OSError:
               pass
           record("server listening on port %d" % port)
+          record("server http listening on port %d" % http_port)
           with open(port_file, "w") as handle:
               handle.write("%d\n" % port)
+          with open(http_port_file, "w") as handle:
+              handle.write("%d\n" % http_port)
 
           while True:
-              ready, _, _ = select.select(sockets, [], [])
+              ready, _, _ = select.select(sockets + [http], [], [])
               for server in ready:
+                  if server is http:
+                      connection, address = http.accept()
+                      connection.settimeout(5)
+                      data = b""
+                      while b"\r\n\r\n" not in data and len(data) < 8192:
+                          piece = connection.recv(2048)
+                          if not piece:
+                              break
+                          data += piece
+                      record(
+                          "http got %d bytes from %s:%d on port %d: %r"
+                          % (len(data), address[0], address[1], http_port, data)
+                      )
+                      body = b"madrust-agent http ok\n"
+                      connection.sendall(
+                          b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                          b"Content-Length: %d\r\nConnection: close\r\n\r\n"
+                          % len(body)
+                          + body
+                      )
+                      connection.close()
+                      continue
                   data, address = server.recvfrom(2048)
                   record(
                       "server got %d bytes from %s:%d on port %d: %r"
@@ -595,18 +633,23 @@ jobs:
                   server.sendto(data, address)
           PY
           python3 "$RUNNER_TEMP/agent-net-server.py" agent-net-server.log \
-            "$RUNNER_TEMP/agent-net-server.port" &
+            "$RUNNER_TEMP/agent-net-server.port" \
+            "$RUNNER_TEMP/agent-net-server-http.port" &
           server=$!
           for _ in $(seq 300); do
-            if [ -s "$RUNNER_TEMP/agent-net-server.port" ]; then break; fi
+            if [ -s "$RUNNER_TEMP/agent-net-server.port" ] && \
+               [ -s "$RUNNER_TEMP/agent-net-server-http.port" ]; then break; fi
             sleep 0.1
           done
           port="$(cat "$RUNNER_TEMP/agent-net-server.port")"
+          http_port="$(cat "$RUNNER_TEMP/agent-net-server-http.port")"
           test -n "$port"
-          echo "agent network port: $port"
-          # The address and the port reach the agent through a file of the
+          test -n "$http_port"
+          echo "agent network port: $port, http port: $http_port"
+          # The addresses and the path reach the agent through a file of the
           # archive: neither kernel passes arguments to the program it runs.
-          make agent-net-initramfs AGENT_NET_PORT="$port"
+          make agent-net-initramfs AGENT_NET_PORT="$port" \
+            AGENT_NET_HTTP_PORT="$http_port" AGENT_NET_PATH=/agent
           set +e
           timeout 600 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 1024M \
             -kernel "$(make -s print-kernel-path)" \
@@ -630,15 +673,25 @@ jobs:
           grep -qE "^AGENT selftest tool=net_send args={\"query\":\"10\.0\.2\.2:$port\",\"text\":\"ping-agent\"} result=answer=ping-agent bytes=10 retries=[0-9]+ rt_us=[0-9]+" agent-net-boot.log
           # The server saw the datagram of the guest and echoed it.
           grep -q "on port $port: b'ping-agent'" agent-net-server.log
+          # The deterministic HTTP call: the request line, the Host header and
+          # the path are the ones of this run, and the answer arrived whole.
+          grep -qE "^AGENT selftest tool=http_get args=\{\"query\":\"http://10\.0\.2\.2:$http_port/agent\"\} result=status=200 reason=OK bytes=22 headers=content-type:text/plain,content-length:22 content=madrust-agent http ok" agent-net-boot.log
+          # The server of the host read the request the client wrote: the
+          # method, the path, the Host header and the agent's own header.
+          grep -q "http got" agent-net-server.log
+          grep -q "GET /agent HTTP/1.1" agent-net-server.log
+          grep -q "Host: 10.0.2.2:$http_port" agent-net-server.log
+          grep -q "user-agent: madrust-agent/0.1" agent-net-server.log
           # The round trip is on the summary of the run, because the tool runs
-          # inside the run: the seconds of the agent carry it.
-          grep -qE "^AGENT steps=[0-9]+ tokens=[0-9]+ seconds=[0-9.]+ tool_calls=[0-9]+ net_us=[0-9]+ retries=[0-9]+$" agent-net-boot.log
+          # inside the run: the seconds of the agent carry it. The datagram and
+          # the request have a key each.
+          grep -qE "^AGENT steps=[0-9]+ tokens=[0-9]+ seconds=[0-9.]+ tool_calls=[0-9]+ net_us=[0-9]+ retries=[0-9]+ http_us=[0-9]+ http_retries=[0-9]+$" agent-net-boot.log
           grep -qxF "AGENT DONE" agent-net-boot.log
           grep -qxF "MadRust: boot OK" agent-net-boot.log
           # A model that chooses the network tool is a second proof, not the
           # proof: the synthetic checkpoint is free to choose something else,
           # and the gate must pass on the deterministic call alone.
-          if grep -qE "^AGENT step=[0-9]+ tool=net_send .*result=answer=" agent-net-boot.log; then
+          if grep -qE "^AGENT step=[0-9]+ tool=(net_send|http_get) .*result=(answer=|status=)" agent-net-boot.log; then
             echo "network tool proven by: the selftest and a step the model chose"
           else
             echo "network tool proven by: the deterministic selftest (the synthetic model chose no network call)"

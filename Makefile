@@ -97,6 +97,8 @@ QUANT_OUT ?= $(TARGET_DIR)/model-quant
 AGENT_NET_STAGE ?= $(TARGET_DIR)/agent-net
 AGENT_NET_ADDRESS ?= 10.0.2.2
 AGENT_NET_PORT ?= 9999
+AGENT_NET_HTTP_PORT ?= 9998
+AGENT_NET_PATH ?= /agent
 AGENT_NET_SELFTEST ?= 1
 
 # The reader of the cpio archive of the initramfs is a crate of its own, like
@@ -107,6 +109,11 @@ INITRAMFS_DIR := madrust-initramfs
 # not a program: the kernel depends on them, so they are built for the kernel
 # target, and their tests run on the host.
 NET_DIR := madrust-net
+
+# The protocol of the agent's HTTP client is a crate of the same kind: pure, no
+# dependency, built for the kernel target and tested on the host. The agent
+# depends on it, so it is built by the agent target too.
+HTTP_DIR := madrust-http
 
 QEMU ?= qemu-system-x86_64
 # Number of processors for the multiprocessor boot.
@@ -220,8 +227,9 @@ agent-net-initramfs: agent
 	rm -rf $(AGENT_NET_STAGE)
 	mkdir -p $(AGENT_NET_STAGE)
 	cp -R $(INFER_MODEL_DIR)/. $(AGENT_NET_STAGE)/
-	printf 'address=%s\nport=%s\nselftest=%s\n' \
-		'$(AGENT_NET_ADDRESS)' '$(AGENT_NET_PORT)' '$(AGENT_NET_SELFTEST)' \
+	printf 'address=%s\nport=%s\nhttp_port=%s\nscheme=http\npath=%s\nselftest=%s\n' \
+		'$(AGENT_NET_ADDRESS)' '$(AGENT_NET_PORT)' '$(AGENT_NET_HTTP_PORT)' \
+		'$(AGENT_NET_PATH)' '$(AGENT_NET_SELFTEST)' \
 		> $(AGENT_NET_STAGE)/net.conf
 	EXTRA_DIR=$(AGENT_NET_STAGE) bench/mkinitramfs.sh $(AGENT_NET_INITRAMFS) $(AGENT_ELF)
 
@@ -273,6 +281,8 @@ test:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host
 	$(CARGO) test --manifest-path $(NET_DIR)/Cargo.toml \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/net-host
+	$(CARGO) test --manifest-path $(HTTP_DIR)/Cargo.toml \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/http-host
 	$(CARGO) test --manifest-path madrust-netclient/Cargo.toml \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/netclient-host
 	$(CARGO) test --manifest-path madrust-netstream/Cargo.toml \
@@ -287,6 +297,7 @@ fmt:
 	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path $(NET_DIR)/Cargo.toml
+	$(CARGO) fmt --manifest-path $(HTTP_DIR)/Cargo.toml
 	$(CARGO) fmt --manifest-path madrust-netclient/Cargo.toml
 	$(CARGO) fmt --manifest-path madrust-netstream/Cargo.toml
 
@@ -298,6 +309,7 @@ fmt-check:
 	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(INITRAMFS_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path $(NET_DIR)/Cargo.toml -- --check
+	$(CARGO) fmt --manifest-path $(HTTP_DIR)/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path madrust-netclient/Cargo.toml -- --check
 	$(CARGO) fmt --manifest-path madrust-netstream/Cargo.toml -- --check
 
@@ -306,6 +318,7 @@ fmt-check:
 clippy: userland
 	$(CARGO) clippy --workspace --bins --lib $(KERNEL_FLAGS) -- -D warnings
 	$(CARGO) clippy --manifest-path $(NET_DIR)/Cargo.toml --lib $(KERNEL_FLAGS) -- -D warnings
+	$(CARGO) clippy --manifest-path $(HTTP_DIR)/Cargo.toml --lib $(KERNEL_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(USERLAND_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(BENCH_FLAGS) -- -D warnings
 	RUSTFLAGS="$(USERLAND_RUSTFLAGS)" $(CARGO) clippy $(INFER_FLAGS) --bins --lib -- -D warnings
@@ -324,6 +337,8 @@ clippy-host:
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/initramfs-host -- -D warnings
 	$(CARGO) clippy --manifest-path $(NET_DIR)/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/net-host -- -D warnings
+	$(CARGO) clippy --manifest-path $(HTTP_DIR)/Cargo.toml --all-targets \
+		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/http-host -- -D warnings
 	$(CARGO) clippy --manifest-path madrust-netclient/Cargo.toml --all-targets \
 		--target $(HOST_TARGET) --target-dir $(TARGET_DIR)/netclient-host -- -D warnings
 	$(CARGO) clippy --manifest-path madrust-netstream/Cargo.toml --all-targets \

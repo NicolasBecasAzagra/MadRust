@@ -12,7 +12,7 @@ members = [
 ]
 # Crates that carry their own workspace must be named here, or the paths that
 # point into them make cargo see two workspace roots in the same tree.
-exclude = ["madrust-net"]
+exclude = ["madrust-net", "madrust-http"]
 
 [workspace.package]
 version = "0.1.0"
