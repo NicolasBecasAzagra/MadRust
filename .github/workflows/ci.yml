@@ -107,19 +107,21 @@ jobs:
           # datagram to the server and reads its answer. The same boot runs the
           # program the rig measures with: it opens a datagram socket of the ABI,
           # sends one datagram, waits for the echo and reports the round trip.
-          make netclient
+          # A second boot of the same server sends a request over a stream, so
+          # the gate proves both halves of the network path.
+          make netclient netstream
 
-          # The server answers every datagram with the bytes it received. It
-          # picks the port of the measurement itself, by binding port zero, and
-          # writes the number it got: a second job on the same runner binds a
-          # different one. The fixed port serves the demonstration exchange the
-          # kernel makes on its own during boot.
+          # The server answers every datagram and every stream with the bytes it
+          # received. It picks the port of each measurement itself, by binding
+          # port zero, and writes the numbers it got: a second job on the same
+          # runner binds different ones. The fixed port serves the demonstration
+          # exchange the kernel makes on its own during boot.
           cat > "$RUNNER_TEMP/net-server.py" <<'PY'
           import select
           import socket
           import sys
 
-          log_path, port_file = sys.argv[1], sys.argv[2]
+          log_path, port_file, stream_port_file = sys.argv[1], sys.argv[2], sys.argv[3]
           PROBE_PORT = 9999
 
 
@@ -134,16 +136,54 @@ jobs:
           sockets.append(measurement)
           port = measurement.getsockname()[1]
 
+          # The stream side of the same server: one TCP socket that accepts a
+          # connection and echoes every request with the bytes it carried.
+          stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          stream.bind(("127.0.0.1", 0))
+          stream.listen(8)
+          stream_port = stream.getsockname()[1]
+          connections = []
+
           probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
           probe.bind(("127.0.0.1", PROBE_PORT))
           sockets.append(probe)
           record("server listening on port %d and on port %d" % (port, PROBE_PORT))
+          record("server stream listening on port %d" % stream_port)
           with open(port_file, "w") as handle:
               handle.write("%d\n" % port)
+          with open(stream_port_file, "w") as handle:
+              handle.write("%d\n" % stream_port)
 
           while True:
-              ready, _, _ = select.select(sockets, [], [])
+              ready, _, _ = select.select(sockets + [stream] + connections, [], [])
               for server in ready:
+                  if server is stream:
+                      connection, address = stream.accept()
+                      connections.append(connection)
+                      record(
+                          "stream accepted from %s:%d on port %d"
+                          % (address[0], address[1], stream_port)
+                      )
+                      continue
+                  if server in connections:
+                      data = server.recv(2048)
+                      if not data:
+                          connections.remove(server)
+                          server.close()
+                          continue
+                      record(
+                          "stream got %d bytes from %s:%d on port %d: %r"
+                          % (
+                              len(data),
+                              server.getpeername()[0],
+                              server.getpeername()[1],
+                              stream_port,
+                              data,
+                          )
+                      )
+                      server.sendall(data)
+                      continue
                   data, address = server.recvfrom(2048)
                   record(
                       "server got %d bytes from %s:%d on port %d: %r"
@@ -151,12 +191,14 @@ jobs:
                   )
                   server.sendto(data, address)
           PY
-          python3 "$RUNNER_TEMP/net-server.py" net-server.log "$RUNNER_TEMP/net-server.port" &
+          python3 "$RUNNER_TEMP/net-server.py" net-server.log \
+            "$RUNNER_TEMP/net-server.port" "$RUNNER_TEMP/net-server-stream.port" &
           server=$!
-          # The archive carries the endpoint of this run, so the gate waits for
-          # the server to name the port it bound before it packs it.
+          # Each archive carries the endpoint of this run, so the gate waits for
+          # the server to name the ports it bound before it packs them.
           for _ in $(seq 300); do
-            if [ -s "$RUNNER_TEMP/net-server.port" ]; then break; fi
+            if [ -s "$RUNNER_TEMP/net-server.port" ] && \
+               [ -s "$RUNNER_TEMP/net-server-stream.port" ]; then break; fi
             sleep 0.1
           done
           port="$(cat "$RUNNER_TEMP/net-server.port")"
@@ -179,19 +221,45 @@ jobs:
           status=$?
           echo "QEMU exit status: $status"
           set -e
+
+          # The stream half of the measurement: the same server, the same
+          # device, the same flags, and the archive of the stream client with
+          # the port the server bound for a stream.
+          stream_port="$(cat "$RUNNER_TEMP/net-server-stream.port")"
+          test -n "$stream_port"
+          echo "stream port: $stream_port"
+          mkdir -p "$RUNNER_TEMP/netstreamconf"
+          printf 'address=10.0.2.2\nport=%s\ncount=1\n' "$stream_port" \
+            > "$RUNNER_TEMP/netstreamconf/net.conf"
+          EXTRA_DIR="$RUNNER_TEMP/netstreamconf" sh bench/mkinitramfs.sh \
+            "$RUNNER_TEMP/netstream.cpio" madrust-netstream/madrust-netstream.elf
+          set +e
+          timeout 60 qemu-system-x86_64 -M q35 -cpu Skylake-Client -m 512M \
+            -kernel "$(make -s print-kernel-path)" \
+            -initrd "$RUNNER_TEMP/netstream.cpio" \
+            -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
+            -display none -monitor none -no-reboot \
+            -serial file:tcp.log \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04
+          stream_status=$?
+          echo "QEMU stream exit status: $stream_status"
+          set -e
+
           # The server answers for as long as it runs, so it is stopped here and
           # not by itself.
           kill "$server" 2>/dev/null || true
           wait "$server" 2>/dev/null || true
           cat net-server.log
           cat pci.log
+          cat tcp.log
           test "$status" -eq 33
+          test "$stream_status" -eq 33
           tr -d '\r' < pci.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > pci-boot.log
           # The server echoes what it received, so it must have got the
-          # datagram of the kernel and the two of the program: the warm up that
-          # takes the cost of the address resolution out of the sample, and the
-          # sample itself.
-          test "$(grep -c "server got 4 bytes from" net-server.log || true)" -eq 1
+          # datagram of the kernel once per boot (the demonstration exchange)
+          # and the two of the program: the warm up that takes the cost of the
+          # address resolution out of the sample, and the sample itself.
+          test "$(grep -c "server got 4 bytes from" net-server.log || true)" -eq 2
           grep -q "on port $port: b'ping-warmup'$" net-server.log
           grep -q "on port $port: b'ping-0'$" net-server.log
           grep -qxF "[net] udp send 10.0.2.15:49152 -> 10.0.2.2:9999 len=4" pci-boot.log
@@ -326,6 +394,19 @@ jobs:
           print("NET FRAME OK sent=%d received=%d measured=%d"
                 % (len(request[0]), len(frames), len(measured)))
           PY
+
+          # The stream boot: the client connects, requests and reads the answer
+          # through the calls of the ABI, and the kernel reports the segments of
+          # the connection. The server of the host saw the request byte for
+          # byte, and the answer is the request it echoed.
+          tr -d '\r' < tcp.log | sed -E 's/^\[[[:space:]]*[0-9]+\.[0-9]+\][[:space:]]*//' > tcp-boot.log
+          grep -qxF "MadRust: boot OK" tcp-boot.log
+          grep -qE "^\[net\] tcp send 10\.0\.2\.15:[0-9]+ -> 10\.0\.2\.2:$stream_port flags=0x18 seq=[0-9]+ ack=[0-9]+ len=8 data=\"stream-0\"$" tcp-boot.log
+          grep -qE "^\[net\] tcp recv 10\.0\.2\.2:$stream_port -> 10\.0\.2\.15:[0-9]+ flags=0x18 seq=[0-9]+ ack=[0-9]+ len=8 data=\"stream-0\"$" tcp-boot.log
+          grep -qE "^NET STREAM OK rt=[0-9]+ retries=[0-9]+ answer=stream-0$" tcp-boot.log
+          grep -qxF "NET STREAM DONE" tcp-boot.log
+          grep -q "on port $stream_port: b'stream-warmup'$" net-server.log
+          grep -q "on port $stream_port: b'stream-0'$" net-server.log
 
       - name: Boot kernel with four processors
         run: |

@@ -35,6 +35,8 @@ pub const EISDIR: i64 = -21;
 pub const ESPIPE: i64 = -29;
 /// Read-only file system.
 pub const EROFS: i64 = -30;
+/// Broken pipe.
+pub const EPIPE: i64 = -32;
 /// Numerical result out of range.
 pub const ERANGE: i64 = -34;
 /// Inappropriate ioctl for device.
@@ -59,6 +61,8 @@ pub const EADDRINUSE: i64 = -98;
 pub const EADDRNOTAVAIL: i64 = -99;
 /// Network is unreachable.
 pub const ENETUNREACH: i64 = -101;
+/// Connection reset by peer.
+pub const ECONNRESET: i64 = -104;
 /// Transport endpoint is already connected.
 pub const EISCONN: i64 = -106;
 /// Transport endpoint is not connected.
@@ -66,7 +70,6 @@ pub const ENOTCONN: i64 = -107;
 /// Timed out.
 pub const ETIMEDOUT: i64 = -110;
 /// Connection refused.
-#[allow(dead_code)]
 pub const ECONNREFUSED: i64 = -111;
 /// No route to host.
 pub const EHOSTUNREACH: i64 = -113;

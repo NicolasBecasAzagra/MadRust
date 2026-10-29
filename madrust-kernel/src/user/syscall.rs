@@ -122,6 +122,8 @@ const SYS_NANOSLEEP: u64 = 35;
 const SYS_SOCKET: u64 = 41;
 /// `connect` system call number.
 const SYS_CONNECT: u64 = 42;
+/// `accept` system call number.
+const SYS_ACCEPT: u64 = 43;
 /// `sendto` system call number.
 const SYS_SENDTO: u64 = 44;
 /// `recvfrom` system call number.
@@ -130,6 +132,8 @@ const SYS_RECVFROM: u64 = 45;
 const SYS_SHUTDOWN: u64 = 48;
 /// `bind` system call number.
 const SYS_BIND: u64 = 49;
+/// `listen` system call number.
+const SYS_LISTEN: u64 = 50;
 /// `getsockname` system call number.
 const SYS_GETSOCKNAME: u64 = 51;
 /// `setsockopt` system call number.
@@ -234,6 +238,8 @@ const PATH_MAX: usize = 4096;
 const AF_INET: u16 = 2;
 /// `SOCK_DGRAM`: a datagram socket.
 const SOCK_DGRAM: u16 = 2;
+/// `SOCK_STREAM`: a stream socket.
+const SOCK_STREAM: u16 = 1;
 /// Bits of the socket type that select the kind of socket.
 const SOCK_TYPE_MASK: u64 = 0xf;
 /// Size of `struct sockaddr_in`, the only address a socket call accepts.
@@ -482,7 +488,9 @@ pub extern "C" fn madrust_syscall_dispatch(
         SYS_TGKILL => sys_tgkill(argument1, argument2),
         SYS_SOCKET => sys_socket(argument1, argument2, argument3),
         SYS_CONNECT => sys_connect(argument1, argument2, argument3),
+        SYS_ACCEPT => sys_accept(argument1, argument2, argument3),
         SYS_BIND => sys_bind(argument1, argument2, argument3),
+        SYS_LISTEN => sys_listen(argument1, argument2),
         SYS_SENDTO => sys_sendto(
             argument1, argument2, argument3, argument4, argument5, argument6,
         ),
@@ -491,7 +499,7 @@ pub extern "C" fn madrust_syscall_dispatch(
         ),
         SYS_GETSOCKNAME => sys_getsockname(argument1, argument2, argument3),
         SYS_SETSOCKOPT => sys_setsockopt(argument1),
-        SYS_SHUTDOWN => sys_shutdown(argument1),
+        SYS_SHUTDOWN => sys_shutdown(argument1, argument2),
         SYS_NANOSLEEP => sys_nanosleep(argument1, argument2),
         SYS_CLOCK_NANOSLEEP => sys_nanosleep(argument3, argument4),
         SYS_GETRUSAGE => sys_getrusage(argument2),
@@ -665,20 +673,24 @@ fn sys_poll(descriptors: u64, count: u64) -> i64 {
     ready
 }
 
-/// `socket`: create one internet datagram socket.
+/// `socket`: create one internet socket.
 ///
-/// The kernel has one address family and one socket type: a datagram socket of
-/// the internet. Every other request is refused with the error of the family
-/// or of the protocol. The type may carry the `SOCK_CLOEXEC` and
-/// `SOCK_NONBLOCK` bits, which the standard library adds.
+/// The kernel has one address family and two socket types: a datagram socket
+/// and a stream socket of the internet. Every other request is refused with
+/// the error of the family or of the protocol. The type may carry the
+/// `SOCK_CLOEXEC` and `SOCK_NONBLOCK` bits, which the standard library adds.
 fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> i64 {
     if domain != u64::from(AF_INET) {
         return EAFNOSUPPORT;
     }
-    if socket_type & SOCK_TYPE_MASK != u64::from(SOCK_DGRAM) || protocol != 0 {
+    if protocol != 0 {
         return EPROTONOSUPPORT;
     }
-    fd::socket()
+    match socket_type & SOCK_TYPE_MASK {
+        value if value == u64::from(SOCK_DGRAM) => fd::socket(net::SocketType::Datagram),
+        value if value == u64::from(SOCK_STREAM) => fd::socket(net::SocketType::Stream),
+        _ => EPROTONOSUPPORT,
+    }
 }
 
 /// `bind`: give a socket its local address and port.
@@ -713,7 +725,8 @@ fn sys_connect(descriptor: u64, address: u64, length: u64) -> i64 {
     }
 }
 
-/// `sendto`: send one datagram, with an address or to the connected peer.
+/// `sendto`: send one datagram, or the bytes of a stream, to the connected
+/// peer.
 fn sys_sendto(
     descriptor: u64,
     buffer: u64,
@@ -729,18 +742,36 @@ fn sys_sendto(
         Ok(index) => index,
         Err(error) => return error,
     };
-    let destination = if address_length == 0 {
-        // An address of zero length means the socket already has an other
-        // end; `net::socket_send` reports `ENOTCONN` when it does not.
-        None
-    } else {
-        match read_sockaddr(address, address_length) {
-            Ok((port, address)) => Some((address, port)),
-            Err(error) => return error,
+    match net::socket_type(index) {
+        Ok(net::SocketType::Stream) => {
+            // A stream has its other end from `connect`; an address here is a
+            // call that does not make sense, and Linux reports the socket as
+            // already connected.
+            if address != 0 {
+                return EISCONN;
+            }
+            match net::socket_send_stream(index, bytes) {
+                Ok(count) => i64::try_from(count).unwrap_or(i64::MAX),
+                Err(error) => socket_errno(error),
+            }
         }
-    };
-    match net::socket_send(index, destination, bytes) {
-        Ok(()) => i64::try_from(length).unwrap_or(i64::MAX),
+        Ok(net::SocketType::Datagram) => {
+            let destination = if address_length == 0 {
+                // An address of zero length means the socket already has an
+                // other end; `net::socket_send` reports `ENOTCONN` when it
+                // does not.
+                None
+            } else {
+                match read_sockaddr(address, address_length) {
+                    Ok((port, address)) => Some((address, port)),
+                    Err(error) => return error,
+                }
+            };
+            match net::socket_send(index, destination, bytes) {
+                Ok(()) => i64::try_from(length).unwrap_or(i64::MAX),
+                Err(error) => socket_errno(error),
+            }
+        }
         Err(error) => socket_errno(error),
     }
 }
@@ -790,10 +821,33 @@ fn sys_recvfrom(
         unsafe { core::slice::from_raw_parts_mut(buffer as *mut u8, length) }
     };
 
-    let received = match net::socket_receive(index, buffer) {
-        Ok(Some(received)) => received,
-        Ok(None) => return EAGAIN,
+    let kind = match net::socket_type(index) {
+        Ok(kind) => kind,
         Err(error) => return socket_errno(error),
+    };
+    let received = match kind {
+        net::SocketType::Stream => match net::socket_receive_stream(index, buffer) {
+            Ok(Some(count)) => {
+                let (peer_address, peer_port) = match net::socket_peer(index) {
+                    Ok(peer) => peer,
+                    Err(error) => return socket_errno(error),
+                };
+                if let Some((address, address_length)) = destination {
+                    let result = write_sockaddr(address, address_length, peer_address, peer_port);
+                    if result != 0 {
+                        return result;
+                    }
+                }
+                return i64::try_from(count).unwrap_or(i64::MAX);
+            }
+            Ok(None) => return EAGAIN,
+            Err(error) => return socket_errno(error),
+        },
+        net::SocketType::Datagram => match net::socket_receive(index, buffer) {
+            Ok(Some(received)) => received,
+            Ok(None) => return EAGAIN,
+            Err(error) => return socket_errno(error),
+        },
     };
 
     if let Some((address, address_length)) = destination {
@@ -823,6 +877,65 @@ fn sys_getsockname(descriptor: u64, address: u64, length: u64) -> i64 {
     write_sockaddr(address, length, local_address, local_port)
 }
 
+/// `listen`: make a stream socket wait for a connection.
+///
+/// A datagram socket has no connection to wait for, so the call is refused
+/// with the error Linux uses for an operation a socket type does not support.
+fn sys_listen(descriptor: u64, _backlog: u64) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    match net::socket_listen(index) {
+        Ok(()) => 0,
+        Err(error) => socket_errno(error),
+    }
+}
+
+/// `accept`: take the connection that arrived on a listening socket.
+///
+/// The accepted socket gets a descriptor of its own, and the listening socket
+/// keeps waiting for the next connection.
+fn sys_accept(descriptor: u64, address: u64, length: u64) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let destination = if address == 0 {
+        None
+    } else {
+        if length == 0 {
+            return EFAULT;
+        }
+        match read_user::<u32>(length) {
+            Some(size) if u64::from(size) >= SOCKADDR_IN_SIZE => Some((address, length)),
+            Some(_) => return EINVAL,
+            None => return EFAULT,
+        }
+    };
+    let new_index = match net::socket_accept(index) {
+        Ok(new_index) => new_index,
+        Err(error) => return socket_errno(error),
+    };
+    let descriptor = fd::adopt(new_index);
+    if descriptor < 0 {
+        return descriptor;
+    }
+    if let Some((address, length)) = destination {
+        let (peer_address, peer_port) = match net::socket_peer(new_index) {
+            Ok(peer) => peer,
+            Err(error) => {
+                return socket_errno(error);
+            }
+        };
+        let result = write_sockaddr(address, length, peer_address, peer_port);
+        if result != 0 {
+            return result;
+        }
+    }
+    descriptor
+}
+
 /// `setsockopt`: accept the option and change nothing.
 ///
 /// The standard library asks for a receive timeout on some paths. This kernel
@@ -835,14 +948,21 @@ fn sys_setsockopt(descriptor: u64) -> i64 {
     }
 }
 
-/// `shutdown`: accept the request and change nothing.
+/// `shutdown`: close one direction of a stream, or accept the request of a
+/// datagram.
 ///
 /// A datagram socket has no half closed state in this kernel, so the call is a
-/// success once the descriptor is known to be a socket.
-fn sys_shutdown(descriptor: u64) -> i64 {
-    match fd::socket_index(descriptor) {
-        Ok(_) => 0,
-        Err(error) => error,
+/// success once the descriptor is known to be a socket. A stream sends its FIN
+/// when the write direction is closed.
+fn sys_shutdown(descriptor: u64, how: u64) -> i64 {
+    let index = match fd::socket_index(descriptor) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let how = i64::try_from(how).unwrap_or(i64::MAX);
+    match net::socket_shutdown(index, how) {
+        Ok(()) => 0,
+        Err(error) => socket_errno(error),
     }
 }
 
@@ -897,7 +1017,7 @@ fn write_sockaddr(address: u64, address_length: u64, address_value: [u8; 4], por
 }
 
 /// Turn the failure of a socket operation into the error number of the ABI.
-fn socket_errno(error: net::SocketError) -> i64 {
+pub(crate) fn socket_errno(error: net::SocketError) -> i64 {
     match error {
         net::SocketError::NotSocket => ENOTSOCK,
         net::SocketError::AddressInUse => EADDRINUSE,
@@ -909,6 +1029,10 @@ fn socket_errno(error: net::SocketError) -> i64 {
         net::SocketError::Invalid => EINVAL,
         net::SocketError::NoBuffer => EMFILE,
         net::SocketError::Unsupported => EOPNOTSUPP,
+        net::SocketError::TimedOut => ETIMEDOUT,
+        net::SocketError::Refused => ECONNREFUSED,
+        net::SocketError::Reset => ECONNRESET,
+        net::SocketError::BrokenPipe => EPIPE,
     }
 }
 

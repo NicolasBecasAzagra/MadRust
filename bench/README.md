@@ -188,6 +188,21 @@ and a failure says where it failed:
 NET FAIL stage=warmup retries=646163 error=no answer
 ```
 
+The same exchange over a stream is the row `net-stream`. Its program is
+`madrust-netstream/`: the same shape of binary and the same archive layout, one
+stream socket of the ABI instead of a datagram socket, and one request per
+sample. The server of the host answers on a stream with the bytes it received,
+so the line of the program reports what it compared:
+
+```text
+NET STREAM OK rt=1442 retries=0 answer=stream-0
+```
+
+The rig boots each client the same number of times with the same QEMU flags, so
+`net` and `net-stream` are two rows of one table measured under one
+configuration. Both are `us/roundtrip`, and a boot that produced no answer keeps
+its missing samples with the reason, exactly like the datagram.
+
 The binary runs eight measurements, prints one `RESULT <workload> <value> <unit>`
 line per measured quantity and sample, and ends with `BENCH DONE`. The rig
 adds eight more rows of its own, taken from the emulator rather than from the

@@ -3,9 +3,11 @@
 //!
 //! The descriptors a program can hold are the three standard streams,
 //! duplicated handles to them, anonymous pipes, entries of the initramfs
-//! archive, and the two character devices that archive carries. The table keeps
-//! those, which is enough for the standard library startup path and for a
-//! program that opens and reads a file.
+//! archive, the two character devices that archive carries, and sockets. A
+//! socket is a datagram socket, driven by `sendto` and `recvfrom`, or a stream
+//! socket, whose bytes move through `read` and `write` as well as through those
+//! two calls. The table keeps those, which is enough for the standard library
+//! startup path and for a program that opens and reads a file.
 //!
 //! ## Files read in place
 //!
@@ -106,7 +108,8 @@ enum Kind {
     PipeWrite(usize),
     /// One file of the initramfs archive.
     File(File),
-    /// A datagram socket, named by its slot in [`crate::net`].
+    /// A socket, named by its slot in [`crate::net`]. The kind of the socket
+    /// (datagram or stream) is the business of that module.
     Socket(usize),
 }
 
@@ -229,9 +232,20 @@ pub fn write(descriptor: u64, bytes: &[u8]) -> i64 {
         }
         Kind::Null(_) => i64::try_from(bytes.len()).unwrap_or(i64::MAX),
         Kind::PipeRead(_) | Kind::File(_) => EBADF,
-        // A socket is driven by `sendto` and `recvfrom`, not by the stream
-        // calls; the dispatcher maps those calls onto this table.
-        Kind::Socket(_) => EOPNOTSUPP,
+        Kind::Socket(index) => {
+            // The socket path polls the card and can wait, so the table lock
+            // must be gone before it runs.
+            drop(guard);
+            match net::socket_type(index) {
+                Ok(net::SocketType::Stream) => match net::socket_send_stream(index, bytes) {
+                    Ok(count) => i64::try_from(count).unwrap_or(i64::MAX),
+                    Err(error) => super::syscall::socket_errno(error),
+                },
+                // A datagram socket is driven by `sendto`, not by `write`.
+                Ok(net::SocketType::Datagram) => EOPNOTSUPP,
+                Err(error) => super::syscall::socket_errno(error),
+            }
+        }
         Kind::PipeWrite(index) => {
             if bytes.is_empty() {
                 return 0;
@@ -274,7 +288,21 @@ pub fn read(descriptor: u64, buffer: &mut [u8]) -> i64 {
     match kind {
         Kind::Console(_) | Kind::Null(_) => 0,
         Kind::PipeWrite(_) => EBADF,
-        Kind::Socket(_) => EOPNOTSUPP,
+        Kind::Socket(index) => {
+            // The socket path polls the card and can wait, so the table lock
+            // must be gone before it runs.
+            drop(guard);
+            match net::socket_type(index) {
+                Ok(net::SocketType::Stream) => match net::socket_receive_stream(index, buffer) {
+                    Ok(Some(count)) => i64::try_from(count).unwrap_or(i64::MAX),
+                    Ok(None) => EAGAIN,
+                    Err(error) => super::syscall::socket_errno(error),
+                },
+                // A datagram socket is read with `recvfrom`, not with `read`.
+                Ok(net::SocketType::Datagram) => EOPNOTSUPP,
+                Err(error) => super::syscall::socket_errno(error),
+            }
+        }
         Kind::PipeRead(pipe_index) => {
             let pipe = &mut guard.table.pipes[pipe_index];
             if pipe.length == 0 {
@@ -585,14 +613,21 @@ pub fn is_open(descriptor: u64) -> bool {
     descriptor_kind(&guard.table.descriptors, descriptor).is_some()
 }
 
-/// `socket`: create a datagram socket and store it in a free descriptor.
-pub fn socket() -> i64 {
-    let index = match net::socket_open() {
+/// `socket`: create a socket of `kind` and store it in a free descriptor.
+pub fn socket(kind: net::SocketType) -> i64 {
+    let index = match net::socket_open(kind) {
         Ok(index) => index,
         Err(net::SocketError::NoBuffer) => return EMFILE,
         Err(_) => return ENOSYS,
     };
+    adopt(index)
+}
 
+/// Store an existing socket slot in the next free descriptor.
+///
+/// `accept` creates the socket in the table of [`crate::net`] before this call,
+/// so a table with no room gives the slot back instead of leaking it.
+pub fn adopt(index: usize) -> i64 {
     let guard = lock();
     let Some(descriptor) = guard.table.free_from(0) else {
         drop(guard);

@@ -16,10 +16,11 @@
 # /config.json, and the rig uses it for the /net.conf of the network client.
 # The names `bench` and `init` are reserved for the workload.
 #
-# The script builds the binary with `make bench`, or with `make netclient` when
-# the binary is the network client, if it is missing. `cpio` and `find` are the
-# only external tools; the archive is not compressed, so both kernels read
-# exactly the same bytes.
+# The script builds the binary with `make bench`, with `make netclient` when the
+# binary is the datagram network client, or with `make netstream` when it is the
+# stream client, if it is missing. `cpio` and `find` are the only external
+# tools; the archive is not compressed, so both kernels read exactly the same
+# bytes.
 
 set -eu
 
@@ -42,6 +43,7 @@ if [ ! -f "$binary" ]; then
     target=bench
     case ${binary##*/} in
         madrust-netclient.elf) target=netclient ;;
+        madrust-netstream.elf) target=netstream ;;
     esac
     make -C "$repo" --no-print-directory "$target"
 fi

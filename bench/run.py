@@ -15,10 +15,12 @@ ones that report an error, and writes:
 The network round trip is a measurement of its own. It needs a server on the
 host and a network device in the guest, so it boots the guest several times with
 an archive that carries the client and the endpoint of the server of this run.
-Every boot keeps its own serial log (`<kernel>-net<n>.log`), and the output of
-the server goes to `net-server.log`, which is a file of the host and not part of
-the log of the guest. A run that measures only the network round trip does not
-boot the benchmark workload, so it publishes no boot row.
+Two clients take part: the datagram one, whose row is `net`, and the stream one,
+whose row is `net-stream`; the server answers both. Every boot keeps its own
+serial log (`<kernel>-net<n>.log` and `<kernel>-net-stream<n>.log`), and the
+output of the server goes to `net-server.log`, which is a file of the host and
+not part of the log of the guest. A run that measures only the network round
+trip does not boot the benchmark workload, so it publishes no boot row.
 
 The agent that reaches the network has a row of its own too. Its archive carries
 the agent, the model and the endpoint of the same server, and the round trip of
@@ -77,6 +79,11 @@ QUANT_WORKLOADS = set(QUANT_RENAME.values())
 AGENT_ITERATIONS = 1
 WEIGHTS_HUGE_ITERATIONS = 10
 
+# Lines of the agent transcript the rig prints when a run recorded no round
+# trip, so the reason of the missing row is in the report and not only in the
+# serial log: the tool answers with the error of the kernel.
+AGENT_TRANSCRIPT_LINES = 4
+
 # The network round trip is one datagram of the guest to the server of the host
 # and the echo back. One sample is cheap, so a boot takes several of them, and
 # the boot is repeated: one slow boot must not decide the number, and the
@@ -95,6 +102,12 @@ NET_PROBE_PORT = 9999
 # belongs to the run.
 NETCLIENT_ELF = "madrust-netclient/madrust-netclient.elf"
 NET_INITRAMFS = "bench/initramfs-net.cpio"
+
+# The stream client is a program of its own, with its own archive, because the
+# server of the run answers a stream on a port of its own. Both archives carry
+# the same binary bytes for every kernel of the run.
+NETSTREAM_ELF = "madrust-netstream/madrust-netstream.elf"
+NET_STREAM_INITRAMFS = "bench/initramfs-net-stream.cpio"
 
 # The agent that reaches the network needs the model and the endpoint of the
 # server, so its archive is built per run like the archive of the client.
@@ -127,6 +140,7 @@ WORKLOADS = {
     "boot-seconds": ("s", BOOT_ITERATIONS),
     "boot-rss-mb": ("MiB", BOOT_ITERATIONS),
     "net": ("us/roundtrip", NET_ITERATIONS * NET_BOOTS),
+    "net-stream": ("us/roundtrip", NET_ITERATIONS * NET_BOOTS),
 }
 
 # The inference measurements only exist when the initramfs carries the runtime,
@@ -169,6 +183,13 @@ NET_RE = re.compile(
 )
 NET_FAIL_RE = re.compile(r"^NET FAIL (?P<reason>.+?)\s*$")
 
+# The stream client prints the same shape with its own words, so the two
+# measurements share one table without being confused with each other.
+NET_STREAM_RE = re.compile(
+    r"^NET STREAM OK rt=(?P<value>\d+) retries=(?P<retries>\d+) answer=(?P<answer>\S+)\s*$"
+)
+NET_STREAM_FAIL_RE = re.compile(r"^NET STREAM FAIL (?P<reason>.+?)\s*$")
+
 # Mainline can print a bracketed kernel log line onto the same serial line as a
 # sample. The tail is not part of the sample, so cut it before matching.
 KERNEL_LOG_RE = re.compile(r"\s*\[[^\]]*\].*$")
@@ -182,7 +203,9 @@ LEADING_KERNEL_LOG_RE = re.compile(r"^\[[^\]]*\]\s*")
 # The marker that says the run reached its end, with or without a kernel
 # prefix in front of it. The network client and the agent end their own run
 # with their own marker, because each is a program of its own.
-BENCH_DONE_RE = re.compile(r"^\[[^\]]*\]\s*(?:BENCH|NET|AGENT) DONE\s*$")
+BENCH_DONE_RE = re.compile(
+    r"^\[[^\]]*\]\s*(?:BENCH|NET|AGENT) DONE\s*$|^NET STREAM DONE\s*$"
+)
 
 
 def repo_root() -> Path:
@@ -397,8 +420,11 @@ def expected_complete(text: str, expected: dict[str, int]) -> bool:
             if match.group("net_us") is not None:
                 seen["agent-net"] = seen.get("agent-net", 0) + 1
             continue
-        if NET_RE.match(KERNEL_LOG_RE.sub("", line)):
+        stripped = KERNEL_LOG_RE.sub("", line)
+        if NET_RE.match(stripped):
             seen["net"] = seen.get("net", 0) + 1
+        elif NET_STREAM_RE.match(stripped):
+            seen["net-stream"] = seen.get("net-stream", 0) + 1
     for name, count in expected.items():
         if name in ("boot-seconds", "boot-rss-mb"):
             # The rig measures those itself, after the run.
@@ -417,7 +443,12 @@ def bench_done(text: str) -> bool:
     """
     for raw_line in text.splitlines():
         line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
-        if BENCH_DONE_RE.match(line) or line in ("BENCH DONE", "NET DONE", "AGENT DONE"):
+        if BENCH_DONE_RE.match(line) or line in (
+            "BENCH DONE",
+            "NET DONE",
+            "NET STREAM DONE",
+            "AGENT DONE",
+        ):
             return True
     return False
 
@@ -574,7 +605,12 @@ import select
 import socket
 import sys
 
-log_path, port_file, probe_port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+log_path, port_file, stream_port_file, probe_port = (
+    sys.argv[1],
+    sys.argv[2],
+    sys.argv[3],
+    int(sys.argv[4]),
+)
 
 
 def record(message):
@@ -588,6 +624,17 @@ measurement.bind(("127.0.0.1", 0))
 sockets.append(measurement)
 port = measurement.getsockname()[1]
 
+# The stream side of the same server. The kernel of the host picks the port, the
+# rig reads it back, and the client of the guest gets it through /net.conf of its
+# own archive. Every request is echoed with the bytes it carried, so the client
+# can tell that the answer is the one it asked for.
+stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+stream.bind(("127.0.0.1", 0))
+stream.listen(8)
+stream_port = stream.getsockname()[1]
+connections = []
+
 try:
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     probe.bind(("127.0.0.1", probe_port))
@@ -597,12 +644,41 @@ except OSError as error:
     record("server cannot bind the probe port %d: %s" % (probe_port, error))
 
 record("server listening on port %d" % port)
+record("server stream listening on port %d" % stream_port)
 with open(port_file, "w") as handle:
     handle.write("%d\n" % port)
+with open(stream_port_file, "w") as handle:
+    handle.write("%d\n" % stream_port)
 
 while True:
-    ready, _, _ = select.select(sockets, [], [])
+    ready, _, _ = select.select(sockets + [stream] + connections, [], [])
     for server in ready:
+        if server is stream:
+            connection, address = stream.accept()
+            connections.append(connection)
+            record(
+                "stream accepted from %s:%d on port %d"
+                % (address[0], address[1], stream_port)
+            )
+            continue
+        if server in connections:
+            data = server.recv(2048)
+            if not data:
+                connections.remove(server)
+                server.close()
+                continue
+            record(
+                "stream got %d bytes from %s:%d on port %d: %r"
+                % (
+                    len(data),
+                    server.getpeername()[0],
+                    server.getpeername()[1],
+                    stream_port,
+                    data,
+                )
+            )
+            server.sendall(data)
+            continue
         data, address = server.recvfrom(2048)
         record(
             "server got %d bytes from %s:%d on port %d: %r"
@@ -612,16 +688,20 @@ while True:
 """
 
 
-def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, Path]:
-    """Start the echo server of the host and return it with its port and log.
+def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, int, Path]:
+    """Start the echo server of the host and return it with its ports and log.
 
-    The rig waits for the server to name the port it bound, so the archive it
-    builds next carries the port of this run and not the port of another one.
+    The rig waits for the server to name the ports it bound, so the archives it
+    builds next carry the endpoints of this run and not the ones of another
+    one. The server answers a datagram and a stream with the same bytes it
+    received, on a socket of each kind.
     """
     log = out_dir / "net-server.log"
     port_file = out_dir / "net-server.port"
-    if port_file.exists():
-        port_file.unlink()
+    stream_port_file = out_dir / "net-server-stream.port"
+    for path in (port_file, stream_port_file):
+        if path.exists():
+            path.unlink()
     with log.open("wb") as handle:
         process = subprocess.Popen(
             [
@@ -630,6 +710,7 @@ def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, Path]:
                 NET_SERVER,
                 str(log),
                 str(port_file),
+                str(stream_port_file),
                 str(NET_PROBE_PORT),
             ],
             stdout=subprocess.DEVNULL,
@@ -637,17 +718,21 @@ def start_server(out_dir: Path) -> tuple[subprocess.Popen, int, Path]:
         )
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if port_file.is_file():
-            text = port_file.read_text().strip()
-            if text.isdigit():
-                print(f"[rig] net server on port {text}, log {log}", file=sys.stderr)
-                return process, int(text), log
+        if port_file.is_file() and stream_port_file.is_file():
+            port = port_file.read_text().strip()
+            stream_port = stream_port_file.read_text().strip()
+            if port.isdigit() and stream_port.isdigit():
+                print(
+                    f"[rig] net server on ports {port} and {stream_port}, log {log}",
+                    file=sys.stderr,
+                )
+                return process, int(port), int(stream_port), log
         if process.poll() is not None:
             break
         time.sleep(0.05)
     stop_server(process)
     raise SystemExit(
-        "the net server did not name its port: "
+        "the net server did not name its ports: "
         + (read_log(log).strip() or "no output")
     )
 
@@ -664,8 +749,10 @@ def stop_server(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def ensure_net_initramfs(path: Path, port: int, per_boot: int) -> None:
-    """Build the archive that carries the client and the endpoint of the server.
+def ensure_net_initramfs(
+    path: Path, port: int, per_boot: int, program: str, target: str
+) -> None:
+    """Build the archive that carries one network client and its endpoint.
 
     The archive is built for this run, because the port of the server belongs to
     the run. Both kernels get the same bytes, the same endpoint and the same
@@ -673,11 +760,11 @@ def ensure_net_initramfs(path: Path, port: int, per_boot: int) -> None:
     two configurations.
     """
     root = repo_root()
-    binary = root / NETCLIENT_ELF
-    print("[rig] building the network client", file=sys.stderr)
-    subprocess.run(["make", "netclient"], cwd=root, check=True)
+    binary = root / program
+    print(f"[rig] building the {target} client", file=sys.stderr)
+    subprocess.run(["make", target], cwd=root, check=True)
     if not binary.is_file():
-        raise SystemExit(f"the network client was not built: {binary}")
+        raise SystemExit(f"the {target} client was not built: {binary}")
     with tempfile.TemporaryDirectory(prefix="madrust-net-") as directory:
         (Path(directory) / "net.conf").write_text(
             "# written by the rig for this run\n"
@@ -789,6 +876,18 @@ def run_agent_net(
             f"[rig] {label}-agent: the serial log has no network round trip of the agent",
             file=sys.stderr,
         )
+        # The reason has to be in the log too: the line of the tool says what
+        # the call answered, and a call that failed before it measured anything
+        # answers with the error of the kernel. The `link=` of that line is the
+        # state of the interface the tool configured.
+        told = 0
+        for raw_line in text.splitlines():
+            line = KERNEL_LOG_RE.sub("", LEADING_KERNEL_LOG_RE.sub("", raw_line.strip()))
+            if line.startswith("AGENT ERR") or re.match(r"^AGENT\s+(selftest|step=)", line):
+                print(f"[rig] {label}-agent: {line}", file=sys.stderr)
+                told += 1
+                if told >= AGENT_TRANSCRIPT_LINES:
+                    break
         for line in outcome["qemu"].splitlines()[-10:]:
             print(f"[rig] {label}-agent: qemu: {line}", file=sys.stderr)
     return rows, shlex.join(command)
@@ -806,8 +905,11 @@ def run_net(
     memory: str,
     smp: str,
     per_boot: int,
+    workload: str = "net",
+    tag_prefix: str = "-net",
+    what: str = "datagrams",
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Boot the guest once per boot of the measurement, and record every datagram.
+    """Boot the guest once per boot of the measurement, and record every sample.
 
     Each boot keeps its own serial log, and the samples of all boots are numbered
     as one sequence, so the summary sees the samples of the whole measurement. A
@@ -817,7 +919,7 @@ def run_net(
     rows: list[dict[str, Any]] = []
     commands: list[str] = []
     for boot in range(NET_BOOTS):
-        tag = f"-net{boot + 1}"
+        tag = f"{tag_prefix}{boot + 1}"
         command, text, _, _, outcome = run_once(
             label,
             image,
@@ -829,23 +931,23 @@ def run_net(
             append_extra,
             memory,
             smp,
-            {"net": per_boot},
+            {workload: per_boot},
             True,
             tag,
         )
         commands.append(shlex.join(command))
         reason = outcome["reason"] or (
-            f"boot {boot + 1} of the network measurement printed fewer datagrams "
+            f"boot {boot + 1} of the {workload} measurement printed fewer {what} "
             f"than the {per_boot} it was given"
         )
-        boot_rows = parse_results(label, text, {"net": per_boot}, None, reason)
+        boot_rows = parse_results(label, text, {workload: per_boot}, None, reason)
         for row in boot_rows:
             row["iteration"] += boot * per_boot
         ok = sum(1 for row in boot_rows if row["status"] == "ok")
         print(f"[rig] {label}{tag}: {ok} round trips recorded", file=sys.stderr)
         if ok == 0:
             print(
-                f"[rig] {label}{tag}: the serial log has no network round trip",
+                f"[rig] {label}{tag}: the serial log has no {workload} round trip",
                 file=sys.stderr,
             )
             for line in outcome["qemu"].splitlines()[-10:]:
@@ -951,44 +1053,50 @@ def parse_results(
                 }
             )
 
-    # The network client prints its own line per datagram, and one line with the
+    # The network clients print one line per round trip, and one line with the
     # reason when a run could not take a sample at all. A failure keeps its
     # place in the sequence of the workload, so the iteration numbers stay one
-    # sequence per kernel.
+    # sequence per kernel. The datagram and the stream share the parser but not
+    # the workload, because the two numbers measure two different exchanges.
     for raw_line in text.splitlines():
         line = LEADING_KERNEL_LOG_RE.sub("", raw_line.strip())
         stripped = KERNEL_LOG_RE.sub("", line)
-        match = NET_RE.match(stripped)
-        if match:
-            iteration = seen["net"]
-            seen["net"] = iteration + 1
-            rows.append(
-                {
-                    "kernel": label,
-                    "workload": "net",
-                    "iteration": iteration,
-                    "value": match.group("value"),
-                    "unit": WORKLOADS["net"][0],
-                    "status": "ok",
-                    "error": "",
-                }
-            )
-            continue
-        match = NET_FAIL_RE.match(stripped)
-        if match:
-            iteration = seen["net"]
-            seen["net"] = iteration + 1
-            rows.append(
-                {
-                    "kernel": label,
-                    "workload": "net",
-                    "iteration": iteration,
-                    "value": "",
-                    "unit": WORKLOADS["net"][0],
-                    "status": "error",
-                    "error": match.group("reason"),
-                }
-            )
+        for workload, ok_re, fail_re in (
+            ("net", NET_RE, NET_FAIL_RE),
+            ("net-stream", NET_STREAM_RE, NET_STREAM_FAIL_RE),
+        ):
+            match = ok_re.match(stripped)
+            if match:
+                iteration = seen[workload]
+                seen[workload] = iteration + 1
+                rows.append(
+                    {
+                        "kernel": label,
+                        "workload": workload,
+                        "iteration": iteration,
+                        "value": match.group("value"),
+                        "unit": WORKLOADS[workload][0],
+                        "status": "ok",
+                        "error": "",
+                    }
+                )
+                break
+            match = fail_re.match(stripped)
+            if match:
+                iteration = seen[workload]
+                seen[workload] = iteration + 1
+                rows.append(
+                    {
+                        "kernel": label,
+                        "workload": workload,
+                        "iteration": iteration,
+                        "value": "",
+                        "unit": WORKLOADS[workload][0],
+                        "status": "error",
+                        "error": match.group("reason"),
+                    }
+                )
+                break
 
     # The measurements the rig takes itself are samples of their workload.
     for row in boot_rows or []:
@@ -1283,6 +1391,7 @@ def main() -> int:
     # so the samples of that workload are the product of the two.
     net_per_boot = args.iterations if args.iterations is not None else NET_ITERATIONS
     expected["net"] = net_per_boot * NET_BOOTS
+    expected["net-stream"] = net_per_boot * NET_BOOTS
 
     only = {name.strip() for name in args.only.split(",") if name.strip()}
     if only:
@@ -1307,28 +1416,42 @@ def main() -> int:
     # kernel of the run sees the same bytes, the same endpoint and the same
     # number of samples.
     net = "net" in expected
+    net_stream = "net-stream" in expected
     agent_net = "agent-net" in expected
     workload_expected = {
         name: count
         for name, count in expected.items()
-        if name not in ("net", "agent-net") and name not in QUANT_WORKLOADS
+        if name not in ("net", "net-stream", "agent-net") and name not in QUANT_WORKLOADS
     }
     quant_expected = {"infer-ttft": 1, "infer-tps": 1}
     net_initrd = None
+    net_stream_initrd = None
     agent_net_initrd = None
     server = None
     server_log = None
     server_port = None
-    if net or agent_net:
+    server_stream_port = None
+    if net or net_stream or agent_net:
         if args.initrd:
             raise SystemExit(
                 "the network measurements build their own initramfs, because the "
                 "endpoint of the server belongs to the run: do not pass --initrd"
             )
-        server, server_port, server_log = start_server(out_dir)
+        server, server_port, server_stream_port, server_log = start_server(out_dir)
     if net:
         net_initrd = root / NET_INITRAMFS
-        ensure_net_initramfs(net_initrd, server_port, net_per_boot)
+        ensure_net_initramfs(
+            net_initrd, server_port, net_per_boot, NETCLIENT_ELF, "netclient"
+        )
+    if net_stream:
+        net_stream_initrd = root / NET_STREAM_INITRAMFS
+        ensure_net_initramfs(
+            net_stream_initrd,
+            server_stream_port,
+            net_per_boot,
+            NETSTREAM_ELF,
+            "netstream",
+        )
     if agent_net:
         agent_net_initrd = root / AGENT_NET_INITRAMFS
         agent_model = (
@@ -1356,10 +1479,11 @@ def main() -> int:
             "path": str(initrd_quant),
             "sha256": sha256(initrd_quant),
         }
-    if net or agent_net:
+    if net or net_stream or agent_net:
         metadata["net"] = {
             "address": NET_ADDRESS,
             "server_port": server_port,
+            "server_stream_port": server_stream_port,
             "server_log": str(server_log),
             "probe_port": NET_PROBE_PORT,
         }
@@ -1371,6 +1495,15 @@ def main() -> int:
                 "initrd": {"path": str(net_initrd), "sha256": sha256(net_initrd)},
             }
         )
+    if net_stream:
+        metadata["net-stream"] = {
+            "samples_per_boot": net_per_boot,
+            "boots": NET_BOOTS,
+            "initrd": {
+                "path": str(net_stream_initrd),
+                "sha256": sha256(net_stream_initrd),
+            },
+        }
     if agent_net:
         metadata["agent_net"] = {
             "selftest": True,
@@ -1531,6 +1664,26 @@ def main() -> int:
                 rows.extend(net_rows)
                 if net_commands:
                     metadata["commands"][f"{label}-net"] = net_commands[0]
+            if net_stream:
+                stream_rows, stream_commands = run_net(
+                    label,
+                    image,
+                    net_stream_initrd,
+                    out_dir,
+                    args.qemu,
+                    args.accel,
+                    args.timeout,
+                    append_extra,
+                    args.memory,
+                    args.smp,
+                    net_per_boot,
+                    "net-stream",
+                    "-net-stream",
+                    "requests",
+                )
+                rows.extend(stream_rows)
+                if stream_commands:
+                    metadata["commands"][f"{label}-net-stream"] = stream_commands[0]
             if agent_net:
                 agent_rows, agent_command = run_agent_net(
                     label,
