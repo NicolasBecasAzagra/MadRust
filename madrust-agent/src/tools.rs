@@ -24,6 +24,14 @@
 //! because MadRust answers a socket with nothing to read at once with the error
 //! of a would block, and the server of the host can be slower than the guest.
 //! The number of retries and the round trip are in the answer.
+//!
+//! The tool configures the interface of the guest before its first datagram,
+//! because MadRust brings the card up with the address of the emulator and a
+//! mainline kernel leaves it down and unnumbered: the send of the same program
+//! then fails with `ENETUNREACH` and the run measures nothing. [`crate::link`]
+//! makes the calls and reports what the kernel answered, and the result of the
+//! tool carries that report as `link=`, so a kernel that refuses the setup says
+//! so on the line of the tool.
 
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
@@ -216,6 +224,12 @@ fn compute(call: &Call) -> String {
 /// of a would block, and the server of the host may answer after the guest has
 /// asked. The answer is cut to [`ANSWER_CHARS`] characters, because it goes back
 /// into the prompt of the next step, and the text says how much was left out.
+///
+/// The interface is configured before the socket is opened, because the send
+/// needs a route: MadRust has one from its own setup and a mainline kernel has
+/// none until a program of the guest makes it. The state of the link is in the
+/// result of every path, so a refused call of the interface is in the log beside
+/// the error of the send it caused.
 fn net_send(call: &Call) -> (String, Option<RoundTrip>) {
     let query = match string_arg(call, "query") {
         Ok(query) => query,
@@ -230,21 +244,22 @@ fn net_send(call: &Call) -> (String, Option<RoundTrip>) {
         Err(error) => return (error, None),
     };
 
+    let link = crate::link::ensure();
     let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
         Ok(socket) => socket,
-        Err(error) => return (io_error(&error), None),
+        Err(error) => return (with_link(io_error(&error), link), None),
     };
     // A kernel that does not implement the timeout of a socket refuses the
     // option. The loop below then relies on the non-blocking read alone, which
     // is what MadRust does.
     let _ = socket.set_read_timeout(Some(READ_TIMEOUT));
     if let Err(error) = socket.connect(endpoint) {
-        return (io_error(&error), None);
+        return (with_link(io_error(&error), link), None);
     }
 
     let started = Instant::now();
     if let Err(error) = socket.send(text.as_bytes()) {
-        return (io_error(&error), None);
+        return (with_link(io_error(&error), link), None);
     }
 
     let mut buffer = [0u8; ANSWER_BYTES];
@@ -264,7 +279,7 @@ fn net_send(call: &Call) -> (String, Option<RoundTrip>) {
                     // cutting the answer of the server.
                     let _ = write!(result, " omitted={}", total - ANSWER_CHARS);
                 }
-                return (result, Some(RoundTrip { micros, retries }));
+                return (with_link(result, link), Some(RoundTrip { micros, retries }));
             }
             Err(error)
                 if matches!(
@@ -274,12 +289,25 @@ fn net_send(call: &Call) -> (String, Option<RoundTrip>) {
             {
                 retries = retries.saturating_add(1);
                 if started.elapsed() >= ANSWER_TIMEOUT {
-                    return (format!("error no answer retries={retries}"), None);
+                    return (
+                        with_link(format!("error no answer retries={retries}"), link),
+                        None,
+                    );
                 }
             }
-            Err(error) => return (io_error(&error), None),
+            Err(error) => return (with_link(io_error(&error), link), None),
         }
     }
+}
+
+/// Put the state of the link on the result of the network tool.
+///
+/// The state is on every path and not only on a failure: a kernel that refuses
+/// the setup and still sends, and a kernel that accepts it, then sit in the log
+/// next to each other with the round trip each measured.
+fn with_link(mut result: String, link: &crate::link::Link) -> String {
+    let _ = write!(result, " link={}", link.report());
+    result
 }
 
 /// Parse the `ADDRESS:PORT` argument of the network tool.
@@ -796,6 +824,10 @@ mod tests {
         );
         assert!(result.contains(" rt_us="), "{result}");
         assert!(
+            result.contains(" link="),
+            "the answer carries the state of the link: {result}"
+        );
+        assert!(
             step.round_trip.is_some(),
             "the tool measured its datagram: {result}"
         );
@@ -819,6 +851,15 @@ mod tests {
         // 256 characters stay and the other 44 are named, not dropped in
         // silence: the text goes back into the prompt of the next step.
         assert!(result.contains("omitted=44"), "{result}");
+    }
+
+    #[test]
+    fn a_failure_of_the_tool_still_carries_the_state_of_the_link() {
+        // A send that fails on a kernel that refused the setup names both: the
+        // error of the send alone would not say why no route existed.
+        let link = crate::link::ensure();
+        let result = super::with_link("error errno=101".to_string(), link);
+        assert!(result.starts_with("error errno=101 link="), "{result}");
     }
 
     #[test]

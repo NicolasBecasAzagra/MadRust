@@ -12,6 +12,14 @@
 //! network is what closes the goal of the project. The loop stops at the `done`
 //! tool or after [`MAX_STEPS`] steps.
 //!
+//! [`link`] configures the interface of the guest before the first datagram of
+//! the network tool. MadRust brings the card up with the address of the
+//! emulator; a mainline kernel leaves it down and unnumbered, so the send of the
+//! same program has no route and fails with `ENETUNREACH`. The tool makes the
+//! calls the network client of the rig makes, and its result carries what the
+//! kernel answered as `link=`, so the transcript of a run that cannot reach the
+//! server says why.
+//!
 //! Neither kernel hands arguments to the program it starts as init, so the
 //! address and the port of the server reach the agent through `/net.conf` of
 //! the initramfs, the file the network client of the rig reads too:
@@ -64,6 +72,7 @@
 mod call;
 mod encode;
 mod expression;
+mod link;
 mod tools;
 
 use std::net::Ipv4Addr;
