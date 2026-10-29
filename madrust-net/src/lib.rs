@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The protocols of the path from the guest to the host.
 //!
-//! Four protocols carry one datagram out of the machine: an Ethernet frame,
+//! Five protocols carry one datagram out of the machine: an Ethernet frame,
 //! an address resolution request that finds the hardware address of the
-//! gateway, an IPv4 header and a UDP header. Each module of this crate owns one
-//! of them, and each one is plain data: addresses are arrays of bytes, ports
-//! and lengths are the numbers of the wire format, and every field is written
-//! where the specification puts it.
+//! gateway, an IPv4 header, a UDP header and a TCP connection. Each module of
+//! this crate owns one of them, and each one is plain data: addresses are
+//! arrays of bytes, ports and lengths are the numbers of the wire format, and
+//! every field is written where the specification puts it.
 //!
 //! Nothing here touches hardware or allocates memory. Every parser borrows the
 //! bytes it reads, checks the length before the first read and returns the
 //! reason of a refusal, so the same code runs in the kernel and in host unit
-//! tests. The checksum of IPv4 and the checksum of UDP share the one's
-//! complement sum of [`sum`].
+//! tests. The checksum of IPv4, UDP and TCP share the one's complement sum of
+//! [`sum`].
 //!
 //! The order of the modules is the order of the path: [`ethernet`] carries an
 //! [`arp`] packet while no hardware address is known, then [`ipv4`] carries a
-//! [`udp`] datagram once it is.
+//! [`udp`] datagram or a [`tcp`] connection once it is.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -26,6 +26,7 @@ use core::fmt;
 pub mod arp;
 pub mod ethernet;
 pub mod ipv4;
+pub mod tcp;
 pub mod udp;
 
 /// One's complement sum of the bytes of every part.

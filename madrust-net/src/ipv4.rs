@@ -27,6 +27,9 @@ pub const MAX_HEADER_SIZE: usize = 60;
 /// Protocol number of a UDP datagram, the value of the protocol field.
 pub const PROTOCOL_UDP: u8 = 17;
 
+/// Protocol number of a TCP segment, the value of the protocol field.
+pub const PROTOCOL_TCP: u8 = 6;
+
 /// Offset of a fragment inside its datagram, in eight byte units.
 pub const MAX_FRAGMENT_OFFSET: u16 = 0x1fff;
 

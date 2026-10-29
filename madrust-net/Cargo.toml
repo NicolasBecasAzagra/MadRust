@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 [package]
 name = "madrust-net"
-description = "Ethernet, ARP, IPv4 and UDP headers for MadRust"
+description = "Ethernet, ARP, IPv4, UDP and TCP headers, and the states of a TCP connection, for MadRust"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-only"
