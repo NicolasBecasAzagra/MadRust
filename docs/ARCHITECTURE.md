@@ -428,7 +428,8 @@ done are implemented and asserted in CI.
 | M6 | A musl dynamic binary runs from a read-only ext2 rootfs | golden log | deferred |
 | M7 | Signal and pipeline test suite produces identical output to Linux | diff suite in CI | deferred |
 | M10 | The kernel reaches the network: an agent calls an API and reads the answer | the networking gate in CI | done |
-| M12 | TCP in the kernel, so the agent can speak HTTP | the networking gate in CI, with a request and a reply over TCP | next |
+| M12 | TCP in the kernel, so the agent can speak HTTP | the networking gate in CI, with a request and a reply over TCP | done |
+| M13 | TLS in the kernel, so the agent can read the certificate of an API | the networking gate in CI, against a server with a certificate | next |
 | M11 | A quantized model fits in the memory of the machine and keeps its answer | the runtime against the reference, with the digest of the checkpoint | next |
 
 The deferred milestones are not abandoned, they are sequenced behind the
