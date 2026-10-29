@@ -16,7 +16,7 @@ memory than the incumbent, and that shows its numbers.
 ```text
         the agent            the runtime              the kernel
    model, tool, result   weights, forward pass,     paging, scheduling,
-   over five tools       bytes, a byte grammar      memory, processes
+   over seven tools      bytes, a byte grammar      memory, processes
         |                        |                        |
         +------------------------+------------------------+
                                  |
@@ -46,7 +46,8 @@ checkpoint.
    the gated feed forward block and a key value cache. It generates the same
    tokens as the reference implementation, one for one.
 3. **An agent that acts.** The model answers with a tool call, the kernel
-   runs the tool, and the model answers again. The shape of the call is not a
+   runs the tool, and the model answers again. The tools reach the files of
+   the machine, the network and the APIs over HTTP. The shape of the call is not a
    request in the prompt but an automaton over bytes: the answer cannot be
    anything but a well formed call of a declared tool, with the keys that tool
    needs, each of them once, with the type the tool expects.
@@ -134,7 +135,7 @@ tracker carry the same criteria.
 
 | Next | Why it is next |
 |---|---|
-| **TCP and HTTP** | An agent that cannot call an API over HTTP cannot be used. The protocols of the path are already pure and tested; TCP is the piece that is missing. |
+| **TLS** | Almost every API people call today is HTTPS, and an agent that cannot read a certificate cannot use them. |
 | **The tools an agent of today expects** | Files of the machine and commands: the agent of today reads the files of the person and runs things. |
 | **The model context protocol** | The way the clients of today talk to a model and to its tools. An agent that speaks it works with the clients people already have. |
 | **A checkpoint that closes the conversation** | The model of 135 million parameters reads a file and then asks for it again. The grammar is not the problem: the checkpoint is. |
