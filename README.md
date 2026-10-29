@@ -25,8 +25,16 @@ memory than the incumbent, and that shows its numbers.
 
 ## What we are building
 
-Three layers, each one measurable against mainline Linux on the same machine,
-with the same binary and the same checkpoint.
+**The standard way to run local agents on a person's own machine, fast.**
+
+An agent of today expects three things from the machine it runs on: it calls
+APIs over HTTP, it reads and writes files, and it runs commands. It expects a
+model that fits, and it expects the answers to come back in milliseconds. A
+product that only does the third of that is a demonstration.
+
+MadRust is that machine, built in three layers, each one measurable against
+mainline Linux on the same machine, with the same binary and the same
+checkpoint.
 
 1. **A kernel that does less.** No page table isolation, no LSM, no audit, no
    cgroups, no hooks. Demand paging, large pages, a scheduler with a short
@@ -126,7 +134,9 @@ tracker carry the same criteria.
 
 | Next | Why it is next |
 |---|---|
-| **Quantization** | A model that does not fit in the memory of the machine cannot be served. A quantized checkpoint, decoded by the same runtime and checked token for token against the reference. |
+| **TCP and HTTP** | An agent that cannot call an API over HTTP cannot be used. The protocols of the path are already pure and tested; TCP is the piece that is missing. |
+| **The tools an agent of today expects** | Files of the machine and commands: the agent of today reads the files of the person and runs things. |
+| **The model context protocol** | The way the clients of today talk to a model and to its tools. An agent that speaks it works with the clients people already have. |
 | **A checkpoint that closes the conversation** | The model of 135 million parameters reads a file and then asks for it again. The grammar is not the problem: the checkpoint is. |
 | **A host with hardware acceleration** | The only thing missing for the timings to describe a machine instead of an emulator. |
 | **A scheduler with a better tail** | Batching inference requests lives on the tail of the scheduler. |
