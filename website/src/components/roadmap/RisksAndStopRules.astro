@@ -1,0 +1,148 @@
+---
+import { risks, stopRules } from '../../data/project';
+---
+
+<section class="risks-section" aria-labelledby="risks-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Risks and stop rules</p>
+      <h2 id="risks-title" class="text-title">What can go wrong, and what gets cut</h2>
+      <p class="text-lead">
+        The stop rules are the promise: if the schedule slips, the scope shrinks, but the kernel that
+        remains still ships.
+      </p>
+    </header>
+
+    <div class="two-column">
+      <div class="column">
+        <h3 class="column-title">Risks</h3>
+        <ul class="risk-list">
+          {
+            risks.map((risk) => (
+              <li class="risk-card">
+                <h4>{risk.title}</h4>
+                <p class="text-body">{risk.mitigation}</p>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+
+      <div class="column">
+        <h3 class="column-title">Stop rules</h3>
+        <p class="column-intro">
+          If a milestone slips, these items are the first to leave. They are not abandoned; they are
+          deferred until the core kernel is done.
+        </p>
+        <ol class="stop-list">
+          {stopRules.map((rule) => <li>{rule}</li>)}
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .risks-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .two-column {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-xl);
+    align-items: start;
+  }
+
+  .column-title {
+    font-size: var(--text-lg);
+    font-weight: var(--font-semibold);
+    margin-block-end: var(--space-md);
+    color: var(--text);
+  }
+
+  .column-intro {
+    color: var(--text-secondary);
+    margin-block-end: var(--space-md);
+    max-width: var(--measure);
+  }
+
+  .risk-list,
+  .stop-list {
+    display: grid;
+    gap: var(--space-md);
+    list-style: none;
+    padding: 0;
+  }
+
+  .risk-card,
+  .stop-list li {
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .risk-card h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-semibold);
+    margin-block-end: var(--space-xs);
+  }
+
+  .stop-list {
+    counter-reset: stop;
+  }
+
+  .stop-list li {
+    position: relative;
+    padding-inline-start: 2.5rem;
+  }
+
+  .stop-list li::before {
+    counter-increment: stop;
+    content: counter(stop, decimal-leading-zero);
+    position: absolute;
+    inset-inline-start: var(--space-md);
+    inset-block-start: var(--space-md);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--accent);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .stop-list li::before {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  @media (max-width: 760px) {
+    .two-column {
+      grid-template-columns: 1fr;
+      gap: var(--space-xl);
+    }
+  }
+</style>

@@ -1,0 +1,296 @@
+/* MadRust design system — instrument panel, not SaaS landing */
+
+:root {
+  /* Accent: rust oxide. Chosen because it names the language, the work is metal, */
+  /* and it stays legible on both light and dark neutrals. */
+  --accent: #b7410e;
+  --accent-hover: #8f2f0a;
+  --accent-on-dark: #e07b4d;
+
+  /* Light theme */
+  --bg: #ffffff;
+  --bg-elevated: #fafafa;
+  --bg-sunk: #f3f3f3;
+  --surface-glass: rgba(255, 255, 255, 0.72);
+
+  --text: #0a0a0a;
+  --text-secondary: #555555;
+  --text-tertiary: #737373;
+  --text-inverse: #ffffff;
+
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.08);
+  --shadow-sm: 0 4px 20px rgba(0, 0, 0, 0.05);
+
+  --ring: #b7410e;
+  --ring-offset: 2px;
+
+  --radius-sm: 8px;
+  --radius: 18px;
+  --radius-lg: 28px;
+  --radius-xl: 40px;
+
+  --space-xs: 0.5rem;
+  --space-sm: 0.875rem;
+  --space: 1.25rem;
+  --space-md: 2rem;
+  --space-lg: 3.5rem;
+  --space-xl: 6rem;
+  --space-2xl: 10rem;
+
+  --measure: 70ch;
+  --max-content: 1200px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter Variable",
+    "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.25rem;
+  --text-3xl: 3.25rem;
+  --text-4xl: clamp(3rem, 7vw, 5.5rem);
+
+  --font-regular: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  --leading-tight: 1.05;
+  --leading-snug: 1.2;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.7;
+
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0a0a;
+    --bg-elevated: #141414;
+    --bg-sunk: #1c1c1c;
+    --surface-glass: rgba(16, 16, 16, 0.78);
+
+    --text: #f5f5f5;
+    --text-secondary: #a8a8a8;
+    --text-tertiary: #737373;
+    --text-inverse: #0a0a0a;
+
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.2);
+    --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    --shadow-sm: 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+@media (prefers-color-scheme: dark) {
+  a {
+    color: var(--accent-on-dark);
+  }
+  a:hover {
+    color: #ff9a6d;
+  }
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  border-radius: var(--radius-sm);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Typography primitives */
+.text-display {
+  font-size: var(--text-4xl);
+  line-height: var(--leading-tight);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.03em;
+}
+
+.text-title {
+  font-size: var(--text-3xl);
+  line-height: var(--leading-snug);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.02em;
+}
+
+.text-headline {
+  font-size: var(--text-2xl);
+  line-height: var(--leading-snug);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.02em;
+}
+
+.text-lead {
+  font-size: var(--text-lg);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+
+.text-body {
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+
+.text-small {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-tertiary);
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+/* Layout primitives */
+.wrapper {
+  width: min(100% - var(--space-md) * 2, var(--max-content));
+  margin-inline: auto;
+}
+
+.stack > * + * {
+  margin-block-start: var(--space-md);
+}
+
+.stack-sm > * + * {
+  margin-block-start: var(--space-sm);
+}
+
+.stack-lg > * + * {
+  margin-block-start: var(--space-lg);
+}
+
+/* Buttons */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  padding: 0.8rem 1.4rem;
+  border-radius: var(--radius);
+  font-weight: var(--font-medium);
+  font-size: var(--text-base);
+  line-height: 1;
+  transition: transform var(--transition-fast), background-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.button:active {
+  transform: scale(0.98);
+}
+
+.button-primary {
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+
+.button-primary:hover {
+  background: var(--accent-hover);
+  color: var(--text-inverse);
+}
+
+.button-secondary {
+  background: var(--bg-sunk);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.button-secondary:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+/* Visually hidden */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Skip link */
+.skip-link {
+  position: absolute;
+  inset-block-start: -100%;
+  inset-inline-start: var(--space);
+  z-index: 1000;
+  padding: var(--space-sm) var(--space);
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+}
+
+.skip-link:focus {
+  inset-block-start: var(--space);
+}

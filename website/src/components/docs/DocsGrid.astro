@@ -1,0 +1,149 @@
+---
+import { url } from '../../lib/paths';
+import { docs, meta } from '../../data/project';
+
+const importantSlugs = new Set(['architecture', 'report']);
+const regularDocs = docs.filter((doc) => !importantSlugs.has(doc.slug));
+---
+
+<section class="docs-hero" aria-labelledby="key-docs-title">
+  <p id="key-docs-title" class="sr-only">Key documents</p>
+  <a class="doc-promo" href={url('/docs/architecture')}>
+    <span class="doc-promo-label">Start here</span>
+    <h2 class="doc-promo-title">Architecture</h2>
+    <p class="text-body">The crates, the design decisions, the milestone ladder, the risks and the stop rules.</p>
+  </a>
+  <a class="doc-promo" href={url('/docs/report')}>
+    <span class="doc-promo-label">Evidence</span>
+    <h2 class="doc-promo-title">The report</h2>
+    <p class="text-body">The measurements, the findings, the losses and the threats to validity.</p>
+  </a>
+</section>
+
+<ul class="doc-list">
+  {
+    regularDocs.map((doc) => (
+      <li class="doc-card">
+        <h2 class="doc-card-title">
+          <a href={url(`/docs/${doc.slug}`)}>{doc.title}</a>
+        </h2>
+        <p class="text-body">{doc.summary}</p>
+        <p class="doc-card-source">
+          <a href={`${meta.repo}/blob/main/${doc.file}`} target="_blank" rel="noopener noreferrer">
+            View the source
+          </a>
+        </p>
+      </li>
+    ))
+  }
+</ul>
+
+<section class="pipeline" aria-labelledby="pipeline-title">
+  <h2 id="pipeline-title">How these pages stay in sync</h2>
+  <p class="text-body">
+    The documents live as Markdown in the repository. On every build, a script copies them into the
+    site and renders them with the same layout. What you read here is the same file that lives in
+    the repo.
+  </p>
+</section>
+
+<style>
+  .docs-hero {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+    gap: var(--space-md);
+    margin-block-end: var(--space-xl);
+  }
+
+  .doc-promo {
+    display: grid;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  }
+
+  .doc-promo:hover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .doc-promo-label {
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+
+  .doc-promo-title {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .doc-promo .text-body {
+    margin: 0;
+  }
+
+  .doc-list {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: var(--space-md);
+    margin-block-end: var(--space-xl);
+  }
+
+  .doc-card {
+    padding: var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+
+  .doc-card-title {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+    letter-spacing: -0.02em;
+    margin-block-end: var(--space-xs);
+  }
+
+  .doc-card-title a {
+    color: var(--text);
+  }
+
+  .doc-card-title a:hover {
+    color: var(--accent);
+  }
+
+  .doc-card .text-body {
+    margin-block-end: var(--space-sm);
+  }
+
+  .doc-card-source {
+    font-size: var(--text-sm);
+    margin: 0;
+  }
+
+  .pipeline {
+    padding: var(--space-lg);
+    border-radius: var(--radius);
+    background: var(--bg-sunk);
+    border: 1px solid var(--border);
+  }
+
+  .pipeline h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+    margin-block-end: var(--space-sm);
+    color: var(--text);
+  }
+
+  .pipeline .text-body {
+    margin: 0;
+    max-width: var(--measure);
+  }
+</style>

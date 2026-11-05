@@ -1,0 +1,108 @@
+---
+import { benchmarkCaveats, claims } from '../../data/project';
+---
+
+<section class="caveats-section" aria-labelledby="caveats-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Caveats</p>
+      <h2 id="caveats-title" class="text-title">What the numbers do and do not say</h2>
+    </header>
+
+    <div class="caveats-grid">
+      {
+        benchmarkCaveats.map((caveat) => (
+          <article class="caveat-card">
+            <h3>{caveat.title}</h3>
+            <p class="text-body">{caveat.body}</p>
+          </article>
+        ))
+      }
+    </div>
+
+    <ul class="claims-list" aria-label="Claims that bound the benchmark results">
+      {claims.map((claim) => <li>{claim}</li>)}
+    </ul>
+  </div>
+</section>
+
+<style>
+  .caveats-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .caveats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-md);
+    margin-block-end: var(--space-xl);
+  }
+
+  .caveat-card {
+    padding: var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .caveat-card h3 {
+    font-size: var(--text-base);
+    font-weight: var(--font-semibold);
+    margin-block-end: var(--space-xs);
+  }
+
+  .claims-list {
+    list-style: none;
+    padding: 0;
+    margin-block-end: var(--space-xl);
+  }
+
+  .claims-list li {
+    position: relative;
+    padding-inline-start: 1.4rem;
+    margin-block-end: var(--space-sm);
+    color: var(--text-secondary);
+  }
+
+  .claims-list li::before {
+    content: '—';
+    position: absolute;
+    inset-inline-start: 0;
+    color: var(--accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .claims-list li::before {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  @media (max-width: 760px) {
+    .caveats-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

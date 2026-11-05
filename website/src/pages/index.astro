@@ -1,0 +1,29 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Hero from '../components/Hero.astro';
+import Layers from '../components/Layers.astro';
+import Benchmarks from '../components/Benchmarks.astro';
+import Milestones from '../components/Milestones.astro';
+import StartToday from '../components/StartToday.astro';
+import Faq from '../components/Faq.astro';
+import Cta from '../components/Cta.astro';
+import Footer from '../components/Footer.astro';
+import ScrollReveal from '../components/ScrollReveal.astro';
+import { meta } from '../data/project';
+---
+
+<Base description={meta.description}>
+  <Nav />
+  <main id="main">
+    <Hero />
+    <Layers />
+    <Benchmarks />
+    <Milestones />
+    <StartToday />
+    <Faq />
+    <Cta />
+  </main>
+  <Footer />
+  <ScrollReveal />
+</Base>

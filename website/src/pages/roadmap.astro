@@ -1,0 +1,116 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import ScrollReveal from '../components/ScrollReveal.astro';
+import MilestoneLadder from '../components/roadmap/MilestoneLadder.astro';
+import NextSteps from '../components/roadmap/NextSteps.astro';
+import Deferred from '../components/roadmap/Deferred.astro';
+import RisksAndStopRules from '../components/roadmap/RisksAndStopRules.astro';
+import Estimate from '../components/roadmap/Estimate.astro';
+import { url } from '../lib/paths';
+
+const title = 'Roadmap';
+const description =
+  'The milestone ladder of MadRust: exit criteria a machine can check, what comes next, the risks, and the stop rules.';
+---
+
+<Base title={title} description={description}>
+  <Nav />
+  <main id="main">
+    <section class="page-hero" aria-labelledby="roadmap-title">
+      <div class="wrapper">
+        <header class="section-header">
+          <p class="section-eyebrow">Project tracking</p>
+          <h1 id="roadmap-title" class="text-display">Every milestone has an exit criterion</h1>
+          <p class="text-lead">
+            Each step ends with a sentence a machine can check, not a feeling or a demo. The state
+            of the ladder is the state of the project.
+          </p>
+        </header>
+      </div>
+    </section>
+
+    <MilestoneLadder />
+    <NextSteps />
+    <Deferred />
+    <RisksAndStopRules />
+    <Estimate />
+
+    <section class="cta-section" aria-labelledby="roadmap-cta-title">
+      <div class="wrapper">
+        <div class="cta-card reveal">
+          <h2 id="roadmap-cta-title" class="text-headline">Read the design</h2>
+          <p class="text-body">
+            The architecture document explains why the milestones are ordered this way and how each
+            crate fits in.
+          </p>
+          <div class="cta-actions">
+            <a class="button button-secondary" href={url('/docs/architecture')}>Architecture</a>
+            <a class="button button-secondary" href={url('/benchmarks')}>Benchmarks</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <Footer />
+  <ScrollReveal />
+</Base>
+
+<style>
+  .page-hero {
+    padding-block-start: calc(4rem + var(--space-2xl));
+    padding-block-end: var(--space-xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h1 {
+    margin-block-end: var(--space-md);
+  }
+
+  .cta-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .cta-card {
+    max-width: var(--measure);
+    margin-inline: auto;
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    text-align: center;
+  }
+
+  .cta-card h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .cta-card p {
+    margin-block-end: var(--space-md);
+  }
+
+  .cta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-sm);
+  }
+</style>

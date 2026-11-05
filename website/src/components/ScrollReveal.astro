@@ -1,0 +1,61 @@
+<script>
+  const supportsReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  if (!supportsReducedMotion) {
+    const revealed = new WeakSet();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('is-visible');
+            revealed.add(entry.target);
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.12, rootMargin: '0px 0px -40px 0px' }
+    );
+
+    document.querySelectorAll('.reveal').forEach((el) => {
+      observer.observe(el);
+      // Fallback: force reveal if the observer has not fired within 1.2s.
+      setTimeout(() => {
+        if (!revealed.has(el)) {
+          el.classList.add('is-visible');
+          revealed.add(el);
+        }
+      }, 1200);
+    });
+  } else {
+    document.querySelectorAll('.reveal').forEach((el) => el.classList.add('is-visible'));
+  }
+</script>
+
+<style is:global>
+  .reveal {
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 550ms cubic-bezier(0.25, 0.1, 0.25, 1),
+      transform 550ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  .js-reveal .reveal {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+
+  .js-reveal .reveal.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal,
+    .js-reveal .reveal {
+      opacity: 1;
+      transform: none;
+      transition: none;
+    }
+  }
+</style>

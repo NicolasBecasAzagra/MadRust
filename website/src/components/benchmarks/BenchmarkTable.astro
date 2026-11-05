@@ -1,0 +1,209 @@
+---
+import { benchmarks } from '../../data/project';
+
+const groups = {
+  operation: 'Kernel operations',
+  inference: 'Inference',
+  agent: 'Agent loop',
+} as const;
+
+const grouped = benchmarks.reduce<Record<string, typeof benchmarks>>((acc, b) => {
+  (acc[b.group] ??= []).push(b);
+  return acc;
+}, {});
+---
+
+<section class="table-section" aria-labelledby="benchmarks-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Measurements</p>
+      <h2 id="benchmarks-measurements" class="text-title">The measurements</h2>
+      <p class="text-lead">
+        Twelve metrics across three kernels: MadRust, Linux 7.3.0, and Linux 7.3.0 with mitigations
+        disabled.
+      </p>
+    </header>
+
+    <div class="tables-stack">
+      {
+        Object.entries(grouped).map(([group, rows]) => (
+          <div class="benchmark-group">
+            <h3 class="group-title">{groups[group as keyof typeof groups]}</h3>
+            <div class="table-wrap" tabindex="0" role="region" aria-label={`${groups[group as keyof typeof groups]} benchmark table`}>
+              <table>
+                <caption class="sr-only">
+                  {groups[group as keyof typeof groups]} measurements comparing MadRust, Linux 7.3.0, and Linux 7.3.0 without mitigations.
+                </caption>
+                <colgroup>
+                  <col class="col-metric" />
+                  <col class="col-value" />
+                  <col class="col-value" />
+                  <col class="col-value" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col">MadRust</th>
+                    <th scope="col">Linux 7.3.0</th>
+                    <th scope="col">Linux, no mitigations</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr>
+                      <th scope="row">{row.metric}</th>
+                      <td class="value highlight">{row.madrust}</td>
+                      <td class="value">{row.mainline}</td>
+                      <td class="value">{row.mainlineNoMitigations}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .table-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .tables-stack {
+    display: grid;
+    gap: var(--space-xl);
+  }
+
+  .benchmark-group {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .group-title {
+    padding: var(--space-md) var(--space-md) 0;
+    font-size: var(--text-lg);
+    font-weight: var(--font-semibold);
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .table-wrap:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--ring);
+  }
+
+  table {
+    width: 100%;
+    min-width: 640px;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .col-metric {
+    width: 46%;
+  }
+
+  .col-value {
+    width: 18%;
+  }
+
+  thead th {
+    padding: var(--space-sm) var(--space-md);
+    text-align: left;
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  tbody th,
+  tbody td {
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tbody tr:last-child th,
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody th {
+    font-weight: var(--font-medium);
+    color: var(--text);
+    text-align: left;
+  }
+
+  .value {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .value.highlight {
+    color: var(--accent);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .value.highlight {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  @media (max-width: 760px) {
+    .table-wrap {
+      background:
+        linear-gradient(to right, var(--bg-elevated), var(--bg-elevated)) left top,
+        linear-gradient(to right, var(--bg-elevated), var(--bg-elevated)) right top,
+        linear-gradient(to right, rgba(0, 0, 0, 0.08), transparent) left top,
+        linear-gradient(to left, rgba(0, 0, 0, 0.08), transparent) right top;
+      background-size: 1.5rem 100%, 1.5rem 100%, 0.75rem 100%, 0.75rem 100%;
+      background-attachment: local, local, scroll, scroll;
+      background-repeat: no-repeat;
+    }
+  }
+</style>

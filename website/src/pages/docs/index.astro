@@ -1,0 +1,48 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+import ScrollReveal from '../../components/ScrollReveal.astro';
+import DocsGrid from '../../components/docs/DocsGrid.astro';
+---
+
+<Base title="Documentation" description="Read the architecture, boot protocol, benchmarking method and measurement report of MadRust.">
+  <Nav />
+  <main id="main" class="docs-index">
+    <div class="wrapper">
+      <header class="page-header reveal">
+        <p class="section-eyebrow">Docs</p>
+        <h1 class="text-title">Read the system</h1>
+        <p class="text-lead">The documents that explain how MadRust is built, measured and run.</p>
+      </header>
+
+      <DocsGrid />
+    </div>
+  </main>
+  <Footer />
+  <ScrollReveal />
+</Base>
+
+<style>
+  .docs-index {
+    padding-block: var(--space-2xl) var(--space-xl);
+  }
+
+  .page-header {
+    margin-block-end: var(--space-xl);
+  }
+
+  .page-header .text-lead {
+    margin-block-start: var(--space-sm);
+    max-width: var(--measure);
+  }
+
+  .section-eyebrow {
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-block-end: var(--space-sm);
+  }
+</style>

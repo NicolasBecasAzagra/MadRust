@@ -1,0 +1,93 @@
+---
+import { nextSteps } from '../../data/project';
+---
+
+<section class="next-section" aria-labelledby="next-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">What comes next</p>
+      <h2 id="next-title" class="text-title">The open items</h2>
+    </header>
+
+    <ol class="next-list">
+      {
+        nextSteps.map((step) => (
+          <li class="next-card">
+            <div class="next-meta">
+              <h3>{step.title}</h3>
+              {step.id && <span class="next-id">{step.id}</span>}
+            </div>
+            <p class="text-body">{step.why}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>
+
+<style>
+  .next-section {
+    padding-block: var(--space-2xl);
+    background: var(--bg-sunk);
+    border-block: 1px solid var(--border);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .next-list {
+    display: grid;
+    gap: var(--space-md);
+    list-style: none;
+    padding: 0;
+  }
+
+  .next-card {
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .next-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-block-end: var(--space-xs);
+    flex-wrap: wrap;
+  }
+
+  .next-card h3 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+  }
+
+  .next-id {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    background: var(--bg-sunk);
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-sm);
+  }
+</style>

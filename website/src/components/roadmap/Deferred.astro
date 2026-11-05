@@ -1,0 +1,72 @@
+---
+import { deferred } from '../../data/project';
+---
+
+<section class="deferred-section" aria-labelledby="deferred-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Deferred</p>
+      <h2 id="deferred-title" class="text-title">Not abandoned, just later</h2>
+      <p class="text-lead">
+        These items are out of the current path. They will be picked up once the core kernel, the
+        agent loop and the network are done.
+      </p>
+    </header>
+
+    <ul class="deferred-list">
+      {deferred.map((item) => <li class="deferred-card">{item}</li>)}
+    </ul>
+  </div>
+</section>
+
+<style>
+  .deferred-section {
+    padding-block: var(--space-2xl);
+    background: var(--bg-sunk);
+    border-block: 1px solid var(--border);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .deferred-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-md);
+    list-style: none;
+    padding: 0;
+  }
+
+  .deferred-card {
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px dashed var(--border-strong);
+    color: var(--text-secondary);
+  }
+
+  @media (max-width: 760px) {
+    .deferred-list {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

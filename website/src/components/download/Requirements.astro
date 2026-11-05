@@ -1,0 +1,79 @@
+---
+import { build } from '../../data/project';
+---
+
+<section class="requirements-section" aria-labelledby="requirements-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Requirements</p>
+      <h2 id="requirements-title" class="text-title">What you need to build</h2>
+    </header>
+
+    <ul class="requirement-list">
+      {
+        build.requirements.map((req) => (
+          <li class="requirement-card">
+            <h3>{req.name}</h3>
+            <p class="text-body">{req.detail}</p>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .requirements-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .requirement-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-md);
+    list-style: none;
+    padding: 0;
+  }
+
+  .requirement-card {
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .requirement-card h3 {
+    font-size: var(--text-base);
+    font-weight: var(--font-semibold);
+    margin-block-end: var(--space-xs);
+  }
+
+  @media (max-width: 760px) {
+    .requirement-list {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

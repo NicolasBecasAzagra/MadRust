@@ -1,0 +1,153 @@
+---
+import { build } from '../../data/project';
+---
+
+<section class="commands-section" aria-labelledby="commands-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Commands</p>
+      <h2 id="commands-title" class="text-title">Build, test and run</h2>
+    </header>
+
+    <ul class="command-list">
+      {
+        build.commands.map((command) => (
+          <li class="command-card">
+            <div class="command-row">
+              <code class="command-cmd">{command.cmd}</code>
+              <button
+                type="button"
+                class="copy-button"
+                data-copy={command.cmd}
+                aria-label={`Copy ${command.cmd} to clipboard`}
+              >
+                <span class="copy-text">Copy</span>
+              </button>
+            </div>
+            <p class="text-body">{command.what}</p>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<script>
+  function setupCommandCopy() {
+    document.querySelectorAll('.command-card .copy-button').forEach((button) => {
+      if (button.hasAttribute('data-copy-bound')) return;
+      button.setAttribute('data-copy-bound', 'true');
+      button.addEventListener('click', async () => {
+        const text = button.getAttribute('data-copy');
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          const label = button.querySelector('.copy-text');
+          if (label) {
+            const original = label.textContent;
+            label.textContent = 'Copied';
+            setTimeout(() => {
+              label.textContent = original;
+            }, 1500);
+          }
+        } catch {
+          // Fail silently; the text is still selectable.
+        }
+      });
+    });
+  }
+  setupCommandCopy();
+  document.addEventListener('astro:page-load', setupCommandCopy);
+</script>
+
+<style>
+  .commands-section {
+    padding-block: var(--space-2xl);
+    background: var(--bg-sunk);
+    border-block: 1px solid var(--border);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .command-list {
+    display: grid;
+    gap: var(--space-md);
+    list-style: none;
+    padding: 0;
+  }
+
+  .command-card {
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .command-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-block-end: var(--space-xs);
+    flex-wrap: wrap;
+  }
+
+  .command-cmd {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+    background: var(--bg-sunk);
+    padding: 0.4rem 0.7rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .copy-button {
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunk);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+  }
+
+  .copy-button:hover {
+    background: var(--accent);
+    color: var(--text-inverse);
+    border-color: var(--accent);
+  }
+
+  .copy-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  }
+
+  .command-card p {
+    margin: 0;
+  }
+</style>

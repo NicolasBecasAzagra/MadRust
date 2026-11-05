@@ -1,0 +1,176 @@
+---
+import { getCommitsByMonth } from '../../lib/changelog';
+import { meta } from '../../data/project';
+
+const grouped = getCommitsByMonth(80);
+const repoCommitUrl = `${meta.repo}/commit`;
+
+function formatMonth(monthKey: string): string {
+  const date = new Date(`${monthKey}-01T00:00:00`);
+  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+---
+
+{
+  grouped.length === 0 ? (
+    <div class="empty-state">
+      <p class="text-headline">No commit history available</p>
+      <p class="text-body">
+        The changelog is built from the repository at build time. If you are reading a preview
+        without git, or the history could not be read, this page stays empty instead of inventing
+        entries.
+      </p>
+      <p class="text-body">
+        <a href={meta.repo}>View the repository on GitHub</a> for the real history.
+      </p>
+    </div>
+  ) : (
+    <div class="changelog-timeline">
+      {grouped.map(({ month, commits }) => (
+        <section class="month-group" aria-labelledby={`month-${month}`}>
+          <h2 id={`month-${month}`} class="month-heading">
+            {formatMonth(month)}
+          </h2>
+          <ol class="commit-list">
+            {commits.map((commit) => (
+              <li class="commit-item">
+                <span class="commit-type">{commit.type}</span>
+                {commit.scope && <span class="commit-scope">{commit.scope}</span>}
+                <span class="commit-subject">{commit.subject}</span>
+                <a
+                  class="commit-link"
+                  href={`${repoCommitUrl}/${commit.hash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <code>{commit.short}</code>
+                </a>
+                <time class="commit-date" datetime={commit.date}>
+                  {formatDate(commit.date)}
+                </time>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+<style>
+  .empty-state {
+    padding: var(--space-xl);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+
+  .empty-state .text-headline {
+    margin-block-end: var(--space-sm);
+  }
+
+  .changelog-timeline {
+    display: grid;
+    gap: var(--space-xl);
+  }
+
+  .month-group {
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .month-heading {
+    font-size: var(--text-headline);
+    font-weight: var(--font-semibold);
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .commit-list {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  .commit-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-xs) var(--space-sm);
+    padding: var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+
+  .commit-type {
+    flex: none;
+    padding: 0.15rem 0.45rem;
+    border-radius: 999px;
+    background: var(--bg-sunk);
+    border: 1px solid var(--border-strong);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+  }
+
+  .commit-type::before {
+    content: '';
+    display: inline-block;
+    width: 0.4rem;
+    height: 0.4rem;
+    margin-inline-end: 0.35rem;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
+  }
+
+  .commit-scope {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+  }
+
+  .commit-scope::before {
+    content: '(';
+  }
+
+  .commit-scope::after {
+    content: ')';
+  }
+
+  .commit-subject {
+    flex: 1 1 20ch;
+    color: var(--text);
+    font-weight: var(--font-medium);
+  }
+
+  .commit-subject::first-letter {
+    text-transform: uppercase;
+  }
+
+  .commit-link {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .commit-link code {
+    padding: 0.15em 0.35em;
+    border-radius: 4px;
+    background: var(--bg-sunk);
+  }
+
+  .commit-date {
+    flex: none;
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+  }
+</style>

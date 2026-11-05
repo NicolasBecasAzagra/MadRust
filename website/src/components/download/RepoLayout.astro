@@ -1,0 +1,90 @@
+---
+import { repository } from '../../data/project';
+---
+
+<section class="repo-section" aria-labelledby="repo-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Repository</p>
+      <h2 id="repo-title" class="text-title">Layout</h2>
+    </header>
+
+    <ul class="repo-list">
+      {
+        repository.map((item) => (
+          <li class="repo-card">
+            <code class="repo-crate">{item.crate}</code>
+            <p class="text-body">{item.what}</p>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .repo-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .repo-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-sm);
+    list-style: none;
+    padding: 0;
+  }
+
+  .repo-card {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+
+  .repo-crate {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+    background: var(--bg-sunk);
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-sm);
+    flex: none;
+  }
+
+  .repo-card p {
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+
+  @media (max-width: 760px) {
+    .repo-list {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

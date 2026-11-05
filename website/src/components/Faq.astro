@@ -1,0 +1,103 @@
+---
+import { faq } from '../data/project';
+import { url } from '../lib/paths';
+
+const preview = faq.slice(0, 4);
+---
+
+<section class="faq-section" aria-labelledby="faq-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Questions</p>
+      <h2 id="faq-title" class="text-title">What people ask</h2>
+    </header>
+
+    <div class="faq-list">
+      {
+        preview.map((item) => (
+          <details class="faq-item">
+            <summary>
+              <span>{item.question}</span>
+              <span class="faq-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="faq-answer">
+              <p class="text-body">{item.answer}</p>
+            </div>
+          </details>
+        ))
+      }
+    </div>
+
+    <p class="section-footer">
+      <a class="button button-secondary" href={url('/faq')}>Read all questions</a>
+    </p>
+  </div>
+</section>
+
+<style>
+  .faq-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--text-tertiary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  .faq-list {
+    display: grid;
+    gap: var(--space-sm);
+    margin-block-end: var(--space-xl);
+  }
+
+  .faq-item {
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .faq-item summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    font-size: var(--text-lg);
+    font-weight: var(--font-medium);
+    color: var(--text);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .faq-item summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .faq-chevron {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-inline-end: 2px solid var(--text-tertiary);
+    border-block-end: 2px solid var(--text-tertiary);
+    transform: rotate(45deg);
+    transition: transform var(--transition-fast);
+    flex: none;
+  }
+
+  .faq-item[open] .faq-chevron {
+    transform: rotate(-135deg);
+  }
+
+  .faq-answer {
+    padding: 0 var(--space-md) var(--space-md);
+    max-width: var(--measure);
+  }
+
+  .section-footer {
+    display: flex;
+    justify-content: flex-start;
+  }
+</style>

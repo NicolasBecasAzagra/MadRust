@@ -1,0 +1,125 @@
+---
+import { url } from '../lib/paths';
+import { meta } from '../data/project';
+
+const footerLinks = [
+  { label: 'Roadmap', href: url('/roadmap') },
+  { label: 'Benchmarks', href: url('/benchmarks') },
+  { label: 'Docs', href: url('/docs') },
+  { label: 'Download', href: url('/download') },
+  { label: 'Changelog', href: url('/changelog') },
+  { label: 'FAQ', href: url('/faq') },
+];
+---
+
+<footer class="site-footer">
+  <div class="wrapper">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="wordmark" href={url('/')}>
+          <span class="wordmark-text">{meta.name}</span>
+        </a>
+        <p class="status">{meta.status}</p>
+      </div>
+
+      <nav class="footer-nav" aria-label="Footer">
+        <ul>
+          {footerLinks.map((link) => <li><a href={link.href}>{link.label}</a></li>)}
+        </ul>
+      </nav>
+
+      <div class="footer-meta">
+        <p class="text-small">
+          Source on <a href={meta.repo}>GitHub</a>
+        </p>
+        <p class="text-small">
+          <a href={meta.licenseUrl}>Licensed {meta.license}</a>
+        </p>
+        <p class="text-small">Built by {meta.author}</p>
+        <p class="text-small">
+          Read the <a href={`${meta.repo}/blob/main/REPORT.md`}>measurement report</a>
+        </p>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <p class="text-small">This is a research kernel, not a production operating system.</p>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    margin-block-start: var(--space-2xl);
+    padding-block: var(--space-xl);
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
+  }
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1.2fr;
+    gap: var(--space-lg);
+  }
+
+  .wordmark {
+    display: inline-flex;
+    color: var(--text);
+    font-weight: var(--font-semibold);
+    font-size: var(--text-xl);
+    letter-spacing: -0.02em;
+  }
+
+  .wordmark:hover {
+    color: var(--text);
+  }
+
+  .footer-brand p {
+    margin-block-start: var(--space-sm);
+  }
+
+  .status {
+    display: inline-block;
+    margin-block-start: var(--space-sm);
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    background: var(--bg-sunk);
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    font-weight: var(--font-medium);
+  }
+
+  .footer-nav ul {
+    display: grid;
+    gap: var(--space-xs);
+    list-style: none;
+    padding: 0;
+  }
+
+  .footer-nav a {
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .footer-nav a:hover {
+    color: var(--text);
+  }
+
+  .footer-meta p {
+    margin-block-start: var(--space-xs);
+  }
+
+  .footer-bottom {
+    margin-block-start: var(--space-xl);
+    padding-block-start: var(--space-md);
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+  }
+
+  @media (max-width: 760px) {
+    .footer-grid {
+      grid-template-columns: 1fr;
+      gap: var(--space-md);
+    }
+  }
+</style>

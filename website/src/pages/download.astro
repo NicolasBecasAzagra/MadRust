@@ -1,0 +1,182 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import ScrollReveal from '../components/ScrollReveal.astro';
+import Requirements from '../components/download/Requirements.astro';
+import CommandList from '../components/download/CommandList.astro';
+import RepoLayout from '../components/download/RepoLayout.astro';
+import CodeBlock from '../components/download/CodeBlock.astro';
+import { url } from '../lib/paths';
+import { meta, build } from '../data/project';
+
+const title = 'Download';
+const description =
+  'Build MadRust from source. There are no prebuilt releases yet; the kernel is compiled from the pinned Rust nightly toolchain.';
+
+const cloneUrl = meta.repo;
+---
+
+<Base title={title} description={description}>
+  <Nav />
+  <main id="main">
+    <section class="page-hero" aria-labelledby="download-title">
+      <div class="wrapper">
+        <header class="section-header">
+          <p class="section-eyebrow">Get the code</p>
+          <h1 id="download-title" class="text-display">Build it from source</h1>
+          <p class="text-lead">
+            MadRust is a research kernel in active development. There are no signed binaries or
+            releases yet; the only supported way to run it is to build it yourself.
+          </p>
+          <div class="release-note">
+            <p class="text-small">
+              GitHub releases: none yet. The repository is the source of truth.
+            </p>
+          </div>
+        </header>
+      </div>
+    </section>
+
+    <Requirements />
+
+    <section class="toolchain-section" aria-labelledby="toolchain-title">
+      <div class="wrapper">
+        <header class="section-header">
+          <p class="section-eyebrow">Toolchain</p>
+          <h2 id="toolchain-title" class="text-title">Install the pinned nightly</h2>
+          <p class="text-lead">
+            The toolchain is pinned in rust-toolchain.toml. The command below installs the required
+            components.
+          </p>
+        </header>
+        <CodeBlock code={build.install} label="Install Rust toolchain" />
+      </div>
+    </section>
+
+    <CommandList />
+
+    <section class="qemu-section" aria-labelledby="qemu-title">
+      <div class="wrapper">
+        <header class="section-header">
+          <p class="section-eyebrow">Run</p>
+          <h2 id="qemu-title" class="text-title">Boot in QEMU</h2>
+          <p class="text-lead">{build.qemuNote}</p>
+        </header>
+        <CodeBlock code={build.qemu} label="QEMU command" />
+      </div>
+    </section>
+
+    <section class="debug-section" aria-labelledby="debug-title">
+      <div class="wrapper">
+        <header class="section-header">
+          <p class="section-eyebrow">Debug</p>
+          <h2 id="debug-title" class="text-title">Attach a debugger</h2>
+          <p class="text-lead">{build.debugNote}</p>
+        </header>
+        <CodeBlock code={build.debug} label="Debug command" />
+      </div>
+    </section>
+
+    <RepoLayout />
+
+    <section class="cta-section" aria-labelledby="download-cta-title">
+      <div class="wrapper">
+        <div class="cta-card reveal">
+          <h2 id="download-cta-title" class="text-headline">Clone the repository</h2>
+          <CodeBlock code={`git clone ${cloneUrl}`} label="Clone command" />
+          <div class="cta-actions">
+            <a class="button button-secondary" href={url('/benchmarks')}>See benchmarks</a>
+            <a class="button button-secondary" href={url('/docs/benchmarking')}>Benchmarking docs</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <Footer />
+  <ScrollReveal />
+</Base>
+
+<style>
+  .page-hero {
+    padding-block-start: calc(4rem + var(--space-2xl));
+    padding-block-end: var(--space-xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h1 {
+    margin-block-end: var(--space-md);
+  }
+
+  .release-note {
+    margin-block-start: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-sunk);
+    border: 1px solid var(--border);
+    display: inline-block;
+  }
+
+  .release-note p {
+    margin: 0;
+  }
+
+  .toolchain-section,
+  .qemu-section,
+  .debug-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .qemu-section,
+  .debug-section {
+    background: var(--bg-sunk);
+    border-block: 1px solid var(--border);
+  }
+
+  .cta-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .cta-card {
+    max-width: var(--measure);
+    margin-inline: auto;
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    text-align: center;
+  }
+
+  .cta-card h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .cta-card .code-block {
+    text-align: left;
+  }
+
+  .cta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-sm);
+    margin-block-start: var(--space-md);
+  }
+</style>

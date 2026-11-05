@@ -1,0 +1,272 @@
+---
+import type { MarkdownHeading } from 'astro';
+import Base from './Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { meta } from '../data/project';
+
+interface Props {
+  title: string;
+  description?: string;
+  source?: string;
+  headings?: MarkdownHeading[];
+  frontmatter?: Props;
+}
+
+const props = Astro.props.frontmatter ?? Astro.props;
+const { title, description, source } = props;
+const headings = Astro.props.headings ?? [];
+const repoFileUrl = source ? `${meta.repo}/blob/main/${source}` : null;
+---
+
+<Base title={title} description={description}>
+  <Nav />
+  <main id="main" class="doc-page">
+    <div class="doc-wrapper wrapper">
+      <aside class="doc-toc" aria-label="Table of contents">
+        <nav aria-label="Document">
+          <p class="toc-title">On this page</p>
+          {headings.length > 0 ? (
+            <ol class="toc-list">
+              {headings
+                .filter((h) => h.depth <= 3)
+                .map((h) => (
+                  <li class={`toc-depth-${h.depth}`}>
+                    <a href={`#${h.slug}`}>{h.text}</a>
+                  </li>
+                ))}
+            </ol>
+          ) : (
+            <p class="toc-empty">No headings found.</p>
+          )}
+        </nav>
+      </aside>
+
+      <article class="doc-content">
+        <header class="doc-header">
+          <p class="doc-title">{title}</p>
+          {description && <p class="doc-description">{description}</p>}
+          {repoFileUrl && (
+            <p class="doc-source">
+              <a href={repoFileUrl} target="_blank" rel="noopener noreferrer">
+                View the original on GitHub
+              </a>
+            </p>
+          )}
+        </header>
+
+        <div class="doc-body prose">
+          <slot />
+        </div>
+      </article>
+    </div>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  .doc-page {
+    padding-block-start: 6rem;
+    padding-block-end: var(--space-2xl);
+  }
+
+  .doc-wrapper {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: var(--space-xl);
+    align-items: start;
+  }
+
+  .doc-toc {
+    position: sticky;
+    top: 6rem;
+    max-height: calc(100svh - 8rem);
+    overflow-y: auto;
+    padding-inline-end: var(--space-sm);
+  }
+
+  .toc-title {
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+    color: var(--text-tertiary);
+    margin-block-end: var(--space-sm);
+  }
+
+  .toc-list {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .toc-list a {
+    display: block;
+    padding: 0.25rem 0;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    line-height: 1.35;
+    border-inline-start: 2px solid transparent;
+    padding-inline-start: 0.7rem;
+    margin-inline-start: -0.7rem;
+  }
+
+  .toc-list a:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+
+  .toc-depth-3 {
+    padding-inline-start: 0.8rem;
+  }
+
+  .toc-empty {
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+  }
+
+  .doc-content {
+    max-width: var(--measure);
+  }
+
+  .doc-header {
+    margin-block-end: var(--space-xl);
+    padding-block-end: var(--space-md);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .doc-title {
+    font-size: var(--text-3xl);
+    font-weight: var(--font-semibold);
+    letter-spacing: -0.02em;
+    line-height: var(--leading-snug);
+    margin-block-end: var(--space-sm);
+    color: var(--text);
+  }
+
+  .doc-description {
+    font-size: var(--text-lg);
+    line-height: var(--leading-relaxed);
+    color: var(--text-secondary);
+    max-width: 60ch;
+  }
+
+  .doc-source {
+    margin-block-start: var(--space-sm);
+    font-size: var(--text-sm);
+  }
+
+  .doc-body {
+    font-size: var(--text-md);
+    line-height: var(--leading-relaxed);
+    color: var(--text-secondary);
+  }
+
+  .doc-body :global(h2) {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-semibold);
+    color: var(--text);
+    letter-spacing: -0.02em;
+    margin-block: var(--space-xl) var(--space-sm);
+    scroll-margin-top: 6rem;
+  }
+
+  .doc-body :global(h3) {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+    color: var(--text);
+    letter-spacing: -0.02em;
+    margin-block: var(--space-lg) var(--space-sm);
+    scroll-margin-top: 6rem;
+  }
+
+  .doc-body :global(p) {
+    margin-block-end: var(--space-md);
+  }
+
+  .doc-body :global(a) {
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }
+
+  .doc-body :global(ul),
+  .doc-body :global(ol) {
+    margin-block-end: var(--space-md);
+    padding-inline-start: 1.4rem;
+  }
+
+  .doc-body :global(li) {
+    margin-block-end: var(--space-xs);
+  }
+
+  .doc-body :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.15em 0.35em;
+    border-radius: 4px;
+    background: var(--bg-sunk);
+    color: var(--text);
+  }
+
+  .doc-body :global(pre) {
+    padding: var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-sunk);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    margin-block-end: var(--space-md);
+  }
+
+  .doc-body :global(pre code) {
+    padding: 0;
+    background: transparent;
+    font-size: var(--text-sm);
+  }
+
+  .doc-body :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    margin-block-end: var(--space-md);
+    font-size: var(--text-sm);
+  }
+
+  .doc-body :global(th),
+  .doc-body :global(td) {
+    padding: var(--space-sm) var(--space-md);
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .doc-body :global(thead th) {
+    font-weight: var(--font-medium);
+    color: var(--text-tertiary);
+  }
+
+  .doc-body :global(blockquote) {
+    margin-block-end: var(--space-md);
+    padding: var(--space-md);
+    padding-inline-start: var(--space-md);
+    border-inline-start: 3px solid var(--accent);
+    background: var(--bg-elevated);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .doc-body :global(blockquote) {
+      border-color: var(--accent-on-dark);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .doc-wrapper {
+      grid-template-columns: 1fr;
+    }
+    .doc-toc {
+      position: static;
+      max-height: none;
+      padding: var(--space-md);
+      border-radius: var(--radius);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+    }
+  }
+</style>

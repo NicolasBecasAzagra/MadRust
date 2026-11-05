@@ -1,0 +1,196 @@
+---
+import { layers } from '../data/project';
+---
+
+<section class="layers-section" aria-labelledby="layers-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Architecture</p>
+      <h2 id="layers-title" class="text-title">Four layers, one system</h2>
+      <p class="text-lead">
+        Each layer owns a single responsibility. Together they run a local model and let it act.
+      </p>
+    </header>
+
+    <div class="layers-diagram" aria-label="Layer stack diagram">
+      <div class="layer-stack">
+        {
+          layers.map((layer, index) => (
+            <div class="layer-card reveal" data-layer={layer.id} style={`--layer-index: ${index}`}>
+              <div class="layer-header">
+                <span class="layer-number">{String(index + 1).padStart(2, '0')}</span>
+                <div>
+                  <h3>{layer.name}</h3>
+                  <p class="layer-role">{layer.role}</p>
+                </div>
+              </div>
+              <p class="layer-body text-body">{layer.body}</p>
+              <div class="layer-crates">
+                {layer.crates.map((crate) => (
+                  <code class="crate-pill">{crate}</code>
+                ))}
+              </div>
+              <p class="layer-differentiator">
+                <span class="diff-label">Differentiator</span>
+                {layer.differentiator}
+              </p>
+            </div>
+          ))
+        }
+      </div>
+
+      <div class="connector" aria-hidden="true">
+        <svg width="40" height="100%" viewBox="0 0 40 400" preserveAspectRatio="none">
+          <line x1="20" y1="0" x2="20" y2="400" stroke="currentColor" stroke-width="1.5"></line>
+          {
+            layers.map((_, i) => (
+              <circle
+                cx="20"
+                cy={(i * 100) + 50}
+                r="5"
+                fill="var(--bg)"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+            ))
+          }
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .layers-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--text-tertiary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .layers-diagram {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-lg);
+    align-items: start;
+  }
+
+  .layer-stack {
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .layer-card {
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--transition-base), box-shadow var(--transition-base);
+  }
+
+  .layer-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+  }
+
+  .layer-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    margin-block-end: var(--space-sm);
+  }
+
+  .layer-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunk);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+    flex: none;
+  }
+
+  .layer-header h3 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+    letter-spacing: -0.02em;
+  }
+
+  .layer-role {
+    color: var(--text-tertiary);
+    font-size: var(--text-sm);
+  }
+
+  .layer-body {
+    margin-block-end: var(--space-sm);
+    max-width: 80ch;
+  }
+
+  .layer-crates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-block-end: var(--space-sm);
+  }
+
+  .crate-pill {
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    background: var(--bg-sunk);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    border: 1px solid var(--border);
+  }
+
+  .layer-differentiator {
+    padding-block-start: var(--space-sm);
+    border-top: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .diff-label {
+    display: block;
+    margin-block-end: 0.15rem;
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    font-weight: var(--font-medium);
+  }
+
+  .connector {
+    position: sticky;
+    top: 6rem;
+    height: 32rem;
+    color: var(--border-strong);
+  }
+
+  @media (max-width: 760px) {
+    .layers-diagram {
+      grid-template-columns: 1fr;
+    }
+    .connector {
+      display: none;
+    }
+  }
+</style>

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.astro/
+.DS_Store
+
+# Generated from the markdown of the repository by scripts/sync-docs.mjs
+src/pages/docs/architecture.md
+src/pages/docs/boot.md
+src/pages/docs/benchmarking.md
+src/pages/docs/quantization.md
+src/pages/docs/learning.md
+src/pages/docs/vm-setup.md
+src/pages/docs/report.md

@@ -1,0 +1,31 @@
+---
+import { estimates } from '../../data/project';
+---
+
+<section class="estimate-section" aria-labelledby="estimate-title">
+  <div class="wrapper">
+    <div class="estimate-card">
+      <h2 id="estimate-title" class="text-headline">Estimate</h2>
+      <p class="text-lead">{estimates.effort}</p>
+    </div>
+  </div>
+</section>
+
+<style>
+  .estimate-section {
+    padding-block: var(--space-xl);
+  }
+
+  .estimate-card {
+    max-width: var(--measure);
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .estimate-card h2 {
+    margin-block-end: var(--space-sm);
+  }
+</style>

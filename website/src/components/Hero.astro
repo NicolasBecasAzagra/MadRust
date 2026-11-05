@@ -1,0 +1,232 @@
+---
+import { meta, agentTools, layers } from '../data/project';
+import { url } from '../lib/paths';
+
+const specs = [
+  'Linux-ABI kernel',
+  'local inference runtime',
+  `${agentTools.length} agent tools`,
+  'x86_64',
+];
+---
+
+<section class="hero" aria-labelledby="hero-title">
+  <div class="hero-grid wrapper">
+    <div class="hero-content">
+      <p class="hero-eyebrow">{layers[0].name} · {layers[1].name} · {layers[2].name}</p>
+      <h1 id="hero-title" class="text-display">
+        An operating system for<br />local AI agents, written in<br />Rust from the kernel up.
+      </h1>
+      <p class="hero-lead text-lead">{meta.description}</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href={meta.repo}>Star on GitHub</a>
+        <a class="button button-secondary" href={url('/docs')}>Read the docs</a>
+      </div>
+    </div>
+
+    <div class="hero-panel" aria-hidden="true">
+      <div class="serial-log">
+        <div class="serial-header">
+          <span class="serial-dot"></span>
+          <span class="serial-dot"></span>
+          <span class="serial-dot"></span>
+          <span class="serial-title">serial0</span>
+        </div>
+        <ol class="serial-lines">
+          <li><span class="ts">[0.000]</span> MadRust: boot OK</li>
+          <li><span class="ts">[0.012]</span> MM DIRECTMAP OK</li>
+          <li><span class="ts">[0.018]</span> HEAP OK 10000</li>
+          <li><span class="ts">[0.041]</span> USER OK exit=0</li>
+          <li><span class="ts">[0.102]</span> SCHED OK</li>
+          <li><span class="ts">[1.254]</span> TICKS 100</li>
+          <li><span class="ts">[2.008]</span> INFER OK tokens=42</li>
+          <li><span class="ts">[12.9s]</span> AGENT loop complete</li>
+        </ol>
+      </div>
+      <div class="spec-strip">
+        {specs.map((spec) => <span class="spec-item">{spec}</span>)}
+      </div>
+    </div>
+  </div>
+
+  <div class="hero-grid-bg" aria-hidden="true">
+    <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="fine-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" stroke-width="0.5"></path>
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#fine-grid)"></rect>
+    </svg>
+  </div>
+</section>
+
+<style>
+  .hero {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-height: 100svh;
+    padding-block: 8rem var(--space-xl);
+    overflow: hidden;
+  }
+
+  .hero-grid-bg {
+    position: absolute;
+    inset: 0;
+    color: var(--border-strong);
+    opacity: 0.6;
+    mask-image: linear-gradient(to bottom, black 20%, transparent 80%);
+    -webkit-mask-image: linear-gradient(to bottom, black 20%, transparent 80%);
+    pointer-events: none;
+  }
+
+  .hero .wrapper {
+    width: min(100% - var(--space-md) * 2, 1280px);
+  }
+
+  .hero-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1.2fr 0.55fr;
+    gap: var(--space-lg);
+    align-items: end;
+    width: 100%;
+  }
+
+  .hero-content {
+    padding-block-end: var(--space-xl);
+  }
+
+  .hero-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--text-tertiary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    letter-spacing: 0.02em;
+  }
+
+  .hero h1 {
+    margin-block-end: var(--space-md);
+    font-size: clamp(2.75rem, 5.5vw, 3.5rem);
+    line-height: 1.08;
+  }
+
+  .hero h1 br {
+    display: block;
+  }
+
+  .hero-lead {
+    max-width: 52ch;
+    margin-block-end: var(--space-lg);
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+  }
+
+  .hero-panel {
+    justify-self: end;
+    align-self: end;
+    display: grid;
+    gap: var(--space-sm);
+    width: 100%;
+    max-width: 520px;
+  }
+
+  .serial-log {
+    width: 100%;
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .serial-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-block-end: var(--space-sm);
+    padding-block-end: var(--space-sm);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .serial-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-strong);
+  }
+
+  .serial-dot:first-child {
+    background: #ff5f57;
+  }
+  .serial-dot:nth-child(2) {
+    background: #febc2e;
+  }
+  .serial-dot:nth-child(3) {
+    background: #28c840;
+  }
+
+  .serial-title {
+    margin-inline-start: auto;
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+  }
+
+  .serial-lines {
+    display: grid;
+    gap: 0.5rem;
+    list-style: none;
+    padding: 0;
+    color: var(--text-secondary);
+  }
+
+  .serial-lines .ts {
+    color: var(--text-tertiary);
+    margin-inline-end: 0.5rem;
+  }
+
+  .spec-strip {
+    display: flex;
+    flex-wrap: wrap;
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+  }
+
+  .spec-item {
+    display: inline-flex;
+    align-items: center;
+    padding-block: var(--space-xs);
+    padding-inline: var(--space-sm);
+  }
+
+  .spec-item:not(:last-child) {
+    border-inline-end: 1px solid var(--border);
+  }
+
+  @media (max-width: 960px) {
+    .hero-grid {
+      grid-template-columns: 1fr;
+      gap: var(--space-lg);
+      align-items: start;
+    }
+    .hero-panel {
+      justify-self: start;
+      max-width: 100%;
+    }
+    .hero h1 {
+      max-width: none;
+    }
+  }
+</style>

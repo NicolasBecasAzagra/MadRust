@@ -1,0 +1,68 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import ScrollReveal from '../components/ScrollReveal.astro';
+import { meta } from '../data/project';
+import { url } from '../lib/paths';
+---
+
+<Base title="Page not found" description="The kernel could not find this path.">
+  <Nav />
+  <main id="main" class="not-found">
+    <div class="wrapper not-found-inner">
+      <h1 class="text-display not-found-code">404</h1>
+      <p class="text-headline not-found-message">This path does not exist.</p>
+      <p class="text-lead">The kernel could not resolve it. Try one of these instead.</p>
+
+      <nav aria-label="Useful links">
+        <ul class="not-found-links">
+          <li><a class="button button-primary" href={url('/')}>Home</a></li>
+          <li><a class="button button-secondary" href={url('/docs')}>Docs</a></li>
+          <li><a class="button button-secondary" href={url('/roadmap')}>Roadmap</a></li>
+          <li><a class="button button-secondary" href={meta.repo}>GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </main>
+  <Footer />
+  <ScrollReveal />
+</Base>
+
+<style>
+  .not-found {
+    padding-block: var(--space-2xl) var(--space-xl);
+  }
+
+  .not-found-inner {
+    text-align: center;
+  }
+
+  .not-found-code {
+    color: var(--accent);
+    margin-block-end: var(--space-md);
+  }
+
+  .not-found-message {
+    margin-block-end: var(--space-sm);
+  }
+
+  .not-found .text-lead {
+    margin-block-end: var(--space-xl);
+  }
+
+  .not-found-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-sm);
+    list-style: none;
+    padding: 0;
+  }
+
+  @media (max-width: 480px) {
+    .not-found-links .button {
+      width: 100%;
+    }
+  }
+</style>

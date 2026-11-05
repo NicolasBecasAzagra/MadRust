@@ -1,0 +1,78 @@
+---
+export interface Props {
+  items: { question: string; answer: string }[];
+}
+
+const { items } = Astro.props;
+---
+
+<div class="faq-list" role="list">
+  {
+    items.map((item) => (
+      <details class="faq-item">
+        <summary>
+          <span>{item.question}</span>
+          <span class="faq-chevron" aria-hidden="true" />
+        </summary>
+        <div class="faq-answer">
+          <p class="text-body">{item.answer}</p>
+        </div>
+      </details>
+    ))
+  }
+</div>
+
+<style>
+  .faq-list {
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  .faq-item {
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .faq-item summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    font-size: var(--text-lg);
+    font-weight: var(--font-medium);
+    color: var(--text);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .faq-item summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .faq-chevron {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-inline-end: 2px solid var(--text-tertiary);
+    border-block-end: 2px solid var(--text-tertiary);
+    transform: rotate(45deg);
+    transition: transform var(--transition-fast);
+    flex: none;
+  }
+
+  .faq-item[open] .faq-chevron {
+    transform: rotate(-135deg);
+  }
+
+  .faq-answer {
+    padding: 0 var(--space-md) var(--space-md);
+    max-width: var(--measure);
+  }
+
+  .faq-answer p {
+    margin: 0;
+  }
+</style>

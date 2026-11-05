@@ -1,0 +1,91 @@
+---
+import { benchmarkMethod } from '../../data/project';
+---
+
+<section class="datasets-section" aria-labelledby="datasets-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <p class="section-eyebrow">Datasets</p>
+      <h2 id="datasets-title" class="text-title">Raw results in the repository</h2>
+      <p class="text-lead">
+        Every measurement is committed as raw data. The published table is derived from these
+        directories.
+      </p>
+    </header>
+
+    <ul class="dataset-list">
+      {
+        benchmarkMethod.datasets.map((dataset) => (
+          <li class="dataset-card">
+            <code class="dataset-path">{dataset.path}</code>
+            <p class="text-body">{dataset.label}</p>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .datasets-section {
+    padding-block: var(--space-2xl);
+    background: var(--bg-sunk);
+    border-block: 1px solid var(--border);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-eyebrow {
+    margin-block-end: var(--space-sm);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .section-eyebrow {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .dataset-list {
+    display: grid;
+    gap: var(--space-md);
+    list-style: none;
+    padding: 0;
+  }
+
+  .dataset-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    flex-wrap: wrap;
+  }
+
+  .dataset-path {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+    background: var(--bg-sunk);
+    padding: 0.35rem 0.65rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    flex: none;
+  }
+
+  .dataset-card p {
+    margin: 0;
+  }
+</style>

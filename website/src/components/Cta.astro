@@ -1,0 +1,37 @@
+---
+import { meta } from '../data/project';
+import { url } from '../lib/paths';
+---
+
+<section class="cta-section" aria-labelledby="cta-title">
+  <div class="wrapper cta-inner">
+    <h2 id="cta-title" class="text-headline">Boot it. Measure it. Build on it.</h2>
+    <p class="text-lead">
+      MadRust is open source under {meta.license}. The repository has the kernel, the runtime, the
+      agent and the benchmark rig.
+    </p>
+    <div class="cta-actions">
+      <a class="button button-primary" href={meta.repo}>Star on GitHub</a>
+      <a class="button button-secondary" href={url('/download')}>Run in QEMU</a>
+    </div>
+  </div>
+</section>
+
+<style>
+  .cta-section {
+    padding-block: var(--space-2xl);
+  }
+
+  .cta-inner {
+    display: grid;
+    gap: var(--space-md);
+    justify-items: start;
+    max-width: 760px;
+  }
+
+  .cta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+  }
+</style>

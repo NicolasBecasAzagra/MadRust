@@ -1,0 +1,16 @@
+{
+  "name": "MadRust",
+  "short_name": "MadRust",
+  "description": "An operating system for local AI agents, written in Rust from the kernel up.",
+  "start_url": "/MadRust/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/MadRust/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
