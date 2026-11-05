@@ -1,5 +1,7 @@
 # MadRust
 
+![MadRust: the boot sequence of the kernel](docs/boot.gif)
+
 [![CI](https://github.com/NicolasBecasAzagra/MadRust/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasBecasAzagra/MadRust/actions/workflows/ci.yml)
 
 **An operating system for local AI agents, written in Rust from the kernel up.**
