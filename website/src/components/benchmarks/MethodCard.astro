@@ -5,11 +5,10 @@ import { benchmarkMethod } from '../../data/project';
 <section class="method-section" aria-labelledby="method-title">
   <div class="wrapper">
     <header class="section-header">
-      <p class="section-eyebrow">Method</p>
       <h2 id="method-title" class="text-title">How the numbers are produced</h2>
     </header>
 
-    <div class="method-card">
+    <div class="method-body">
       <p class="method-headline">{benchmarkMethod.headline}</p>
       <p class="text-body">{benchmarkMethod.detail}</p>
     </div>
@@ -19,8 +18,6 @@ import { benchmarkMethod } from '../../data/project';
 <style>
   .method-section {
     padding-block: var(--space-2xl);
-    background: var(--bg-sunk);
-    border-block: 1px solid var(--border);
   }
 
   .section-header {
@@ -28,34 +25,21 @@ import { benchmarkMethod } from '../../data/project';
     margin-block-end: var(--space-xl);
   }
 
-  .section-eyebrow {
-    margin-block-end: var(--space-sm);
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .section-eyebrow {
-      color: var(--accent-on-dark);
-    }
-  }
-
   .section-header h2 {
     margin-block-end: var(--space-sm);
   }
 
-  .method-card {
+  .method-body {
     max-width: var(--measure);
     padding: var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
     border: 1px solid var(--border);
+    background: var(--paper);
   }
 
   .method-headline {
-    font-size: var(--text-lg);
-    font-weight: var(--font-semibold);
+    font-family: var(--font-body);
+    font-size: var(--text-md);
+    font-weight: 600;
     color: var(--text);
     margin-block-end: var(--space-xs);
   }

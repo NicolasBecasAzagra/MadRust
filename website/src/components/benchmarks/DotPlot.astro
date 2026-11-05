@@ -1,0 +1,701 @@
+---
+import { benchmarks, meta } from '../../data/project';
+import { url } from '../../lib/paths';
+
+export interface Props {
+  openTable?: boolean;
+}
+
+const { openTable = true } = Astro.props;
+
+const seriesNames = {
+  madrust: 'MadRust',
+  mainline: 'Linux 7.3.0',
+  mainlineNoMitigations: 'Linux, mitigations off',
+} as const;
+
+type SeriesKey = keyof typeof seriesNames;
+
+type Row = {
+  metric: string;
+  madrust: string;
+  mainline: string;
+  mainlineNoMitigations: string;
+  group: 'operation' | 'inference' | 'agent';
+};
+
+function parseValue(s: string): { value: number; unit: string; isTime: boolean } {
+  const m = s.trim().match(/^([0-9.]+)\s*([a-zA-Z]+(?:\/[a-zA-Z]+)?)$/);
+  if (!m) return { value: 0, unit: s, isTime: false };
+  const value = parseFloat(m[1]);
+  const unit = m[2];
+  const isTime = /^(ns|us|ms|s|ms\/MiB|us\/MiB)$/.test(unit);
+  return { value, unit, isTime };
+}
+
+function toSeconds(value: number, unit: string): number {
+  if (unit === 'ns') return value * 1e-9;
+  if (unit === 'us' || unit === 'us/MiB') return value * 1e-6;
+  if (unit === 'ms' || unit === 'ms/MiB') return value * 1e-3;
+  if (unit === 's') return value;
+  return value;
+}
+
+function formatRatio(n: number): string {
+  if (n >= 100) return Math.round(n).toString();
+  if (n >= 10) return n.toFixed(1);
+  return n.toFixed(2);
+}
+
+function ratioText(row: Row): string {
+  const a = parseValue(row.madrust);
+  const b = parseValue(row.mainline);
+  if (!a.isTime && a.unit !== 'MB' && a.unit !== 'tok/s') return '';
+  let ratio: number;
+  if (a.unit === 'tok/s') {
+    ratio = a.value / b.value;
+  } else if (a.unit === 'MB') {
+    ratio = b.value / a.value;
+  } else {
+    const aSeconds = toSeconds(a.value, a.unit);
+    const bSeconds = toSeconds(b.value, b.unit);
+    ratio = bSeconds / aSeconds;
+  }
+  if (!Number.isFinite(ratio) || ratio < 1.01) return '';
+  const formatted = formatRatio(ratio);
+  if (a.unit === 'MB') return `${formatted}× less memory`;
+  if (a.unit === 'tok/s') return `${formatted}× more tokens/s`;
+  return `${formatted}× faster`;
+}
+
+const processed = benchmarks.map((row) => {
+  const parsed = {
+    madrust: parseValue(row.madrust),
+    mainline: parseValue(row.mainline),
+    mainlineNoMitigations: parseValue(row.mainlineNoMitigations),
+  };
+  return { row, parsed };
+});
+
+const operationRows = processed.filter(
+  ({ parsed }) =>
+    parsed.madrust.isTime &&
+    toSeconds(parsed.madrust.value, parsed.madrust.unit) <= 0.1 &&
+    parsed.madrust.unit !== 's'
+);
+
+const endToEndRows = processed.filter(
+  ({ parsed }) =>
+    parsed.madrust.isTime &&
+    (toSeconds(parsed.madrust.value, parsed.madrust.unit) > 0.1 || parsed.madrust.unit === 's')
+);
+
+const otherRows = processed.filter(({ parsed }) => !parsed.madrust.isTime);
+
+const opMin = 1e-7; // 100 ns
+const opMax = 1e-1; // 100 ms
+const eeMin = 1; // 1 s
+const eeMax = 1e4; // 1000 s
+
+function logPos(value: number, min: number, max: number, left: number, right: number): number {
+  const logValue = Math.log10(value);
+  const logMin = Math.log10(min);
+  const logMax = Math.log10(max);
+  const t = (logValue - logMin) / (logMax - logMin);
+  return left + t * (right - left);
+}
+
+const opTicks = [1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1];
+const opTickLabels: Record<number, string> = {
+  [1e-7]: '100 ns',
+  [1e-6]: '1 µs',
+  [1e-5]: '10 µs',
+  [1e-4]: '100 µs',
+  [1e-3]: '1 ms',
+  [1e-2]: '10 ms',
+  [1e-1]: '100 ms',
+};
+
+const eeTicks = [1, 10, 100, 1000, 10000];
+const eeTickLabels: Record<number, string> = {
+  [1]: '1 s',
+  [10]: '10 s',
+  [100]: '100 s',
+  [1000]: '1000 s',
+  [10000]: '10000 s',
+};
+
+const rowLabelX = 210;
+const chartLeft = 240;
+const chartRight = 640;
+const valueColX: Record<SeriesKey, number> = {
+  madrust: 660,
+  mainline: 790,
+  mainlineNoMitigations: 920,
+};
+const svgWidth = 1160;
+const opTop = 64;
+const opRowHeight = 48;
+const opBottom = opTop + operationRows.length * opRowHeight + 40;
+const eeTop = opBottom + 48;
+const eeRowHeight = 48;
+const eeBottom = eeTop + endToEndRows.length * eeRowHeight + 40;
+const svgHeight = eeBottom + 24;
+
+const ariaDescription = `Benchmark comparison between MadRust and mainline Linux. Operation times span ${operationRows.length} kernel measurements on a logarithmic axis from 100 nanoseconds to 100 milliseconds. End-to-end times span ${endToEndRows.length} measurements from 1 second to 10000 seconds. Memory and throughput comparisons are shown in the table below.`;
+---
+
+<section class="dotplot-section" aria-labelledby="benchmarks-chart-title">
+  <div class="wrapper">
+    <header class="section-header">
+      <h2 id="benchmarks-chart-title" class="text-title">MadRust is faster at every measured time, and uses less memory</h2>
+      <p class="text-lead">
+        Lower is faster on the same QEMU rig. The raw table below contains every measurement,
+        including the losses.
+      </p>
+    </header>
+
+    <figure class="dotplot-figure">
+      <figcaption id="dotplot-title" class="sr-only">
+        Benchmark dot plot: MadRust versus mainline Linux on a logarithmic scale
+      </figcaption>
+      <p id="dotplot-desc" class="sr-only">{ariaDescription}</p>
+
+      <p class="dotplot-hint">
+        The chart continues to the right: scroll it sideways for the two mainline series and their
+        values.
+      </p>
+
+      <div class="dotplot-scroll" tabindex="0" role="region" aria-label="Benchmark chart, scrollable on small screens">
+        <svg
+          class="dotplot-svg"
+          viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+          role="img"
+          aria-labelledby="dotplot-title dotplot-desc"
+          preserveAspectRatio="xMinYMin meet"
+        >
+          {/* Operations panel */}
+          <g class="panel">
+            <text class="panel-title" x={chartLeft} y={24}>Kernel operations (log time, 100 ns – 100 ms)</text>
+            <text class="column-header" x={valueColX.madrust} y={44} text-anchor="start">MadRust</text>
+            <text class="column-header" x={valueColX.mainline} y={44} text-anchor="start">Linux 7.3.0</text>
+            <text class="column-header" x={valueColX.mainlineNoMitigations} y={44} text-anchor="start">Linux, mitigations off</text>
+
+            {/* Grid lines and ticks */}
+            {opTicks.map((tick) => {
+              const x = logPos(tick, opMin, opMax, chartLeft, chartRight);
+              return (
+                <g class="tick">
+                  <line x1={x} y1={opTop} x2={x} y2={opBottom - 32} stroke="var(--rule)" stroke-width="1" />
+                  <text x={x} y={opBottom - 12} text-anchor="middle">{opTickLabels[tick]}</text>
+                </g>
+              );
+            })}
+            <line x1={chartLeft} y1={opBottom - 32} x2={chartRight} y2={opBottom - 32} stroke="var(--border-strong)" stroke-width="1" />
+
+            {/* Rows */}
+            {operationRows.map(({ row, parsed }, i) => {
+              const y = opTop + 18 + i * opRowHeight;
+              const ratio = ratioText(row);
+              return (
+                <g class="row">
+                  <text class="row-label" x={rowLabelX} y={y - 4} text-anchor="end">{row.metric}</text>
+                  {ratio && (
+                    <text class="row-ratio" x={rowLabelX} y={y + 12} text-anchor="end">{ratio}</text>
+                  )}
+                  {(['madrust', 'mainline', 'mainlineNoMitigations'] as SeriesKey[]).map((key) => {
+                    const p = parsed[key];
+                    if (!p.isTime) return null;
+                    const valueSeconds = toSeconds(p.value, p.unit);
+                    const x = logPos(valueSeconds, opMin, opMax, chartLeft, chartRight);
+                    const isOut = x < chartLeft || x > chartRight;
+                    if (isOut) return null;
+                    return (
+                      <g class={`series series-${key}`}>
+                        <line
+                          x1={x}
+                          y1={y - 6}
+                          x2={x}
+                          y2={opBottom - 32}
+                          stroke="var(--border)"
+                          stroke-width="1"
+                          stroke-dasharray="2,2"
+                        />
+                        {key === 'madrust' && (
+                          <circle cx={x} cy={y} r="4" fill="var(--accent)" />
+                        )}
+                        {key === 'mainline' && (
+                          <circle cx={x} cy={y} r="3.5" fill="none" stroke="var(--ink-secondary)" stroke-width="1.5" />
+                        )}
+                        {key === 'mainlineNoMitigations' && (
+                          <rect x={x - 3} y={y - 3} width="6" height="6" fill="var(--ink-tertiary)" />
+                        )}
+                        <text class="value-label" x={valueColX[key]} y={y + 4} text-anchor="start">{row[key]}</text>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </g>
+
+          {/* End-to-end panel */}
+          <g class="panel">
+            <text class="panel-title" x={chartLeft} y={opBottom + 24}>End-to-end (log time, 1 s – 10000 s)</text>
+            <text class="column-header" x={valueColX.madrust} y={opBottom + 44} text-anchor="start">MadRust</text>
+            <text class="column-header" x={valueColX.mainline} y={opBottom + 44} text-anchor="start">Linux 7.3.0</text>
+            <text class="column-header" x={valueColX.mainlineNoMitigations} y={opBottom + 44} text-anchor="start">Linux, mitigations off</text>
+
+            {eeTicks.map((tick) => {
+              const x = logPos(tick, eeMin, eeMax, chartLeft, chartRight);
+              return (
+                <g class="tick">
+                  <line x1={x} y1={eeTop} x2={x} y2={eeBottom - 32} stroke="var(--rule)" stroke-width="1" />
+                  <text x={x} y={eeBottom - 12} text-anchor="middle">{eeTickLabels[tick]}</text>
+                </g>
+              );
+            })}
+            <line x1={chartLeft} y1={eeBottom - 32} x2={chartRight} y2={eeBottom - 32} stroke="var(--border-strong)" stroke-width="1" />
+
+            {endToEndRows.map(({ row, parsed }, i) => {
+              const y = eeTop + 18 + i * eeRowHeight;
+              const ratio = ratioText(row);
+              return (
+                <g class="row">
+                  <text class="row-label" x={rowLabelX} y={y - 4} text-anchor="end">{row.metric}</text>
+                  {ratio && (
+                    <text class="row-ratio" x={rowLabelX} y={y + 12} text-anchor="end">{ratio}</text>
+                  )}
+                  {(['madrust', 'mainline', 'mainlineNoMitigations'] as SeriesKey[]).map((key) => {
+                    const p = parsed[key];
+                    if (!p.isTime) return null;
+                    const valueSeconds = toSeconds(p.value, p.unit);
+                    const x = logPos(valueSeconds, eeMin, eeMax, chartLeft, chartRight);
+                    const isOut = x < chartLeft || x > chartRight;
+                    if (isOut) return null;
+                    return (
+                      <g class={`series series-${key}`}>
+                        <line
+                          x1={x}
+                          y1={y - 6}
+                          x2={x}
+                          y2={eeBottom - 32}
+                          stroke="var(--border)"
+                          stroke-width="1"
+                          stroke-dasharray="2,2"
+                        />
+                        {key === 'madrust' && (
+                          <circle cx={x} cy={y} r="4" fill="var(--accent)" />
+                        )}
+                        {key === 'mainline' && (
+                          <circle cx={x} cy={y} r="3.5" fill="none" stroke="var(--ink-secondary)" stroke-width="1.5" />
+                        )}
+                        {key === 'mainlineNoMitigations' && (
+                          <rect x={x - 3} y={y - 3} width="6" height="6" fill="var(--ink-tertiary)" />
+                        )}
+                        <text class="value-label" x={valueColX[key]} y={y + 4} text-anchor="start">{row[key]}</text>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+      </div>
+
+      {otherRows.length > 0 && (
+        <div class="other-comparisons">
+          <p class="other-title">Memory and throughput</p>
+          <div class="other-grid">
+            <div class="other-row other-header" aria-hidden="true">
+              <span class="other-metric">Metric</span>
+              <span class="other-values">
+                <span class="series-madrust">MadRust</span>
+                <span class="series-mainline">Linux 7.3.0</span>
+                <span class="series-nomit">Linux, mitigations off</span>
+              </span>
+              <span class="other-ratio">Ratio</span>
+            </div>
+            {otherRows.map(({ row }) => (
+              <div class="other-row">
+                <span class="other-metric">{row.metric}</span>
+                <span class="other-values">
+                  <span class="series-madrust">{row.madrust}</span>
+                  <span class="series-mainline">{row.mainline}</span>
+                  <span class="series-nomit">{row.mainlineNoMitigations}</span>
+                </span>
+                {ratioText(row) && <span class="other-ratio">{ratioText(row)}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div class="legend">
+        <span class="legend-item">
+          <svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="var(--accent)" /></svg>
+          MadRust
+        </span>
+        <span class="legend-item">
+          <svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3.5" fill="none" stroke="var(--ink-secondary)" stroke-width="1.5" /></svg>
+          Linux 7.3.0
+        </span>
+        <span class="legend-item">
+          <svg width="12" height="12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" fill="var(--ink-tertiary)" /></svg>
+          Linux, mitigations off
+        </span>
+      </div>
+
+      <p class="dotplot-note">
+        Logarithmic scale: zero is not representable. The position of each mark encodes the order
+        of magnitude, not the absolute difference.
+      </p>
+
+      <details class="raw-table" open={openTable}>
+        <summary>Raw measurements</summary>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Raw benchmark measurements table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Metric</th>
+                <th scope="col">MadRust</th>
+                <th scope="col">Linux 7.3.0</th>
+                <th scope="col">Linux, mitigations off</th>
+              </tr>
+            </thead>
+            <tbody>
+              {benchmarks.map((row) => (
+                <tr>
+                  <th scope="row">{row.metric}</th>
+                  <td class="tabular">{row.madrust}</td>
+                  <td class="tabular">{row.mainline}</td>
+                  <td class="tabular">{row.mainlineNoMitigations}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </figure>
+
+    <p class="section-footer">
+      <a class="button button-secondary" href={`${meta.repo}/blob/main/REPORT.md`}>
+        Read the full report
+      </a>
+      <a class="button button-secondary" href={url('/docs/benchmarking')}>Methodology</a>
+    </p>
+  </div>
+</section>
+
+<style>
+  .dotplot-section {
+    padding-block: var(--space-2xl);
+    background: var(--paper-elevated);
+    border-block: 1px solid var(--border);
+  }
+
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-header h2 {
+    margin-block-end: var(--space-sm);
+  }
+
+  .dotplot-figure {
+    margin: 0;
+  }
+
+  .dotplot-scroll {
+    overflow-x: auto;
+    padding-block-end: var(--space-sm);
+    /* CSS only scroll shadow: the edge that still has content shows a shade,
+       so the reader can tell that the chart continues to the right. */
+    background:
+      linear-gradient(to right, var(--paper) 40%, transparent) left center / 32px 100% no-repeat local,
+      linear-gradient(to left, var(--paper) 40%, transparent) right center / 32px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, var(--rule-strong, rgba(0, 0, 0, 0.14)), transparent) left center / 14px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, var(--rule-strong, rgba(0, 0, 0, 0.14)), transparent) right center / 14px 100% no-repeat scroll;
+  }
+
+  .dotplot-hint {
+    display: none;
+    margin-block-start: var(--space-xs);
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+  }
+
+  @media (max-width: 700px) {
+    .dotplot-hint {
+      display: block;
+    }
+  }
+
+  .dotplot-svg {
+    min-width: 1160px;
+    width: 100%;
+    height: auto;
+    font-family: var(--font-body);
+  }
+
+  .dotplot-svg text {
+    font-size: 11px;
+    fill: var(--text-secondary);
+  }
+
+  .panel-title {
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 700;
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    fill: var(--text);
+  }
+
+  .column-header {
+    font-family: var(--font-body);
+    font-size: 9px;
+    font-weight: 500;
+    fill: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .row-label {
+    font-family: var(--font-body);
+    font-size: 12px;
+    fill: var(--text);
+  }
+
+  .row-ratio {
+    font-family: var(--font-body);
+    font-size: 10px;
+    fill: var(--accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .row-ratio {
+      fill: var(--accent-on-dark);
+    }
+  }
+
+  .value-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .series-madrust .value-label {
+    fill: var(--accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .series-madrust .value-label {
+      fill: var(--accent-on-dark);
+    }
+  }
+
+  .other-comparisons {
+    margin-block-start: var(--space-md);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    background: var(--paper);
+  }
+
+  .other-title {
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text);
+    margin-block-end: var(--space-sm);
+  }
+
+  .other-grid {
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  .other-row {
+    display: grid;
+    grid-template-columns: 1.5fr 1.5fr 1fr;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+  }
+
+  .other-row:first-child {
+    border-top: 1px solid var(--border);
+  }
+
+  .other-header {
+    font-weight: 500;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: var(--text-xs);
+  }
+
+  .other-metric {
+    color: var(--text);
+  }
+
+  .other-values {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .series-madrust {
+    color: var(--accent);
+  }
+
+  .series-mainline {
+    color: var(--text-secondary);
+  }
+
+  .series-nomit {
+    color: var(--text-tertiary);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .series-madrust {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .other-ratio {
+    text-align: end;
+    color: var(--accent);
+    font-size: var(--text-xs);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .other-ratio {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-md);
+    margin-block-start: var(--space-md);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .dotplot-note {
+    margin-block-start: var(--space-sm);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+  }
+
+  .raw-table {
+    margin-block-start: var(--space-lg);
+    border: 1px solid var(--border);
+    background: var(--paper);
+  }
+
+  .raw-table summary {
+    padding: var(--space-sm) var(--space-md);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text);
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .raw-table summary:hover {
+    background: var(--paper-sunk);
+  }
+
+  .raw-table table {
+    width: 100%;
+    min-width: 640px;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .raw-table th,
+  .raw-table td {
+    padding: var(--space-sm) var(--space-md);
+    border-top: 1px solid var(--border);
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .raw-table th {
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .raw-table tbody th {
+    color: var(--text);
+  }
+
+  .section-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin-block-start: var(--space-xl);
+  }
+
+  @media (max-width: 760px) {
+    .other-row {
+      grid-template-columns: 1fr;
+      gap: var(--space-xs);
+    }
+    .other-ratio {
+      text-align: start;
+    }
+  }
+</style>
+
+<script>
+  const figure = document.querySelector('.dotplot-figure');
+  if (figure && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const svg = figure.querySelector('.dotplot-svg');
+    if (svg) {
+      svg.classList.add('js-animate');
+      const rows = svg.querySelectorAll('.row');
+      rows.forEach((row) => (row as HTMLElement).style.opacity = '0');
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              rows.forEach((row, i) => {
+                (row as HTMLElement).style.transition = `opacity 350ms ease ${i * 40}ms`;
+                (row as HTMLElement).style.opacity = '1';
+              });
+              observer.disconnect();
+            }
+          });
+        },
+        { threshold: 0.2 }
+      );
+      observer.observe(svg);
+    }
+  }
+</script>

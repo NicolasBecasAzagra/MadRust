@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" aria-hidden="true">
+  <rect x="2" y="5" width="24" height="22" rx="1"/>
+  <line x1="6" y1="12" x2="22" y2="12"/>
+  <line x1="6" y1="17" x2="18" y2="17"/>
+  <line x1="6" y1="22" x2="12" y2="22"/>
+  <text x="34" y="21" fill="currentColor" stroke="none" font-family="Martian Mono, JetBrains Mono, monospace" font-size="15" font-weight="700" letter-spacing="-0.02em">MadRust</text>
+</svg>

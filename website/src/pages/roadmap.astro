@@ -21,7 +21,6 @@ const description =
     <section class="page-hero" aria-labelledby="roadmap-title">
       <div class="wrapper">
         <header class="section-header">
-          <p class="section-eyebrow">Project tracking</p>
           <h1 id="roadmap-title" class="text-display">Every milestone has an exit criterion</h1>
           <p class="text-lead">
             Each step ends with a sentence a machine can check, not a feeling or a demo. The state
@@ -39,7 +38,7 @@ const description =
 
     <section class="cta-section" aria-labelledby="roadmap-cta-title">
       <div class="wrapper">
-        <div class="cta-card reveal">
+        <div class="cta-inner">
           <h2 id="roadmap-cta-title" class="text-headline">Read the design</h2>
           <p class="text-body">
             The architecture document explains why the milestones are ordered this way and how each
@@ -59,25 +58,12 @@ const description =
 
 <style>
   .page-hero {
-    padding-block-start: calc(4rem + var(--space-2xl));
+    padding-block-start: calc(3.5rem + var(--space-2xl));
     padding-block-end: var(--space-xl);
   }
 
   .section-header {
     max-width: var(--measure);
-  }
-
-  .section-eyebrow {
-    margin-block-end: var(--space-sm);
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .section-eyebrow {
-      color: var(--accent-on-dark);
-    }
   }
 
   .section-header h1 {
@@ -88,29 +74,24 @@ const description =
     padding-block: var(--space-2xl);
   }
 
-  .cta-card {
+  .cta-inner {
     max-width: var(--measure);
-    margin-inline: auto;
     padding: var(--space-lg);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
-    text-align: center;
+    background: var(--paper-elevated);
   }
 
-  .cta-card h2 {
+  .cta-inner h2 {
     margin-block-end: var(--space-sm);
   }
 
-  .cta-card p {
+  .cta-inner p {
     margin-block-end: var(--space-md);
   }
 
   .cta-actions {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
     gap: var(--space-sm);
   }
 </style>

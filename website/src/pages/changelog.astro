@@ -2,41 +2,46 @@
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import ScrollReveal from '../components/ScrollReveal.astro';
 import ChangelogList from '../components/changelog/ChangelogList.astro';
+import { meta } from '../data/project';
 ---
 
 <Base title="Changelog" description="Every commit of the MadRust repository, grouped by month.">
   <Nav />
   <main id="main" class="changelog-page">
     <div class="wrapper">
-      <header class="page-header reveal">
-        <p class="section-eyebrow">History</p>
-        <h1 class="text-title">Every commit of the repository, from the source of truth.</h1>
+      <header class="page-header">
+        <h1 class="text-title">Every commit of the repository</h1>
+        <p class="text-lead">
+          Built from the git log at build time. Each line links to the commit on GitHub.
+        </p>
       </header>
 
       <ChangelogList />
+
+      <p class="changelog-source">
+        <a href={meta.repo}>View the repository on GitHub</a>
+      </p>
     </div>
   </main>
   <Footer />
-  <ScrollReveal />
 </Base>
 
 <style>
   .changelog-page {
-    padding-block: var(--space-2xl) var(--space-xl);
+    padding-block: calc(4rem + var(--space-2xl)) var(--space-xl);
   }
 
   .page-header {
+    max-width: var(--measure);
     margin-block-end: var(--space-xl);
   }
 
-  .section-eyebrow {
-    font-size: var(--text-sm);
-    font-weight: var(--font-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--accent);
+  .page-header h1 {
     margin-block-end: var(--space-sm);
+  }
+
+  .changelog-source {
+    margin-block-start: var(--space-xl);
   }
 </style>

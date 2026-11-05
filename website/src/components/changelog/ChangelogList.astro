@@ -29,7 +29,7 @@ function formatDate(iso: string): string {
       </p>
     </div>
   ) : (
-    <div class="changelog-timeline">
+    <div class="changelog-log">
       {grouped.map(({ month, commits }) => (
         <section class="month-group" aria-labelledby={`month-${month}`}>
           <h2 id={`month-${month}`} class="month-heading">
@@ -38,17 +38,18 @@ function formatDate(iso: string): string {
           <ol class="commit-list">
             {commits.map((commit) => (
               <li class="commit-item">
-                <span class="commit-type">{commit.type}</span>
-                {commit.scope && <span class="commit-scope">{commit.scope}</span>}
-                <span class="commit-subject">{commit.subject}</span>
                 <a
-                  class="commit-link"
+                  class="commit-hash"
                   href={`${repoCommitUrl}/${commit.hash}`}
                   target="_blank"
                   rel="noopener noreferrer"
+                  aria-label={`Commit ${commit.short}`}
                 >
                   <code>{commit.short}</code>
                 </a>
+                <span class="commit-type">{commit.type}</span>
+                {commit.scope && <span class="commit-scope">{commit.scope}</span>}
+                <span class="commit-subject">{commit.subject}</span>
                 <time class="commit-date" datetime={commit.date}>
                   {formatDate(commit.date)}
                 </time>
@@ -64,113 +65,148 @@ function formatDate(iso: string): string {
 <style>
   .empty-state {
     padding: var(--space-xl);
-    border-radius: var(--radius);
-    background: var(--bg-elevated);
     border: 1px solid var(--border);
+    background: var(--paper-elevated);
   }
 
   .empty-state .text-headline {
     margin-block-end: var(--space-sm);
   }
 
-  .changelog-timeline {
+  .changelog-log {
     display: grid;
     gap: var(--space-xl);
   }
 
   .month-group {
     display: grid;
-    gap: var(--space-md);
+    gap: var(--space-sm);
   }
 
   .month-heading {
-    font-size: var(--text-headline);
-    font-weight: var(--font-semibold);
-    letter-spacing: -0.02em;
+    font-family: var(--font-display);
+    font-size: var(--text-base);
+    font-weight: var(--font-bold);
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
     color: var(--text);
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--border-strong);
   }
 
   .commit-list {
     list-style: none;
     padding: 0;
-    display: grid;
-    gap: var(--space-sm);
+    margin: 0;
   }
 
   .commit-item {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: auto auto auto 1fr auto;
     align-items: baseline;
-    gap: var(--space-xs) var(--space-sm);
-    padding: var(--space-md);
-    border-radius: var(--radius);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
+    gap: var(--space-sm);
+    min-height: var(--row-height);
+    padding: 0 var(--space-sm);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .commit-item:hover {
+    background: var(--paper-elevated);
+  }
+
+  .commit-hash {
+    color: var(--text-tertiary);
+    text-decoration: none;
+    font-family: var(--font-mono);
+  }
+
+  .commit-hash:hover {
+    color: var(--accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .commit-hash:hover {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .commit-hash code {
+    font-family: inherit;
+    background: transparent;
+    padding: 0;
   }
 
   .commit-type {
-    flex: none;
-    padding: 0.15rem 0.45rem;
-    border-radius: 999px;
-    background: var(--bg-sunk);
-    border: 1px solid var(--border-strong);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    font-weight: var(--font-medium);
     color: var(--text-secondary);
+    text-transform: lowercase;
   }
 
   .commit-type::before {
-    content: '';
-    display: inline-block;
-    width: 0.4rem;
-    height: 0.4rem;
-    margin-inline-end: 0.35rem;
-    border-radius: 50%;
-    background: var(--accent);
-    vertical-align: middle;
+    content: '[';
+    color: var(--text-tertiary);
+  }
+
+  .commit-type::after {
+    content: ']';
+    color: var(--text-tertiary);
   }
 
   .commit-scope {
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
     color: var(--text-tertiary);
   }
 
   .commit-scope::before {
     content: '(';
+    color: var(--text-tertiary);
   }
 
   .commit-scope::after {
     content: ')';
+    color: var(--text-tertiary);
   }
 
   .commit-subject {
-    flex: 1 1 20ch;
     color: var(--text);
-    font-weight: var(--font-medium);
-  }
-
-  .commit-subject::first-letter {
-    text-transform: uppercase;
-  }
-
-  .commit-link {
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-  }
-
-  .commit-link code {
-    padding: 0.15em 0.35em;
-    border-radius: 4px;
-    background: var(--bg-sunk);
+    line-height: var(--leading-normal);
   }
 
   .commit-date {
-    flex: none;
-    font-size: var(--text-sm);
     color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 760px) {
+    .commit-item {
+      grid-template-columns: auto 1fr auto;
+      grid-template-rows: auto auto;
+      gap: var(--space-xs) var(--space-sm);
+      padding: var(--space-sm);
+    }
+
+    .commit-hash {
+      grid-row: 1;
+      grid-column: 1;
+    }
+
+    .commit-subject {
+      grid-row: 1;
+      grid-column: 2;
+      white-space: normal;
+    }
+
+    .commit-date {
+      grid-row: 1;
+      grid-column: 3;
+    }
+
+    .commit-type,
+    .commit-scope {
+      grid-row: 2;
+      grid-column: 2;
+    }
   }
 </style>

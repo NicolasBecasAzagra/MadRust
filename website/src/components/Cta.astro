@@ -4,16 +4,17 @@ import { url } from '../lib/paths';
 ---
 
 <section class="cta-section" aria-labelledby="cta-title">
-  <div class="wrapper cta-inner">
-    <h2 id="cta-title" class="text-headline">Boot it. Measure it. Build on it.</h2>
-    <p class="text-lead">
-      MadRust is open source under {meta.license}. The repository has the kernel, the runtime, the
-      agent and the benchmark rig.
-    </p>
-    <div class="cta-actions">
-      <a class="button button-primary" href={meta.repo}>Star on GitHub</a>
-      <a class="button button-secondary" href={url('/download')}>Run in QEMU</a>
-    </div>
+  <div class="wrapper">
+    <div class="cta-rule" aria-hidden="true"></div>
+    <h2 id="cta-title" class="cta-claim">
+      The kernel is the comparison. Every measurement is published, every loss included.
+    </h2>
+    <nav class="cta-links" aria-label="Next steps">
+      <a href={url('/docs')}>Docs</a>
+      <a href={url('/roadmap')}>Roadmap</a>
+      <a href={url('/benchmarks')}>Benchmarks</a>
+      <a href={meta.repo}>GitHub</a>
+    </nav>
   </div>
 </section>
 
@@ -22,16 +23,46 @@ import { url } from '../lib/paths';
     padding-block: var(--space-2xl);
   }
 
-  .cta-inner {
-    display: grid;
-    gap: var(--space-md);
-    justify-items: start;
-    max-width: 760px;
+  .cta-rule {
+    height: 1px;
+    background: var(--border-strong);
+    margin-block-end: var(--space-xl);
   }
 
-  .cta-actions {
+  .cta-claim {
+    max-width: var(--measure);
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    line-height: var(--leading-snug);
+    font-weight: 500;
+    color: var(--text);
+    margin-block-end: var(--space-lg);
+  }
+
+  .cta-links {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-sm);
+  }
+
+  .cta-links a {
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cta-links a:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .cta-links a:hover {
+      color: var(--accent-on-dark);
+      border-color: var(--accent-on-dark);
+    }
   }
 </style>

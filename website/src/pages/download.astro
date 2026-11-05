@@ -2,19 +2,15 @@
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import ScrollReveal from '../components/ScrollReveal.astro';
-import Requirements from '../components/download/Requirements.astro';
-import CommandList from '../components/download/CommandList.astro';
-import RepoLayout from '../components/download/RepoLayout.astro';
-import CodeBlock from '../components/download/CodeBlock.astro';
+import TerminalBlock from '../components/TerminalBlock.astro';
 import { url } from '../lib/paths';
-import { meta, build } from '../data/project';
+import { meta, build, repository } from '../data/project';
 
 const title = 'Download';
 const description =
   'Build MadRust from source. There are no prebuilt releases yet; the kernel is compiled from the pinned Rust nightly toolchain.';
 
-const cloneUrl = meta.repo;
+const cloneCommand = `git clone ${meta.repo}.git`;
 ---
 
 <Base title={title} description={description}>
@@ -23,78 +19,126 @@ const cloneUrl = meta.repo;
     <section class="page-hero" aria-labelledby="download-title">
       <div class="wrapper">
         <header class="section-header">
-          <p class="section-eyebrow">Get the code</p>
           <h1 id="download-title" class="text-display">Build it from source</h1>
           <p class="text-lead">
-            MadRust is a research kernel in active development. There are no signed binaries or
-            releases yet; the only supported way to run it is to build it yourself.
+            MadRust is a research kernel in active development. There are no signed binaries and no
+            GitHub releases yet; the only supported way to run it is to build it yourself.
           </p>
-          <div class="release-note">
-            <p class="text-small">
-              GitHub releases: none yet. The repository is the source of truth.
-            </p>
-          </div>
         </header>
       </div>
     </section>
 
-    <Requirements />
+    <section class="clone-section" aria-labelledby="clone-title">
+      <div class="wrapper">
+        <h2 id="clone-title" class="section-title">Clone</h2>
+        <TerminalBlock code={cloneCommand} label="Clone the repository" />
+      </div>
+    </section>
+
+    <section class="requirements-section" aria-labelledby="requirements-title">
+      <div class="wrapper">
+        <h2 id="requirements-title" class="section-title">Requirements</h2>
+        <div class="dense-table-wrap" tabindex="0" role="region" aria-label="Build requirements">
+          <table class="dense-table">
+            <tbody>
+              {
+                build.requirements.map((req) => (
+                  <tr>
+                    <th scope="row">{req.name}</th>
+                    <td>{req.detail}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
 
     <section class="toolchain-section" aria-labelledby="toolchain-title">
       <div class="wrapper">
-        <header class="section-header">
-          <p class="section-eyebrow">Toolchain</p>
-          <h2 id="toolchain-title" class="text-title">Install the pinned nightly</h2>
-          <p class="text-lead">
-            The toolchain is pinned in rust-toolchain.toml. The command below installs the required
-            components.
-          </p>
-        </header>
-        <CodeBlock code={build.install} label="Install Rust toolchain" />
+        <h2 id="toolchain-title" class="section-title">Install the pinned toolchain</h2>
+        <p class="text-body">
+          The toolchain is pinned in <code>rust-toolchain.toml</code>. This command installs the
+          required components.
+        </p>
+        <TerminalBlock code={build.install} label="Rust toolchain install" />
       </div>
     </section>
 
-    <CommandList />
+    <section class="commands-section" aria-labelledby="commands-title">
+      <div class="wrapper">
+        <h2 id="commands-title" class="section-title">Build, test and run</h2>
+        <div class="command-list">
+          {
+            build.commands.map((command) => (
+              <div class="command-row">
+                <TerminalBlock code={command.cmd} label={command.what} />
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </section>
 
     <section class="qemu-section" aria-labelledby="qemu-title">
       <div class="wrapper">
-        <header class="section-header">
-          <p class="section-eyebrow">Run</p>
-          <h2 id="qemu-title" class="text-title">Boot in QEMU</h2>
-          <p class="text-lead">{build.qemuNote}</p>
-        </header>
-        <CodeBlock code={build.qemu} label="QEMU command" />
+        <h2 id="qemu-title" class="section-title">Boot in QEMU</h2>
+        <TerminalBlock code={build.qemu} label="QEMU command" />
+        <p class="qemu-note">{build.qemuNote}</p>
       </div>
     </section>
 
     <section class="debug-section" aria-labelledby="debug-title">
       <div class="wrapper">
-        <header class="section-header">
-          <p class="section-eyebrow">Debug</p>
-          <h2 id="debug-title" class="text-title">Attach a debugger</h2>
-          <p class="text-lead">{build.debugNote}</p>
-        </header>
-        <CodeBlock code={build.debug} label="Debug command" />
+        <h2 id="debug-title" class="section-title">Attach a debugger</h2>
+        <TerminalBlock code={build.debug} label="Debug command" />
+        <p class="debug-note">{build.debugNote}</p>
       </div>
     </section>
 
-    <RepoLayout />
+    <section class="repo-section" aria-labelledby="repo-title">
+      <div class="wrapper">
+        <h2 id="repo-title" class="section-title">Repository layout</h2>
+        <div class="dense-table-wrap" tabindex="0" role="region" aria-label="Repository layout">
+          <table class="dense-table repo-table">
+            <thead>
+              <tr>
+                <th scope="col">Crate / directory</th>
+                <th scope="col">What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                repository.map((item) => (
+                  <tr>
+                    <td><code>{item.crate}</code></td>
+                    <td>{item.what}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
 
     <section class="cta-section" aria-labelledby="download-cta-title">
       <div class="wrapper">
-        <div class="cta-card reveal">
-          <h2 id="download-cta-title" class="text-headline">Clone the repository</h2>
-          <CodeBlock code={`git clone ${cloneUrl}`} label="Clone command" />
+        <div class="cta-inner">
+          <h2 id="download-cta-title" class="text-headline">Next</h2>
+          <p class="text-body">
+            The benchmarking document explains the protocol; the report contains every measurement.
+          </p>
           <div class="cta-actions">
-            <a class="button button-secondary" href={url('/benchmarks')}>See benchmarks</a>
-            <a class="button button-secondary" href={url('/docs/benchmarking')}>Benchmarking docs</a>
+            <a class="button button-secondary" href={url('/docs/benchmarking')}>Benchmarking</a>
+            <a class="button button-secondary" href={url('/docs/architecture')}>Architecture</a>
           </div>
         </div>
       </div>
     </section>
   </main>
   <Footer />
-  <ScrollReveal />
 </Base>
 
 <style>
@@ -107,76 +151,122 @@ const cloneUrl = meta.repo;
     max-width: var(--measure);
   }
 
-  .section-eyebrow {
-    margin-block-end: var(--space-sm);
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .section-eyebrow {
-      color: var(--accent-on-dark);
-    }
-  }
-
   .section-header h1 {
     margin-block-end: var(--space-md);
   }
 
-  .release-note {
-    margin-block-start: var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius);
-    background: var(--bg-sunk);
-    border: 1px solid var(--border);
-    display: inline-block;
+  .section-title {
+    font-family: var(--font-display);
+    font-size: var(--text-headline);
+    line-height: var(--leading-snug);
+    font-weight: var(--font-bold);
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    letter-spacing: -0.02em;
+    text-transform: uppercase;
+    margin-block-end: var(--space-md);
   }
 
-  .release-note p {
-    margin: 0;
-  }
-
+  .clone-section,
+  .requirements-section,
   .toolchain-section,
+  .commands-section,
   .qemu-section,
-  .debug-section {
-    padding-block: var(--space-2xl);
+  .debug-section,
+  .repo-section {
+    padding-block: var(--space-xl);
+    border-bottom: 1px solid var(--border);
   }
 
-  .qemu-section,
-  .debug-section {
-    background: var(--bg-sunk);
-    border-block: 1px solid var(--border);
+  .toolchain-section .text-body,
+  .qemu-section .qemu-note,
+  .debug-section .debug-note {
+    max-width: var(--measure);
+    margin-block-start: var(--space-md);
+  }
+
+  .dense-table-wrap {
+    overflow-x: auto;
+  }
+
+  .dense-table {
+    width: 100%;
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .dense-table th,
+  .dense-table td {
+    padding: 0 var(--space-md);
+    height: var(--row-height);
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  .dense-table thead th {
+    color: var(--text-tertiary);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: var(--text-xs);
+  }
+
+  .dense-table th[scope='row'],
+  .dense-table td:first-child {
+    font-family: var(--font-mono);
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .dense-table td {
+    color: var(--text-secondary);
+  }
+
+  .command-list {
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .command-row :global(.terminal-block) {
+    margin: 0;
   }
 
   .cta-section {
     padding-block: var(--space-2xl);
   }
 
-  .cta-card {
+  .cta-inner {
     max-width: var(--measure);
-    margin-inline: auto;
     padding: var(--space-lg);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
-    text-align: center;
+    background: var(--paper-elevated);
   }
 
-  .cta-card h2 {
+  .cta-inner h2 {
     margin-block-end: var(--space-sm);
   }
 
-  .cta-card .code-block {
-    text-align: left;
+  .cta-inner p {
+    margin-block-end: var(--space-md);
   }
 
   .cta-actions {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
     gap: var(--space-sm);
-    margin-block-start: var(--space-md);
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--paper-sunk);
+    padding: 0.1em 0.25em;
+  }
+
+  @media (max-width: 760px) {
+    .repo-table {
+      min-width: 560px;
+    }
   }
 </style>

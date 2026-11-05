@@ -2,7 +2,6 @@
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import ScrollReveal from '../components/ScrollReveal.astro';
 import { meta } from '../data/project';
 import { url } from '../lib/paths';
 ---
@@ -26,12 +25,11 @@ import { url } from '../lib/paths';
     </div>
   </main>
   <Footer />
-  <ScrollReveal />
 </Base>
 
 <style>
   .not-found {
-    padding-block: var(--space-2xl) var(--space-xl);
+    padding-block: calc(4rem + var(--space-2xl)) var(--space-xl);
   }
 
   .not-found-inner {

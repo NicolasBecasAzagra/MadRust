@@ -39,7 +39,6 @@ const activeNextId = phases
 <section class="milestones-section" aria-labelledby="milestones-title">
   <div class="wrapper">
     <header class="section-header">
-      <p class="section-eyebrow">Milestones</p>
       <h2 id="milestones-title" class="text-title">A ladder of exit criteria</h2>
       <p class="text-lead">
         Every milestone ends with a sentence a machine can check. No hand-waving, no “almost done”.
@@ -56,24 +55,32 @@ const activeNextId = phases
                 const m = byId.get(id);
                 if (!m) return null;
                 const isActiveNext = m.state === 'next' && m.id === activeNextId;
+                const stateIcon = m.state === 'done' ? '✓' : m.state === 'next' ? '→' : '—';
                 return (
-                  <li class={`milestone-card state-${m.state} ${isActiveNext ? 'is-active-next' : ''}`}>
-                    <div class="milestone-meta">
-                      <span class="milestone-id">{m.id}</span>
-                      <span class={`badge badge-${m.state} ${isActiveNext ? 'badge-active-next' : ''}`}>{stateLabel[m.state]}</span>
-                    </div>
-                    <h4>{m.name}</h4>
-                    <p class="text-body">{m.delivers}</p>
-                    {m.exit && (
-                      <p class="milestone-exit">
-                        <span>Exit:</span> {m.exit}
-                      </p>
-                    )}
-                    {m.verification && (
-                      <p class="milestone-verification">
-                        <span>Verification:</span> {m.verification}
-                      </p>
-                    )}
+                  <li class={`milestone-item state-${m.state} ${isActiveNext ? 'is-active-next' : ''}`}>
+                    <details class="milestone-details">
+                      <summary>
+                        <span class="milestone-id">{m.id}</span>
+                        <span class="milestone-name">{m.name}</span>
+                        <span class="milestone-state" aria-label={`State: ${stateLabel[m.state]}`}>
+                          <span class="state-icon" aria-hidden="true">{stateIcon}</span>
+                          <span class="state-text">{stateLabel[m.state]}</span>
+                        </span>
+                      </summary>
+                      <div class="milestone-body">
+                        <p class="delivers">{m.delivers}</p>
+                        {m.exit && (
+                          <p class="criterion">
+                            <span>Exit:</span> {m.exit}
+                          </p>
+                        )}
+                        {m.verification && (
+                          <p class="criterion">
+                            <span>Verification:</span> {m.verification}
+                          </p>
+                        )}
+                      </div>
+                    </details>
                   </li>
                 );
               })}
@@ -90,13 +97,20 @@ const activeNextId = phases
               const m = byId.get(id);
               if (!m) return null;
               return (
-                <li class={`milestone-card state-${m.state}`}>
-                  <div class="milestone-meta">
-                    <span class="milestone-id">{m.id}</span>
-                    <span class={`badge badge-${m.state}`}>{stateLabel[m.state]}</span>
-                  </div>
-                  <h4>{m.name}</h4>
-                  <p class="text-body">{m.delivers}</p>
+                <li class="milestone-item state-deferred">
+                  <details class="milestone-details">
+                    <summary>
+                      <span class="milestone-id">{m.id}</span>
+                      <span class="milestone-name">{m.name}</span>
+                      <span class="milestone-state" aria-label="State: Deferred">
+                        <span class="state-icon" aria-hidden="true">—</span>
+                        <span class="state-text">Deferred</span>
+                      </span>
+                    </summary>
+                    <div class="milestone-body">
+                      <p class="delivers">{m.delivers}</p>
+                    </div>
+                  </details>
                 </li>
               );
             })
@@ -116,11 +130,13 @@ const activeNextId = phases
     padding-block: var(--space-2xl);
   }
 
-  .section-eyebrow {
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-header h2 {
     margin-block-end: var(--space-sm);
-    color: var(--text-tertiary);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
   }
 
   .phases {
@@ -139,8 +155,12 @@ const activeNextId = phases
   .phase-title {
     position: sticky;
     top: 5rem;
+    font-family: var(--font-display);
     font-size: var(--text-base);
-    font-weight: var(--font-semibold);
+    font-weight: 700;
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
     color: var(--text);
     padding-block-start: var(--space-sm);
   }
@@ -150,133 +170,122 @@ const activeNextId = phases
   }
 
   .milestone-list {
-    display: grid;
-    gap: var(--space-sm);
     list-style: none;
     padding: 0;
+    margin: 0;
+    border-top: 1px solid var(--border);
   }
 
-  .milestone-card {
-    position: relative;
-    padding: var(--space) var(--space-md);
-    padding-inline-start: calc(var(--space-md) + 4px);
-    border-radius: var(--radius);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    overflow: hidden;
+  .milestone-item {
+    border-bottom: 1px solid var(--border);
+    background: var(--paper);
   }
 
-  .milestone-card::before {
-    content: '';
-    position: absolute;
-    inset-block: 0;
-    inset-inline-start: 0;
-    width: 4px;
-    background: var(--border-strong);
+  .milestone-item.state-next {
+    background: var(--paper-elevated);
   }
 
-  .milestone-card.state-done::before {
-    background: var(--border-strong);
-  }
-
-  .milestone-card.state-next::before {
-    background: var(--border-strong);
-  }
-
-  .milestone-card.is-active-next::before {
-    background: var(--accent);
+  .milestone-item.is-active-next {
+    border-inline-start: 3px solid var(--accent);
   }
 
   @media (prefers-color-scheme: dark) {
-    .milestone-card.is-active-next::before {
-      background: var(--accent-on-dark);
+    .milestone-item.is-active-next {
+      border-inline-start-color: var(--accent-on-dark);
     }
   }
 
-  .milestone-card.state-deferred::before {
-    background: transparent;
-    border-inline-start: 2px dashed var(--border-strong);
-  }
-
-  .milestone-meta {
-    display: flex;
+  .milestone-details summary {
+    display: grid;
+    grid-template-columns: 3rem 1fr auto;
     align-items: center;
     gap: var(--space-sm);
-    margin-block-end: 0.25rem;
+    padding: var(--space-sm) var(--space-md);
+    cursor: pointer;
+    list-style: none;
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+  }
+
+  .milestone-details summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .milestone-details summary:hover {
+    background: var(--paper-sunk);
   }
 
   .milestone-id {
     font-family: var(--font-mono);
-    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .milestone-name {
+    color: var(--text);
+  }
+
+  .milestone-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-tertiary);
   }
 
-  .badge {
-    padding: 0.15rem 0.55rem;
-    border-radius: 999px;
-    font-size: var(--text-xs);
-    font-weight: var(--font-medium);
+  .state-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
   }
 
-  .badge-done {
-    background: var(--bg-sunk);
+  .milestone-item.state-done .state-icon {
     color: var(--text-secondary);
-    border: 1px solid var(--border);
   }
 
-  .badge-next {
-    background: var(--bg-sunk);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
+  .milestone-item.state-next .state-icon {
+    color: var(--accent);
   }
 
-  .badge-active-next {
-    background: var(--accent);
-    color: var(--text-inverse);
-    border-color: var(--accent);
+  .milestone-item.is-active-next .milestone-state {
+    color: var(--accent);
+    font-weight: 500;
   }
 
   @media (prefers-color-scheme: dark) {
-    .badge-active-next {
-      background: var(--accent-on-dark);
-      color: var(--text);
-      border-color: var(--accent-on-dark);
+    .milestone-item.state-next .state-icon,
+    .milestone-item.is-active-next .milestone-state {
+      color: var(--accent-on-dark);
     }
   }
 
-  .badge-deferred {
-    background: transparent;
-    color: var(--text-tertiary);
-    border: 1px dashed var(--border-strong);
-  }
-
-  .milestone-card h4 {
-    font-size: var(--text-lg);
-    font-weight: var(--font-semibold);
-    margin-block-end: 0.15rem;
-  }
-
-  .milestone-card .text-body {
+  .milestone-body {
+    padding: 0 var(--space-md) var(--space-md) calc(3rem + var(--space-md) + var(--space-sm));
+    font-family: var(--font-body);
     font-size: var(--text-sm);
-    line-height: 1.55;
-  }
-
-  .milestone-exit,
-  .milestone-verification {
-    margin-block-start: var(--space-sm);
-    font-size: var(--text-xs);
     color: var(--text-secondary);
   }
 
-  .milestone-exit span,
-  .milestone-verification span {
+  .milestone-body .delivers {
+    margin-block-end: var(--space-sm);
+  }
+
+  .criterion {
+    margin-block-start: var(--space-xs);
+    max-width: var(--measure);
+  }
+
+  .criterion span {
     color: var(--text-tertiary);
-    font-weight: var(--font-medium);
   }
 
   .section-footer {
     display: flex;
-    justify-content: center;
+    justify-content: flex-start;
   }
 
   @media (max-width: 760px) {
@@ -287,6 +296,12 @@ const activeNextId = phases
     .phase-title {
       position: static;
       padding-block-start: var(--space-md);
+    }
+    .milestone-details summary {
+      grid-template-columns: 2.5rem 1fr auto;
+    }
+    .milestone-body {
+      padding-inline-start: var(--space-md);
     }
   }
 </style>

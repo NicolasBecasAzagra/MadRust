@@ -5,7 +5,6 @@ import { risks, stopRules } from '../../data/project';
 <section class="risks-section" aria-labelledby="risks-title">
   <div class="wrapper">
     <header class="section-header">
-      <p class="section-eyebrow">Risks and stop rules</p>
       <h2 id="risks-title" class="text-title">What can go wrong, and what gets cut</h2>
       <p class="text-lead">
         The stop rules are the promise: if the schedule slips, the scope shrinks, but the kernel that
@@ -19,7 +18,7 @@ import { risks, stopRules } from '../../data/project';
         <ul class="risk-list">
           {
             risks.map((risk) => (
-              <li class="risk-card">
+              <li class="risk-item">
                 <h4>{risk.title}</h4>
                 <p class="text-body">{risk.mitigation}</p>
               </li>
@@ -45,24 +44,13 @@ import { risks, stopRules } from '../../data/project';
 <style>
   .risks-section {
     padding-block: var(--space-2xl);
+    background: var(--paper-elevated);
+    border-block: 1px solid var(--border);
   }
 
   .section-header {
     max-width: var(--measure);
     margin-block-end: var(--space-xl);
-  }
-
-  .section-eyebrow {
-    margin-block-end: var(--space-sm);
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .section-eyebrow {
-      color: var(--accent-on-dark);
-    }
   }
 
   .section-header h2 {
@@ -77,8 +65,12 @@ import { risks, stopRules } from '../../data/project';
   }
 
   .column-title {
-    font-size: var(--text-lg);
-    font-weight: var(--font-semibold);
+    font-family: var(--font-display);
+    font-size: var(--text-base);
+    font-weight: 700;
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
     margin-block-end: var(--space-md);
     color: var(--text);
   }
@@ -92,23 +84,23 @@ import { risks, stopRules } from '../../data/project';
   .risk-list,
   .stop-list {
     display: grid;
-    gap: var(--space-md);
+    gap: var(--space-sm);
     list-style: none;
     padding: 0;
   }
 
-  .risk-card,
+  .risk-item,
   .stop-list li {
     padding: var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
+    background: var(--paper);
   }
 
-  .risk-card h4 {
+  .risk-item h4 {
+    font-family: var(--font-body);
     font-size: var(--text-base);
-    font-weight: var(--font-semibold);
+    font-weight: 600;
+    color: var(--text);
     margin-block-end: var(--space-xs);
   }
 
@@ -130,7 +122,7 @@ import { risks, stopRules } from '../../data/project';
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     color: var(--accent);
-    font-weight: var(--font-medium);
+    font-weight: 500;
   }
 
   @media (prefers-color-scheme: dark) {

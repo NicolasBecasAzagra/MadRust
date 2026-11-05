@@ -3,7 +3,7 @@ import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import ScrollReveal from '../components/ScrollReveal.astro';
-import BenchmarkTable from '../components/benchmarks/BenchmarkTable.astro';
+import DotPlot from '../components/benchmarks/DotPlot.astro';
 import MethodCard from '../components/benchmarks/MethodCard.astro';
 import Caveats from '../components/benchmarks/Caveats.astro';
 import Datasets from '../components/benchmarks/Datasets.astro';
@@ -20,7 +20,6 @@ const description =
     <section class="page-hero" aria-labelledby="benchmarks-title">
       <div class="wrapper">
         <header class="section-header">
-          <p class="section-eyebrow">Proof</p>
           <h1 id="benchmarks-title" class="text-display">MadRust against mainline Linux</h1>
           <p class="text-lead">
             Same initramfs, same benchmark binary, same QEMU rig, same machine model. The only thing
@@ -31,13 +30,13 @@ const description =
     </section>
 
     <MethodCard />
-    <BenchmarkTable />
+    <DotPlot openTable={false} />
     <Caveats />
     <Datasets />
 
     <section class="cta-section" aria-labelledby="benchmarks-cta-title">
       <div class="wrapper">
-        <div class="cta-card reveal">
+        <div class="cta-inner">
           <h2 id="benchmarks-cta-title" class="text-headline">Read the full method and report</h2>
           <p class="text-body">
             The benchmarking document explains the protocol; the report contains every measurement,
@@ -57,25 +56,12 @@ const description =
 
 <style>
   .page-hero {
-    padding-block-start: calc(4rem + var(--space-2xl));
+    padding-block-start: calc(3.5rem + var(--space-2xl));
     padding-block-end: var(--space-xl);
   }
 
   .section-header {
     max-width: var(--measure);
-  }
-
-  .section-eyebrow {
-    margin-block-end: var(--space-sm);
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .section-eyebrow {
-      color: var(--accent-on-dark);
-    }
   }
 
   .section-header h1 {
@@ -86,29 +72,24 @@ const description =
     padding-block: var(--space-2xl);
   }
 
-  .cta-card {
+  .cta-inner {
     max-width: var(--measure);
-    margin-inline: auto;
     padding: var(--space-lg);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
-    text-align: center;
+    background: var(--paper-elevated);
   }
 
-  .cta-card h2 {
+  .cta-inner h2 {
     margin-block-end: var(--space-sm);
   }
 
-  .cta-card p {
+  .cta-inner p {
     margin-block-end: var(--space-md);
   }
 
   .cta-actions {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
     gap: var(--space-sm);
   }
 </style>

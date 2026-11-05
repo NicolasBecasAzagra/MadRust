@@ -1,12 +1,14 @@
 ---
 import { meta, build } from '../data/project';
 import { url } from '../lib/paths';
+import TerminalBlock from './TerminalBlock.astro';
+
+const cloneCommand = `git clone ${meta.repo}.git`;
 ---
 
 <section class="start-section" aria-labelledby="start-title">
   <div class="wrapper">
     <header class="section-header">
-      <p class="section-eyebrow">Get started</p>
       <h2 id="start-title" class="text-title">Run it today</h2>
       <p class="text-lead">
         Clone, build, boot. The repository has everything: the kernel, the runtime, the agent, the
@@ -14,48 +16,27 @@ import { url } from '../lib/paths';
       </p>
     </header>
 
-    <div class="start-grid">
-      <div class="start-card start-card-wide">
-        <h3>Clone the repository</h3>
-        <div class="copy-block">
-          <code>git clone {meta.repo}.git</code>
-          <button class="copy-button" data-copy={`git clone ${meta.repo}.git`} aria-label="Copy clone command">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <rect x="9" y="9" width="13" height="13" rx="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-            <span class="copy-label">Copy</span>
-          </button>
-        </div>
-      </div>
+    <TerminalBlock code={cloneCommand} label="Clone the repository" />
 
-      <a class="start-card start-link" href={url('/download')}>
-        <h3>Download & build</h3>
-        <p class="text-body">
-          Toolchain {meta.toolchain}, target {build.requirements[2].detail}
-        </p>
-        <span class="link-arrow">Start →</span>
+    <div class="start-links">
+      <a class="start-link" href={url('/download')}>
+        <span class="link-label">Download & build</span>
+        <span class="link-meta">{meta.toolchain} · {build.requirements[2].detail}</span>
       </a>
-
-      <a class="start-card start-link" href={url('/docs')}>
-        <h3>Read the docs</h3>
-        <p class="text-body">Architecture, boot protocol, benchmarking and the learning path.</p>
-        <span class="link-arrow">Read →</span>
+      <a class="start-link" href={url('/docs')}>
+        <span class="link-label">Read the docs</span>
+        <span class="link-meta">Architecture, boot protocol, benchmarking</span>
       </a>
-
-      <a class="start-card start-link" href={url('/changelog')}>
-        <h3>Changelog</h3>
-        <p class="text-body">What changed, what is next, and what is deferred.</p>
-        <span class="link-arrow">See log →</span>
+      <a class="start-link" href={url('/changelog')}>
+        <span class="link-label">Changelog</span>
+        <span class="link-meta">What changed, what is next</span>
       </a>
     </div>
 
-    <div class="qemu-note">
-      <p class="text-small">
-        Boot in QEMU with <code>make run</code>. The serial log ends with exit status 33 when the
-        boot is clean.
-      </p>
-    </div>
+    <p class="qemu-note">
+      Boot in QEMU with <code>make run</code>. The serial log ends with exit status 33 when the boot
+      is clean.
+    </p>
   </div>
 </section>
 
@@ -64,154 +45,83 @@ import { url } from '../lib/paths';
     padding-block: var(--space-2xl);
   }
 
-  .section-eyebrow {
+  .section-header {
+    max-width: var(--measure);
+    margin-block-end: var(--space-xl);
+  }
+
+  .section-header h2 {
     margin-block-end: var(--space-sm);
-    color: var(--text-tertiary);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
   }
 
-  .start-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: var(--space-md);
-    margin-block-end: var(--space-md);
-  }
-
-  .start-card {
-    display: flex;
-    flex-direction: column;
-    padding: var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
-    transition: transform var(--transition-base), box-shadow var(--transition-base);
-  }
-
-  .start-card-wide {
-    grid-column: 1 / -1;
+  .start-links {
+    margin-block-start: var(--space-md);
+    border-top: 1px solid var(--border);
   }
 
   .start-link {
+    display: grid;
+    grid-template-columns: 1fr 1.5fr;
+    align-items: baseline;
+    gap: var(--space-md);
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border);
     color: inherit;
+    text-decoration: none;
   }
 
   .start-link:hover {
-    color: inherit;
-    transform: translateY(-2px);
-    box-shadow: var(--shadow);
+    background: var(--paper-elevated);
   }
 
-  .start-card h3 {
-    font-size: var(--text-xl);
-    font-weight: var(--font-semibold);
-    margin-block-end: var(--space-xs);
-  }
-
-  .start-card p {
-    flex: 1;
-  }
-
-  .copy-block {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    margin-block-start: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius);
-    background: var(--bg-sunk);
-    border: 1px solid var(--border);
-    overflow: hidden;
-  }
-
-  .copy-block code {
-    flex: 1;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--text);
-    overflow-x: auto;
-    white-space: nowrap;
-  }
-
-  .copy-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    padding: 0.4rem 0.8rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--bg-elevated);
-    color: var(--text-secondary);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-    flex: none;
-  }
-
-  .copy-button:hover {
-    background: var(--bg);
-    color: var(--text);
-  }
-
-  .copy-button.copied {
+  .start-link:hover .link-label {
     color: var(--accent);
   }
 
   @media (prefers-color-scheme: dark) {
-    .copy-button.copied {
+    .start-link:hover .link-label {
       color: var(--accent-on-dark);
     }
   }
 
-  .link-arrow {
-    margin-block-start: var(--space-sm);
+  .link-label {
+    font-family: var(--font-display);
+    font-size: var(--text-base);
+    font-weight: var(--font-bold);
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--text);
+  }
+
+  .link-meta {
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
     color: var(--text-secondary);
-    font-weight: var(--font-medium);
   }
 
   .qemu-note {
-    padding: var(--space-md);
-    border-radius: var(--radius);
-    background: var(--bg-sunk);
+    margin-block-start: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     border: 1px solid var(--border);
+    background: var(--paper-elevated);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
   }
 
   .qemu-note code {
     font-family: var(--font-mono);
-    font-size: var(--text-sm);
+    font-size: 0.9em;
     color: var(--text);
+    background: var(--paper-sunk);
+    padding: 0.1em 0.25em;
   }
 
-  @media (max-width: 900px) {
-    .start-grid {
-      grid-template-columns: repeat(2, 1fr);
-    }
-  }
-
-  @media (max-width: 640px) {
-    .start-grid {
+  @media (max-width: 760px) {
+    .start-link {
       grid-template-columns: 1fr;
+      gap: var(--space-xs);
     }
   }
 </style>
-
-<script>
-  document.querySelectorAll('.copy-button').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const text = button.getAttribute('data-copy') ?? '';
-      try {
-        await navigator.clipboard.writeText(text);
-        const label = button.querySelector('.copy-label');
-        const prev = label?.textContent ?? 'Copy';
-        if (label) label.textContent = 'Copied';
-        button.classList.add('copied');
-        setTimeout(() => {
-          if (label) label.textContent = prev;
-          button.classList.remove('copied');
-        }, 1500);
-      } catch {
-        // ignore
-      }
-    });
-  });
-</script>

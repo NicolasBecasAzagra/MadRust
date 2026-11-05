@@ -5,15 +5,15 @@ import { nextSteps } from '../../data/project';
 <section class="next-section" aria-labelledby="next-title">
   <div class="wrapper">
     <header class="section-header">
-      <p class="section-eyebrow">What comes next</p>
-      <h2 id="next-title" class="text-title">The open items</h2>
+      <h2 id="next-title" class="text-title">What comes next</h2>
     </header>
 
     <ol class="next-list">
       {
-        nextSteps.map((step) => (
-          <li class="next-card">
+        nextSteps.map((step, index) => (
+          <li class="next-item">
             <div class="next-meta">
+              <span class="next-number">{String(index + 1).padStart(2, '0')}</span>
               <h3>{step.title}</h3>
               {step.id && <span class="next-id">{step.id}</span>}
             </div>
@@ -28,7 +28,7 @@ import { nextSteps } from '../../data/project';
 <style>
   .next-section {
     padding-block: var(--space-2xl);
-    background: var(--bg-sunk);
+    background: var(--paper-elevated);
     border-block: 1px solid var(--border);
   }
 
@@ -37,57 +37,71 @@ import { nextSteps } from '../../data/project';
     margin-block-end: var(--space-xl);
   }
 
-  .section-eyebrow {
-    margin-block-end: var(--space-sm);
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .section-eyebrow {
-      color: var(--accent-on-dark);
-    }
-  }
-
   .section-header h2 {
     margin-block-end: var(--space-sm);
   }
 
   .next-list {
-    display: grid;
-    gap: var(--space-md);
     list-style: none;
     padding: 0;
+    margin: 0;
+    counter-reset: next;
   }
 
-  .next-card {
+  .next-item {
+    display: grid;
+    grid-template-columns: 2.5rem 1fr;
+    gap: var(--space-md);
     padding: var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
+    border-bottom: 1px solid var(--border);
+    background: var(--paper);
+  }
+
+  .next-item:first-child {
+    border-top: 1px solid var(--border);
+  }
+
+  .next-number {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
   }
 
   .next-meta {
     display: flex;
-    align-items: center;
+    flex-wrap: wrap;
+    align-items: baseline;
     gap: var(--space-sm);
     margin-block-end: var(--space-xs);
-    flex-wrap: wrap;
   }
 
-  .next-card h3 {
-    font-size: var(--text-xl);
-    font-weight: var(--font-semibold);
+  .next-meta h3 {
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    font-weight: 700;
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text);
   }
 
   .next-id {
     font-family: var(--font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
-    background: var(--bg-sunk);
-    padding: 0.15rem 0.5rem;
-    border-radius: var(--radius-sm);
+    background: var(--paper-sunk);
+    padding: 0.1rem 0.35rem;
+  }
+
+  .text-body {
+    max-width: var(--measure);
+  }
+
+  @media (max-width: 760px) {
+    .next-item {
+      grid-template-columns: 1fr;
+      gap: var(--space-xs);
+    }
   }
 </style>

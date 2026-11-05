@@ -6,16 +6,16 @@ export interface Props {
 const { items } = Astro.props;
 ---
 
-<div class="faq-list" role="list">
+<div class="faq-list">
   {
-    items.map((item) => (
-      <details class="faq-item">
+    items.map((item, index) => (
+      <details class="faq-item" id={`faq-${index}`}>
         <summary>
-          <span>{item.question}</span>
-          <span class="faq-chevron" aria-hidden="true" />
+          <span class="faq-marker" aria-hidden="true">+</span>
+          <span class="faq-question">{item.question}</span>
         </summary>
         <div class="faq-answer">
-          <p class="text-body">{item.answer}</p>
+          <p>{item.answer}</p>
         </div>
       </details>
     ))
@@ -24,25 +24,21 @@ const { items } = Astro.props;
 
 <style>
   .faq-list {
-    display: grid;
-    gap: var(--space-sm);
+    border-top: 1px solid var(--border);
   }
 
   .faq-item {
-    border-radius: var(--radius);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    overflow: hidden;
+    border-bottom: 1px solid var(--border);
   }
 
   .faq-item summary {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    align-items: baseline;
     gap: var(--space-sm);
-    padding: var(--space-md);
-    font-size: var(--text-lg);
-    font-weight: var(--font-medium);
+    padding: var(--space-md) 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
     color: var(--text);
     cursor: pointer;
     list-style: none;
@@ -52,27 +48,69 @@ const { items } = Astro.props;
     display: none;
   }
 
-  .faq-chevron {
-    display: inline-block;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-inline-end: 2px solid var(--text-tertiary);
-    border-block-end: 2px solid var(--text-tertiary);
-    transform: rotate(45deg);
-    transition: transform var(--transition-fast);
-    flex: none;
+  .faq-item summary:hover .faq-question {
+    color: var(--accent);
   }
 
-  .faq-item[open] .faq-chevron {
-    transform: rotate(-135deg);
+  @media (prefers-color-scheme: dark) {
+    .faq-item summary:hover .faq-question {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .faq-marker {
+    flex: none;
+    color: var(--accent);
+    font-weight: 500;
+    width: 1rem;
+    text-align: center;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .faq-marker {
+      color: var(--accent-on-dark);
+    }
+  }
+
+  .faq-item[open] .faq-marker {
+    transform: rotate(45deg);
   }
 
   .faq-answer {
-    padding: 0 var(--space-md) var(--space-md);
+    padding: 0 0 var(--space-md) calc(1rem + var(--space-sm));
     max-width: var(--measure);
   }
 
   .faq-answer p {
     margin: 0;
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: var(--leading-relaxed);
+    color: var(--text-secondary);
   }
 </style>
+
+<script>
+  function setupFaqAccordions() {
+    const lists = document.querySelectorAll('.faq-list');
+    lists.forEach((list) => {
+      const items = list.querySelectorAll('.faq-item');
+      items.forEach((item) => {
+        const summary = item.querySelector('summary');
+        summary?.addEventListener('click', (event) => {
+          const isOpen = item.hasAttribute('open');
+          items.forEach((other) => {
+            if (other !== item) other.removeAttribute('open');
+          });
+          if (isOpen) {
+            event.preventDefault();
+            item.removeAttribute('open');
+          }
+        });
+      });
+    });
+  }
+
+  setupFaqAccordions();
+  document.addEventListener('astro:page-load', setupFaqAccordions);
+</script>

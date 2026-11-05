@@ -1,124 +1,226 @@
 ---
-import { meta, agentTools, layers } from '../data/project';
+import { meta } from '../data/project';
 import { url } from '../lib/paths';
 
-const specs = [
-  'Linux-ABI kernel',
-  'local inference runtime',
-  `${agentTools.length} agent tools`,
-  'x86_64',
+const bootLog = [
+  { ts: '0.000', msg: 'MadRust: boot OK' },
+  { ts: '0.012', msg: 'MM DIRECTMAP OK' },
+  { ts: '0.018', msg: 'HEAP OK 10000' },
+  { ts: '0.041', msg: 'USER OK exit=0' },
+  { ts: '0.102', msg: 'SCHED OK' },
+  { ts: '1.254', msg: 'TICKS 100' },
+  { ts: '2.008', msg: 'INFER OK tokens=42' },
+  { ts: '12.9s', msg: 'AGENT loop complete' },
 ];
+
+const headlineNumber = '376';
+const headlineUnit = 'ns';
 ---
 
 <section class="hero" aria-labelledby="hero-title">
-  <div class="hero-grid wrapper">
-    <div class="hero-content">
-      <p class="hero-eyebrow">{layers[0].name} · {layers[1].name} · {layers[2].name}</p>
-      <h1 id="hero-title" class="text-display">
-        An operating system for<br />local AI agents, written in<br />Rust from the kernel up.
+  <div class="hero-grid-bg" aria-hidden="true"></div>
+
+  <div class="hero-content wrapper">
+    <div class="hero-stat">
+      <p class="hero-stat-label">System call latency</p>
+      <h1 id="hero-title" class="hero-stat-value">
+        {headlineNumber}<span class="hero-stat-unit">{headlineUnit}</span>
       </h1>
-      <p class="hero-lead text-lead">{meta.description}</p>
+      <div class="hero-stat-compare">
+        <p>MadRust</p>
+        <p>Linux 7.3.0: 29.3 µs</p>
+        <p>Linux, mitigations off: 1.04 µs</p>
+      </div>
+      <p class="hero-stat-context">
+        {meta.description}
+      </p>
       <div class="hero-actions">
-        <a class="button button-primary" href={meta.repo}>Star on GitHub</a>
-        <a class="button button-secondary" href={url('/docs')}>Read the docs</a>
+        <a class="button button-primary" href={url('/benchmarks')}>See the measurements</a>
+        <a class="button button-secondary" href={meta.repo}>Source on GitHub</a>
       </div>
     </div>
 
-    <div class="hero-panel" aria-hidden="true">
-      <div class="serial-log">
-        <div class="serial-header">
-          <span class="serial-dot"></span>
-          <span class="serial-dot"></span>
-          <span class="serial-dot"></span>
-          <span class="serial-title">serial0</span>
-        </div>
-        <ol class="serial-lines">
-          <li><span class="ts">[0.000]</span> MadRust: boot OK</li>
-          <li><span class="ts">[0.012]</span> MM DIRECTMAP OK</li>
-          <li><span class="ts">[0.018]</span> HEAP OK 10000</li>
-          <li><span class="ts">[0.041]</span> USER OK exit=0</li>
-          <li><span class="ts">[0.102]</span> SCHED OK</li>
-          <li><span class="ts">[1.254]</span> TICKS 100</li>
-          <li><span class="ts">[2.008]</span> INFER OK tokens=42</li>
-          <li><span class="ts">[12.9s]</span> AGENT loop complete</li>
-        </ol>
+    <dl class="hero-meta-rail">
+      <div class="meta-item">
+        <dt>Repository</dt>
+        <dd>{meta.repoPath}</dd>
       </div>
-      <div class="spec-strip">
-        {specs.map((spec) => <span class="spec-item">{spec}</span>)}
+      <div class="meta-item">
+        <dt>License</dt>
+        <dd>{meta.license}</dd>
       </div>
-    </div>
+      <div class="meta-item">
+        <dt>Toolchain</dt>
+        <dd>{meta.toolchain}</dd>
+      </div>
+      <div class="meta-item">
+        <dt>ABI</dt>
+        <dd>Linux userspace</dd>
+      </div>
+      <div class="meta-item">
+        <dt>Architecture</dt>
+        <dd>x86_64</dd>
+      </div>
+      <div class="meta-item">
+        <dt>Status</dt>
+        <dd>{meta.status}</dd>
+      </div>
+    </dl>
   </div>
 
-  <div class="hero-grid-bg" aria-hidden="true">
-    <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <pattern id="fine-grid" width="40" height="40" patternUnits="userSpaceOnUse">
-          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" stroke-width="0.5"></path>
-        </pattern>
-      </defs>
-      <rect width="100%" height="100%" fill="url(#fine-grid)"></rect>
-    </svg>
+  <div class="hero-terminal wrapper">
+    <div class="terminal-header">
+      <span class="terminal-status" aria-hidden="true"></span>
+      <span class="terminal-title">serial0</span>
+    </div>
+    <ol class="terminal-lines" aria-label="Boot log">
+      {
+        bootLog.map((line, index) => {
+          const chars = `[${line.ts}] ${line.msg}`.length;
+          return (
+            <li class="terminal-line" style={`--chars: ${chars}; --delay: ${index};`}>
+              <span class="terminal-ts">[{line.ts}]</span>
+              <span class="terminal-msg">{line.msg}</span>
+            </li>
+          );
+        })
+      }
+    </ol>
+    <span class="terminal-cursor" aria-hidden="true"></span>
   </div>
 </section>
 
 <style>
   .hero {
     position: relative;
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-rows: 1fr auto;
     min-height: 100svh;
-    padding-block: 8rem var(--space-xl);
+    padding-block-start: 3.5rem;
     overflow: hidden;
   }
 
   .hero-grid-bg {
     position: absolute;
     inset: 0;
-    color: var(--border-strong);
-    opacity: 0.6;
-    mask-image: linear-gradient(to bottom, black 20%, transparent 80%);
-    -webkit-mask-image: linear-gradient(to bottom, black 20%, transparent 80%);
+    background-image:
+      linear-gradient(to right, var(--rule) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--rule) 1px, transparent 1px);
+    background-size: var(--space-lg) var(--space-lg);
+    opacity: 0.5;
     pointer-events: none;
   }
 
-  .hero .wrapper {
-    width: min(100% - var(--space-md) * 2, 1280px);
-  }
-
-  .hero-grid {
+  .hero-content {
     position: relative;
     display: grid;
-    grid-template-columns: 1.2fr 0.55fr;
-    gap: var(--space-lg);
-    align-items: end;
-    width: 100%;
+    grid-template-columns: 1fr;
+    gap: var(--space-xl);
+    align-items: center;
+    padding-block: var(--space-xl);
   }
 
-  .hero-content {
-    padding-block-end: var(--space-xl);
+  .hero-stat {
+    max-width: var(--measure);
   }
 
-  .hero-eyebrow {
-    margin-block-end: var(--space-sm);
+  .hero-meta-rail {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-sm);
+    margin: 0;
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    background: var(--paper-elevated);
+  }
+
+  .meta-item dt {
+    font-family: var(--font-body);
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .meta-item dd {
+    font-family: var(--font-mono);
     font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-    letter-spacing: 0.02em;
+    color: var(--text);
+    margin: 0;
+    margin-block-start: var(--space-xs);
   }
 
-  .hero h1 {
+  @media (min-width: 900px) {
+    .hero-content {
+      grid-template-columns: 1.2fr 0.65fr;
+    }
+
+    .hero-meta-rail {
+      grid-template-columns: 1fr;
+      align-self: center;
+    }
+  }
+
+  .hero-stat-label {
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-block-end: var(--space-sm);
+  }
+
+  .hero-stat-value {
+    font-family: var(--font-display);
+    font-size: var(--text-2xl);
+    line-height: var(--leading-tight);
+    font-weight: var(--font-bold);
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+    letter-spacing: -0.05em;
+    color: var(--text);
+    margin-block-end: var(--space);
+  }
+
+  @media (min-width: 760px) {
+    .hero-stat-value {
+      font-size: var(--text-3xl);
+    }
+  }
+
+  .hero-stat-unit {
+    font-size: 0.35em;
+    color: var(--text-tertiary);
+    margin-inline-start: 0.15em;
+    vertical-align: super;
+  }
+
+  .hero-stat-compare {
+    display: grid;
+    gap: var(--space-xs);
     margin-block-end: var(--space-md);
-    font-size: clamp(2.75rem, 5.5vw, 3.5rem);
-    line-height: 1.08;
+    padding-inline-start: var(--space);
+    border-inline-start: 1px solid var(--accent);
   }
 
-  .hero h1 br {
-    display: block;
+  @media (prefers-color-scheme: dark) {
+    .hero-stat-compare {
+      border-inline-start-color: var(--accent-on-dark);
+    }
   }
 
-  .hero-lead {
-    max-width: 52ch;
+  .hero-stat-compare p {
+    font-family: var(--font-body);
+    font-size: var(--text-md);
+    color: var(--text-secondary);
+  }
+
+  .hero-stat-context {
+    max-width: 60ch;
     margin-block-end: var(--space-lg);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: var(--leading-relaxed);
+    color: var(--text-secondary);
   }
 
   .hero-actions {
@@ -127,106 +229,130 @@ const specs = [
     gap: var(--space-sm);
   }
 
-  .hero-panel {
-    justify-self: end;
-    align-self: end;
-    display: grid;
-    gap: var(--space-sm);
-    width: 100%;
-    max-width: 520px;
-  }
-
-  .serial-log {
-    width: 100%;
+  .hero-terminal {
+    position: relative;
+    border-top: 1px solid var(--border-strong);
+    background: var(--paper-elevated);
     padding: var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow);
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
   }
 
-  .serial-header {
+  .terminal-header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-sm);
     margin-block-end: var(--space-sm);
     padding-block-end: var(--space-sm);
     border-bottom: 1px solid var(--border);
   }
 
-  .serial-dot {
+  .terminal-status {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
-    background: var(--border-strong);
+    background: var(--accent);
   }
 
-  .serial-dot:first-child {
-    background: #ff5f57;
-  }
-  .serial-dot:nth-child(2) {
-    background: #febc2e;
-  }
-  .serial-dot:nth-child(3) {
-    background: #28c840;
+  @media (prefers-color-scheme: dark) {
+    .terminal-status {
+      background: var(--accent-on-dark);
+    }
   }
 
-  .serial-title {
+  .terminal-title {
     margin-inline-start: auto;
-    color: var(--text-tertiary);
+    font-family: var(--font-body);
     font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
 
-  .serial-lines {
-    display: grid;
-    gap: 0.5rem;
+  .terminal-lines {
     list-style: none;
     padding: 0;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: var(--code-line-height);
     color: var(--text-secondary);
   }
 
-  .serial-lines .ts {
-    color: var(--text-tertiary);
-    margin-inline-end: 0.5rem;
-  }
-
-  .spec-strip {
+  .terminal-line {
     display: flex;
-    flex-wrap: wrap;
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    gap: var(--space-sm);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .terminal-ts {
     color: var(--text-tertiary);
+    flex: none;
   }
 
-  .spec-item {
-    display: inline-flex;
-    align-items: center;
-    padding-block: var(--space-xs);
-    padding-inline: var(--space-sm);
+  .terminal-msg {
+    color: var(--text-secondary);
   }
 
-  .spec-item:not(:last-child) {
-    border-inline-end: 1px solid var(--border);
+  .terminal-cursor {
+    display: inline-block;
+    width: 0.6em;
+    height: 1.2em;
+    background: var(--accent);
+    margin-block-start: var(--space-xs);
+    animation: blink 1s step-end infinite;
   }
 
-  @media (max-width: 960px) {
-    .hero-grid {
-      grid-template-columns: 1fr;
-      gap: var(--space-lg);
-      align-items: start;
+  @media (prefers-color-scheme: dark) {
+    .terminal-cursor {
+      background: var(--accent-on-dark);
     }
-    .hero-panel {
-      justify-self: start;
-      max-width: 100%;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* Typewriter animation */
+  .terminal-line {
+    clip-path: inset(0 100% 0 0);
+    animation: type calc(var(--chars) * 60ms) steps(var(--chars)) forwards;
+    animation-delay: calc(var(--delay) * 600ms);
+  }
+
+  .terminal-cursor {
+    opacity: 0;
+    animation: type 0.1ms forwards, blink 1s step-end infinite;
+    animation-delay: calc(8 * 600ms), calc(8 * 600ms + 100ms);
+  }
+
+  @keyframes type {
+    to {
+      clip-path: inset(0 0 0 0);
     }
-    .hero h1 {
-      max-width: none;
+  }
+
+  /* Reduced motion: show everything, no blink */
+  @media (prefers-reduced-motion: reduce) {
+    .terminal-line,
+    .terminal-cursor {
+      animation: none;
+      clip-path: inset(0 0 0 0);
+      opacity: 1;
+    }
+    .terminal-cursor {
+      opacity: 1;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .hero-stat-value {
+      font-size: var(--text-2xl);
+    }
+    .hero-stat-compare p {
+      font-size: var(--text-base);
+    }
+    .hero-terminal {
+      padding: var(--space);
     }
   }
 </style>

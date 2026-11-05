@@ -1,60 +1,119 @@
-/* MadRust design system — instrument panel, not SaaS landing */
+/* MadRust design system — serial console / lab notebook */
+/* Mono-first. One accent. Visible grid. No glass, no gradients, no soft shadows. */
+
+@font-face {
+  font-family: "Martian Mono Variable";
+  src:
+    url("/MadRust/fonts/martian-mono-latin.woff2") format("woff2 supports variations"),
+    url("/MadRust/fonts/martian-mono-latin.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-stretch: 75% 112.5%;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F;
+}
+
+@font-face {
+  font-family: "Martian Mono Variable";
+  src:
+    url("/MadRust/fonts/martian-mono-latin-ext.woff2") format("woff2 supports variations"),
+    url("/MadRust/fonts/martian-mono-latin-ext.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-stretch: 75% 112.5%;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  src:
+    url("/MadRust/fonts/jetbrains-mono-latin.woff2") format("woff2 supports variations"),
+    url("/MadRust/fonts/jetbrains-mono-latin.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  src:
+    url("/MadRust/fonts/jetbrains-mono-latin-ext.woff2") format("woff2 supports variations"),
+    url("/MadRust/fonts/jetbrains-mono-latin-ext.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 
 :root {
-  /* Accent: rust oxide. Chosen because it names the language, the work is metal, */
-  /* and it stays legible on both light and dark neutrals. */
-  --accent: #b7410e;
+  /* Accent: rust oxide. Names the language and stays legible on both themes. */
+  --accent: #ac3c0d;
   --accent-hover: #8f2f0a;
   --accent-on-dark: #e07b4d;
+  --accent-on-dark-hover: #ff9a6d;
 
-  /* Light theme */
-  --bg: #ffffff;
-  --bg-elevated: #fafafa;
-  --bg-sunk: #f3f3f3;
-  --surface-glass: rgba(255, 255, 255, 0.72);
+  /* Light theme: warm paper, dark ink */
+  --paper: #f7f5f0;
+  --paper-elevated: #f0ede6;
+  --paper-sunk: #e8e4db;
+  --ink: #1a1a1a;
+  --ink-secondary: #6b6560;
+  --ink-tertiary: #665f59;
+  --ink-inverse: #f7f5f0;
 
-  --text: #0a0a0a;
-  --text-secondary: #555555;
-  --text-tertiary: #737373;
-  --text-inverse: #ffffff;
+  --border: rgba(26, 26, 26, 0.12);
+  --border-strong: rgba(26, 26, 26, 0.24);
+  --border-subtle: rgba(26, 26, 26, 0.08);
+  --rule: rgba(26, 26, 26, 0.12);
 
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.16);
-  --shadow: 0 24px 80px rgba(0, 0, 0, 0.08);
-  --shadow-sm: 0 4px 20px rgba(0, 0, 0, 0.05);
-
-  --ring: #b7410e;
+  /* Legacy tokens kept for compatibility with untouched pages */
+  --bg: var(--paper);
+  --bg-elevated: var(--paper-elevated);
+  --bg-sunk: var(--paper-sunk);
+  --surface-glass: var(--paper-elevated);
+  --text: var(--ink);
+  --text-secondary: var(--ink-secondary);
+  --text-tertiary: var(--ink-tertiary);
+  --text-inverse: var(--ink-inverse);
+  --ring: var(--accent);
   --ring-offset: 2px;
+  --shadow: none;
+  --shadow-sm: none;
 
-  --radius-sm: 8px;
-  --radius: 18px;
-  --radius-lg: 28px;
-  --radius-xl: 40px;
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 4px;
 
-  --space-xs: 0.5rem;
-  --space-sm: 0.875rem;
-  --space: 1.25rem;
-  --space-md: 2rem;
-  --space-lg: 3.5rem;
-  --space-xl: 6rem;
-  --space-2xl: 10rem;
+  /* Spacing: 4px grid */
+  --space-xs: 0.25rem;   /* 4 */
+  --space-sm: 0.5rem;    /* 8 */
+  --space: 1rem;         /* 16 */
+  --space-md: 1.5rem;    /* 24 */
+  --space-lg: 2rem;      /* 32 */
+  --space-xl: 3rem;      /* 48 */
+  --space-2xl: 6rem;     /* 96 */
 
-  --measure: 70ch;
+  --measure: 68ch;
   --max-content: 1200px;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter Variable",
-    "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Typography: mono-first */
+  --font-display: "Martian Mono Variable", "Martian Mono", monospace;
+  --font-body: "JetBrains Mono Variable", "JetBrains Mono", "IBM Plex Mono", monospace;
+  --font-mono: var(--font-body);
+  --font-sans: var(--font-body);
 
-  --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-base: 1rem;
-  --text-md: 1.125rem;
-  --text-lg: 1.375rem;
-  --text-xl: 1.75rem;
-  --text-2xl: 2.25rem;
-  --text-3xl: 3.25rem;
-  --text-4xl: clamp(3rem, 7vw, 5.5rem);
+  /* Type scale: 12/13/14/16/20/28/40/64 */
+  --text-xs: 0.75rem;    /* 12 */
+  --text-sm: 0.8125rem;  /* 13 */
+  --text-base: 0.875rem; /* 14 */
+  --text-md: 1rem;       /* 16 */
+  --text-lg: 1.25rem;    /* 20 */
+  --text-xl: 1.75rem;    /* 28 */
+  --text-2xl: 2.5rem;    /* 40 */
+  --text-3xl: 4rem;      /* 64 */
 
   --font-regular: 400;
   --font-medium: 500;
@@ -63,29 +122,44 @@
 
   --leading-tight: 1.05;
   --leading-snug: 1.2;
-  --leading-normal: 1.55;
-  --leading-relaxed: 1.7;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
 
-  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* Density */
+  --row-height: 40px;
+  --code-line-height: 1.6;
+
+  --transition-fast: 120ms cubic-bezier(0.25, 0, 0.5, 1);
+  --transition-base: 180ms cubic-bezier(0.25, 0, 0.5, 1);
+
+  /* Display voice: condensed, bold */
+  --display-wdth: 75;
+  --display-wght: 800;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0a0a0a;
-    --bg-elevated: #141414;
-    --bg-sunk: #1c1c1c;
-    --surface-glass: rgba(16, 16, 16, 0.78);
+    --paper: #0d0d0d;
+    --paper-elevated: #141414;
+    --paper-sunk: #1a1a1a;
+    --ink: #e8e6e1;
+    --ink-secondary: #a8a29e;
+    --ink-tertiary: #8a837c;
+    --ink-inverse: #0d0d0d;
 
-    --text: #f5f5f5;
-    --text-secondary: #a8a8a8;
-    --text-tertiary: #737373;
-    --text-inverse: #0a0a0a;
+    --border: rgba(232, 230, 225, 0.10);
+    --border-strong: rgba(232, 230, 225, 0.20);
+    --border-subtle: rgba(232, 230, 225, 0.06);
+    --rule: rgba(232, 230, 225, 0.10);
 
-    --border: rgba(255, 255, 255, 0.1);
-    --border-strong: rgba(255, 255, 255, 0.2);
-    --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
-    --shadow-sm: 0 4px 20px rgba(0, 0, 0, 0.25);
+    --bg: var(--paper);
+    --bg-elevated: var(--paper-elevated);
+    --bg-sunk: var(--paper-sunk);
+    --surface-glass: var(--paper-elevated);
+    --text: var(--ink);
+    --text-secondary: var(--ink-secondary);
+    --text-tertiary: var(--ink-tertiary);
+    --text-inverse: var(--ink-inverse);
   }
 }
 
@@ -113,7 +187,7 @@ html {
 }
 
 body {
-  font-family: var(--font-sans);
+  font-family: var(--font-body);
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--text);
@@ -131,7 +205,9 @@ video {
 
 a {
   color: var(--accent);
-  text-decoration: none;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  text-decoration-thickness: 1px;
   transition: color var(--transition-fast);
 }
 
@@ -144,7 +220,7 @@ a:hover {
     color: var(--accent-on-dark);
   }
   a:hover {
-    color: #ff9a6d;
+    color: var(--accent-on-dark-hover);
   }
 }
 
@@ -165,39 +241,51 @@ button {
 
 /* Typography primitives */
 .text-display {
-  font-size: var(--text-4xl);
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
   line-height: var(--leading-tight);
-  font-weight: var(--font-semibold);
-  letter-spacing: -0.03em;
+  font-weight: var(--font-bold);
+  font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
 }
 
 .text-title {
-  font-size: var(--text-3xl);
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
   line-height: var(--leading-snug);
-  font-weight: var(--font-semibold);
-  letter-spacing: -0.02em;
+  font-weight: var(--font-bold);
+  font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
 }
 
 .text-headline {
-  font-size: var(--text-2xl);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
   line-height: var(--leading-snug);
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-bold);
+  font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
   letter-spacing: -0.02em;
+  text-transform: uppercase;
 }
 
 .text-lead {
-  font-size: var(--text-lg);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
   line-height: var(--leading-relaxed);
   color: var(--text-secondary);
 }
 
 .text-body {
+  font-family: var(--font-body);
   font-size: var(--text-base);
   line-height: var(--leading-relaxed);
   color: var(--text-secondary);
 }
 
 .text-small {
+  font-family: var(--font-body);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
   color: var(--text-tertiary);
@@ -226,43 +314,72 @@ button {
   margin-block-start: var(--space-lg);
 }
 
+/* Visible grid utility */
+.grid-bg {
+  background-image:
+    linear-gradient(to right, var(--rule) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--rule) 1px, transparent 1px);
+  background-size: var(--space-lg) var(--space-lg);
+}
+
 /* Buttons */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-xs);
-  padding: 0.8rem 1.4rem;
+  padding: 0.6rem 1rem;
   border-radius: var(--radius);
+  font-family: var(--font-body);
   font-weight: var(--font-medium);
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   line-height: 1;
-  transition: transform var(--transition-fast), background-color var(--transition-fast),
-    box-shadow var(--transition-fast);
+  text-decoration: none;
+  text-underline-offset: 0;
+  border: 1px solid var(--border-strong);
+  background: var(--paper-elevated);
+  color: var(--text);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
-.button:active {
-  transform: scale(0.98);
+.button:hover {
+  background: var(--paper-sunk);
+  color: var(--text);
 }
 
 .button-primary {
   background: var(--accent);
+  border-color: var(--accent);
   color: var(--text-inverse);
 }
 
 .button-primary:hover {
   background: var(--accent-hover);
+  border-color: var(--accent-hover);
   color: var(--text-inverse);
 }
 
+@media (prefers-color-scheme: dark) {
+  .button-primary {
+    background: var(--accent-on-dark);
+    border-color: var(--accent-on-dark);
+    color: var(--text-inverse);
+  }
+  .button-primary:hover {
+    background: var(--accent-on-dark-hover);
+    border-color: var(--accent-on-dark-hover);
+  }
+}
+
 .button-secondary {
-  background: var(--bg-sunk);
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
 }
 
 .button-secondary:hover {
-  background: var(--bg-elevated);
+  background: var(--paper-elevated);
+  border-color: var(--border-strong);
   color: var(--text);
 }
 
@@ -289,8 +406,35 @@ button {
   background: var(--accent);
   color: var(--text-inverse);
   border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  text-decoration: none;
 }
 
 .skip-link:focus {
   inset-block-start: var(--space);
+}
+
+@media (prefers-color-scheme: dark) {
+  .skip-link {
+    background: var(--accent-on-dark);
+  }
+}
+
+/* Utilities */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Selection */
+::selection {
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+
+@media (prefers-color-scheme: dark) {
+  ::selection {
+    background: var(--accent-on-dark);
+    color: var(--text-inverse);
+  }
 }

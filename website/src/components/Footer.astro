@@ -13,13 +13,12 @@ const footerLinks = [
 ---
 
 <footer class="site-footer">
-  <div class="wrapper">
+  <div class="wrapper footer-inner">
+    <div class="footer-rule" aria-hidden="true"></div>
     <div class="footer-grid">
       <div class="footer-brand">
-        <a class="wordmark" href={url('/')}>
-          <span class="wordmark-text">{meta.name}</span>
-        </a>
-        <p class="status">{meta.status}</p>
+        <p class="footer-name">{meta.name}</p>
+        <p class="footer-status">{meta.status}</p>
       </div>
 
       <nav class="footer-nav" aria-label="Footer">
@@ -29,64 +28,49 @@ const footerLinks = [
       </nav>
 
       <div class="footer-meta">
-        <p class="text-small">
-          Source on <a href={meta.repo}>GitHub</a>
-        </p>
-        <p class="text-small">
-          <a href={meta.licenseUrl}>Licensed {meta.license}</a>
-        </p>
-        <p class="text-small">Built by {meta.author}</p>
-        <p class="text-small">
-          Read the <a href={`${meta.repo}/blob/main/REPORT.md`}>measurement report</a>
-        </p>
+        <p><a href={meta.repo}>Source on GitHub</a></p>
+        <p><a href={meta.licenseUrl}>Licensed {meta.license}</a></p>
+        <p>Built by {meta.author}</p>
+        <p><a href={`${meta.repo}/blob/main/REPORT.md`}>Measurement report</a></p>
       </div>
     </div>
 
-    <div class="footer-bottom">
-      <p class="text-small">This is a research kernel, not a production operating system.</p>
-    </div>
+    <p class="footer-disclaimer">This is a research kernel, not a production operating system.</p>
   </div>
 </footer>
 
 <style>
   .site-footer {
+    padding-block: var(--space-xl) var(--space-lg);
     margin-block-start: var(--space-2xl);
-    padding-block: var(--space-xl);
-    border-top: 1px solid var(--border);
-    background: var(--bg-elevated);
+  }
+
+  .footer-rule {
+    height: 1px;
+    background: var(--border-strong);
+    margin-block-end: var(--space-lg);
   }
 
   .footer-grid {
     display: grid;
-    grid-template-columns: 1.4fr 1fr 1.2fr;
+    grid-template-columns: 1.4fr 1fr 1.4fr;
     gap: var(--space-lg);
   }
 
-  .wordmark {
-    display: inline-flex;
-    color: var(--text);
-    font-weight: var(--font-semibold);
-    font-size: var(--text-xl);
+  .footer-name {
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    font-weight: var(--font-bold);
+    font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
     letter-spacing: -0.02em;
+    text-transform: uppercase;
   }
 
-  .wordmark:hover {
-    color: var(--text);
-  }
-
-  .footer-brand p {
-    margin-block-start: var(--space-sm);
-  }
-
-  .status {
-    display: inline-block;
-    margin-block-start: var(--space-sm);
-    padding: 0.2rem 0.55rem;
-    border-radius: 999px;
-    background: var(--bg-sunk);
+  .footer-status {
+    margin-block-start: var(--space-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
     color: var(--text-tertiary);
-    font-size: var(--text-xs);
-    font-weight: var(--font-medium);
   }
 
   .footer-nav ul {
@@ -98,21 +82,39 @@ const footerLinks = [
 
   .footer-nav a {
     color: var(--text-secondary);
+    font-family: var(--font-body);
     font-size: var(--text-sm);
+    text-decoration: none;
   }
 
   .footer-nav a:hover {
     color: var(--text);
+    text-decoration: underline;
   }
 
   .footer-meta p {
     margin-block-start: var(--space-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
   }
 
-  .footer-bottom {
+  .footer-meta a {
+    color: var(--text-secondary);
+    text-decoration: none;
+  }
+
+  .footer-meta a:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
+
+  .footer-disclaimer {
     margin-block-start: var(--space-xl);
     padding-block-start: var(--space-md);
     border-top: 1px solid var(--border);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
     color: var(--text-tertiary);
   }
 

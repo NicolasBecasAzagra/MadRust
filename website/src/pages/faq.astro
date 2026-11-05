@@ -2,7 +2,6 @@
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import ScrollReveal from '../components/ScrollReveal.astro';
 import FaqList from '../components/faq/FaqList.astro';
 import { meta, faq } from '../data/project';
 import { url } from '../lib/paths';
@@ -12,50 +11,52 @@ import { url } from '../lib/paths';
   <Nav />
   <main id="main" class="faq-page">
     <div class="wrapper">
-      <header class="page-header reveal">
-        <p class="section-eyebrow">FAQ</p>
+      <header class="page-header">
         <h1 class="text-title">The questions people ask first</h1>
+        <p class="text-lead">
+          Short answers, with links to the repository and the documentation when the full context
+          matters.
+        </p>
       </header>
 
       <FaqList items={faq} />
 
-      <p class="faq-more reveal">
-        <span class="text-body">
-          If an answer is not here, it is probably in the{' '}
-          <a href={url('/docs')}>documentation</a>{' '}or in the{' '}
-          <a href={meta.repo}>repository</a>.
-        </span>
+      <p class="faq-more">
+        If an answer is not here, it is probably in the
+        <a href={url('/docs')}>documentation</a> or in the
+        <a href={meta.repo}>repository</a>.
       </p>
     </div>
   </main>
   <Footer />
-  <ScrollReveal />
 </Base>
 
 <style>
   .faq-page {
-    padding-block: var(--space-2xl) var(--space-xl);
+    padding-block: calc(4rem + var(--space-2xl)) var(--space-xl);
   }
 
   .page-header {
+    max-width: var(--measure);
     margin-block-end: var(--space-xl);
   }
 
-  .section-eyebrow {
-    font-size: var(--text-sm);
-    font-weight: var(--font-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--accent);
+  .page-header h1 {
     margin-block-end: var(--space-sm);
   }
 
   .faq-more {
     margin-block-start: var(--space-xl);
-    text-align: center;
+    color: var(--text-secondary);
   }
 
-  .faq-more .text-body {
-    color: var(--text-secondary);
+  .faq-more a {
+    color: var(--accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .faq-more a {
+      color: var(--accent-on-dark);
+    }
   }
 </style>
