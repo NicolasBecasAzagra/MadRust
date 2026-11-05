@@ -50,13 +50,25 @@ function escape(value) {
   return value.replace(/"/g, '\\"');
 }
 
+/**
+ * The layout prints the title of the document, so the markdown keeps its own
+ * first heading out of the body: otherwise the page would carry two h1 and
+ * the title would be printed twice.
+ */
+function stripLeadingHeading(markdown) {
+  const match = markdown.match(/^(#\s+.+?)(\r?\n)+/);
+  if (!match) return markdown;
+  return markdown.slice(match[0].length);
+}
+
 const outputDir = join(websiteRoot, 'src', 'pages', 'docs');
 mkdirSync(outputDir, { recursive: true });
 
 for (const source of sources) {
-  const markdown = readFileSync(join(repoRoot, source.file), 'utf8');
-  const title = firstHeading(markdown);
-  const description = firstParagraph(markdown);
+  const raw = readFileSync(join(repoRoot, source.file), 'utf8');
+  const title = firstHeading(raw);
+  const description = firstParagraph(raw);
+  const markdown = stripLeadingHeading(raw);
   const frontmatter = [
     '---',
     `title: "${escape(title)}"`,

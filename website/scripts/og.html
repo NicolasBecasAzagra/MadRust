@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /*__CSS__*/
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+
+      body {
+        width: 1200px;
+        height: 630px;
+        padding: 80px;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--font-body);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .grid {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(to right, var(--rule) 1px, transparent 1px),
+          linear-gradient(to bottom, var(--rule) 1px, transparent 1px);
+        background-size: 64px 64px;
+        opacity: 0.6;
+        pointer-events: none;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+
+      .brand svg {
+        width: 56px;
+        height: 56px;
+        color: var(--ink-secondary);
+      }
+
+      .brand-name {
+        font-family: var(--font-display);
+        font-size: 48px;
+        font-weight: var(--font-bold);
+        font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+        letter-spacing: -0.04em;
+        text-transform: uppercase;
+        color: var(--ink);
+      }
+
+      .rule {
+        width: 100%;
+        height: 1px;
+        background: var(--accent);
+        margin-block: 40px;
+      }
+
+      .headline {
+        font-family: var(--font-display);
+        font-size: 96px;
+        font-weight: var(--font-bold);
+        font-variation-settings: "wdth" var(--display-wdth), "wght" var(--display-wght);
+        letter-spacing: -0.05em;
+        line-height: 1;
+        text-transform: uppercase;
+        color: var(--ink);
+      }
+
+      .headline-accent {
+        color: var(--accent);
+      }
+
+      .compare {
+        margin-block-start: 24px;
+        font-family: var(--font-body);
+        font-size: 32px;
+        color: var(--ink-secondary);
+      }
+
+      .compare-strong {
+        color: var(--ink);
+      }
+
+      .footer {
+        font-family: var(--font-mono);
+        font-size: 22px;
+        color: var(--ink-tertiary);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="grid" aria-hidden="true"></div>
+
+    <div>
+      <div class="brand">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" aria-hidden="true">
+          <rect x="4" y="5" width="24" height="22" rx="1"/>
+          <line x1="8" y1="12" x2="24" y2="12"/>
+          <line x1="8" y1="17" x2="18" y2="17"/>
+          <line x1="8" y1="22" x2="14" y2="22"/>
+        </svg>
+        <span class="brand-name">MadRust</span>
+      </div>
+
+      <div class="rule"></div>
+
+      <p class="headline">
+        <span class="headline-accent">376 ns</span> system call
+      </p>
+      <p class="compare">
+        <span class="compare-strong">vs 29.3 µs</span> on mainline Linux 7.3.0
+      </p>
+    </div>
+
+    <p class="footer">github.com/NicolasBecasAzagra/MadRust</p>
+  </body>
+</html>

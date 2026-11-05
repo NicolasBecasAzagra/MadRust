@@ -1,34 +1,53 @@
-import { writeFileSync } from 'node:fs';
+// Renders the Open Graph image of the site.
+//
+// The image is a real page rendered by the browser, so it uses the fonts and
+// the tokens of the site instead of an approximation of them.
+//
+//   node scripts/og.mjs                      # uses scripts/og.html
+//   node scripts/og.mjs --url http://.../    # renders the template in place
+import { chromium } from 'playwright';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import sharp from 'sharp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const outPath = join(__dirname, '../public/og.png');
+const root = resolve(__dirname, '..');
+const templatePath = join(root, 'scripts/og.html');
+const outPath = join(root, 'public/og.png');
 
-const width = 1200;
-const height = 630;
+const args = process.argv.slice(2);
+const arg = (name, fallback) => {
+  const i = args.indexOf(`--${name}`);
+  return i >= 0 ? args[i + 1] : fallback;
+};
 
-const svg = `
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <rect width="${width}" height="${height}" fill="#0a0a0a"/>
-  <defs>
-    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
-      <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#1f1f1f" stroke-width="1"/>
-    </pattern>
-  </defs>
-  <rect width="${width}" height="${height}" fill="url(#grid)"/>
-  <rect x="80" y="235" width="1040" height="4" rx="2" fill="#b7410e"/>
-  <text x="80" y="190" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif" font-size="72" font-weight="600" fill="#f5f5f5" letter-spacing="-0.03em">MadRust</text>
-  <text x="80" y="310" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif" font-size="34" font-weight="400" fill="#a8a8a8">An operating system for local AI agents,</text>
-  <text x="80" y="355" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif" font-size="34" font-weight="400" fill="#a8a8a8">written in Rust from the kernel up.</text>
-  <text x="80" y="540" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace" font-size="18" fill="#6e6e6e">github.com/NicolasBecasAzagra/MadRust</text>
-</svg>
-`;
+const base = arg('url', 'http://localhost:4321/MadRust');
+const width = Number(arg('width', 1200));
+const height = Number(arg('height', 630));
 
-const buffer = await sharp(Buffer.from(svg))
-  .png({ compressionLevel: 9 })
-  .toBuffer();
+if (!existsSync(templatePath)) {
+  console.error(`missing template: ${templatePath}`);
+  process.exit(1);
+}
+
+const html = readFileSync(templatePath, 'utf8');
+let css = readFileSync(join(root, 'src/styles/global.css'), 'utf8');
+
+// The stylesheet points at the fonts with the base path of the site, which
+// does not exist in a page rendered from memory. Inline them so the image
+// carries the same typefaces as the site.
+css = css.replace(/url\(["']?\/MadRust\/fonts\/([^"')]+)["']?\)/g, (_match, file) => {
+  const font = readFileSync(join(root, 'public/fonts', file));
+  return `url("data:font/woff2;base64,${font.toString('base64')}")`;
+});
+
+const browser = await chromium.launch({ channel: 'chrome' });
+const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+await page.setContent(html.replace('/*__CSS__*/', css), { waitUntil: 'load' });
+await page.evaluate(() => document.fonts.ready);
+await page.waitForTimeout(400);
+const buffer = await page.screenshot({ type: 'png' });
+await browser.close();
 
 writeFileSync(outPath, buffer);
-console.log(`Generated ${outPath} (${width}x${height})`);
+console.log(`Generated ${outPath} (${width}x${height}, ${(buffer.length / 1024).toFixed(1)} kB)`);

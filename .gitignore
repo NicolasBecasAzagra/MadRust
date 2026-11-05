@@ -20,3 +20,7 @@ artifacts/
 __pycache__/
 .agents/
 skills-lock.json
+.opencode/
+
+# Design previews
+website/.preview/
