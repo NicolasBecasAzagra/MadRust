@@ -18,3 +18,5 @@ bench/initramfs.cpio
 bench/initramfs-net.cpio
 artifacts/
 __pycache__/
+.agents/
+skills-lock.json
